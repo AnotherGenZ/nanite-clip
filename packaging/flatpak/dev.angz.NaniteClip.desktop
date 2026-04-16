@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=NaniteClip
+Comment=PlanetSide 2 desktop companion for automatic and manual clip capture
+Exec=nanite-clip
+Icon=dev.angz.NaniteClip
+Terminal=false
+Categories=Game;Utility;
+StartupWMClass=nanite-clip

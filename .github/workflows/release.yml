@@ -1,0 +1,318 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_WIX_VERSION: "0.3.9"
+  FPM_VERSION: "1.17.0"
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            extra-cmake-modules \
+            qt6-base-dev \
+            libkf6coreaddons-dev \
+            libkf6dbusaddons-dev \
+            libkf6globalaccel-dev
+
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Build platform service
+        run: |
+          cmake -S native/platform_service -B target/platform-service-release -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build target/platform-service-release
+
+      - name: Package release bundle
+        run: |
+          chmod +x scripts/package-release-linux.sh
+          scripts/package-release-linux.sh \
+            target/release/nanite-clip \
+            target/platform-service-release/nanite-clip-platform-service \
+            "${GITHUB_REF_NAME}" \
+            dist
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-tarball
+          path: dist/nanite-clip-*.tar.gz
+
+      - name: Upload Linux build outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-build-outputs
+          path: |
+            target/release/nanite-clip
+            target/platform-service-release/nanite-clip-platform-service
+
+  windows-build:
+    name: Build Windows binary
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Windows binary
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nanite-clip-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/nanite-clip.exe
+
+  windows-msi:
+    name: Build Windows MSI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --version "$CARGO_WIX_VERSION" --locked
+
+      - name: Verify deterministic WiX source
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "packaging/windows/wix/main.wxs")) {
+            throw "Missing packaging/windows/wix/main.wxs. Commit a deterministic WiX source file."
+          }
+
+      - name: Build MSI installer
+        run: cargo wix packaging/windows/wix/main.wxs
+
+      - name: Normalize MSI artifact name
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path "target/wix" -Filter "*.msi" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $msi) {
+            throw "MSI artifact not found in target/wix"
+          }
+          Copy-Item $msi.FullName "target/wix/nanite-clip-$env:GITHUB_REF_NAME-x86_64.msi" -Force
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-msi
+          path: target/wix/nanite-clip-*.msi
+
+  linux-native-packages:
+    name: Build Linux ${{ matrix.package_format }} package
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        package_format: [deb, rpm]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install native build dependencies and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ruby \
+            ruby-dev \
+            build-essential \
+            rpm \
+            desktop-file-utils \
+            appstream \
+            lintian \
+            rpmlint
+          sudo gem install --no-document fpm --version "$FPM_VERSION"
+
+      - name: Download Linux build outputs
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-build-outputs
+          path: target/reused-build
+
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate assets/linux/nanite-clip.desktop
+          appstreamcli validate --no-net assets/linux/dev.angz.NaniteClip.metainfo.xml
+
+      - name: Package native installer
+        run: |
+          chmod +x "scripts/package-release-${{ matrix.package_format }}.sh"
+          "scripts/package-release-${{ matrix.package_format }}.sh" \
+            target/reused-build/nanite-clip \
+            target/reused-build/nanite-clip-platform-service \
+            "${GITHUB_REF_NAME}" \
+            dist
+
+      - name: Lint and smoke test DEB
+        if: matrix.package_format == 'deb'
+        run: |
+          PKG=$(ls dist/*.deb | head -n1)
+          lintian "$PKG" || true
+          sudo apt-get install -y "$PKG"
+          test -x /usr/bin/nanite-clip
+          test -f /usr/share/applications/nanite-clip.desktop
+          test -f /usr/share/metainfo/dev.angz.NaniteClip.metainfo.xml
+          sudo apt-get remove -y nanite-clip
+
+      - name: Lint and smoke test RPM
+        if: matrix.package_format == 'rpm'
+        run: |
+          PKG=$(ls dist/*.rpm | head -n1)
+          rpmlint "$PKG" || true
+          sudo rpm -ivh --nodeps "$PKG"
+          test -x /usr/bin/nanite-clip
+          test -f /usr/share/applications/nanite-clip.desktop
+          test -f /usr/share/metainfo/dev.angz.NaniteClip.metainfo.xml
+          sudo rpm -e nanite-clip
+
+      - name: Upload Linux package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.package_format }}-package
+          path: dist/*.${{ matrix.package_format }}
+
+  pacman:
+    name: Build pacman package
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Set up build environment
+        run: |
+          pacman -Syu --noconfirm base-devel git rust cmake ninja extra-cmake-modules qt6-base kcoreaddons kdbusaddons kglobalaccel
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - uses: actions/checkout@v6
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update PKGBUILD version
+        run: |
+          cd packaging/pacman
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.version.outputs.version }}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+      - name: Build package
+        run: |
+          chown -R builder:builder .
+          su builder -c 'cd packaging/pacman && makepkg -sf --noconfirm'
+
+      - name: Upload pacman package
+        uses: actions/upload-artifact@v7
+        with:
+          name: pacman-package
+          path: packaging/pacman/*.pkg.tar.zst
+
+  flatpak:
+    name: Build Flatpak bundle
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+
+      - name: Install Flatpak runtime and SDK
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+      - name: Download Linux build outputs
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-build-outputs
+          path: target/reused-build
+
+      - name: Package Flatpak bundle
+        run: |
+          chmod +x scripts/package-release-flatpak.sh
+          scripts/package-release-flatpak.sh \
+            target/reused-build/nanite-clip \
+            "${GITHUB_REF_NAME}" \
+            dist
+
+      - name: Smoke test Flatpak install
+        run: |
+          BUNDLE=$(ls dist/*.flatpak | head -n1)
+          flatpak install --user -y "$BUNDLE"
+          flatpak info dev.angz.NaniteClip
+          flatpak uninstall --user -y dev.angz.NaniteClip
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: flatpak-package
+          path: dist/*.flatpak
+
+  release:
+    name: Create GitHub release
+    needs: [build, windows-build, windows-msi, linux-native-packages, pacman, flatpak]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+
+      - name: Generate checksums
+        run: |
+          find . -type f \( \
+            -name "*.tar.gz" -o \
+            -name "*.exe" -o \
+            -name "*.msi" -o \
+            -name "*.deb" -o \
+            -name "*.rpm" -o \
+            -name "*.pkg.tar.zst" -o \
+            -name "*.flatpak" \
+          \) -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            binary-tarball/*.tar.gz
+            nanite-clip-windows-x64/nanite-clip.exe
+            windows-msi/*.msi
+            linux-deb-package/*.deb
+            linux-rpm-package/*.rpm
+            pacman-package/*.pkg.tar.zst
+            flatpak-package/*.flatpak
+            SHA256SUMS.txt

@@ -1,0 +1,26 @@
+app-id: dev.angz.NaniteClip
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: nanite-clip
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home
+  - --filesystem=xdg-run/pipewire-0
+  - --talk-name=org.freedesktop.portal.Desktop
+modules:
+  - name: nanite-clip
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 nanite-clip /app/bin/nanite-clip
+      - install -Dm644 dev.angz.NaniteClip.desktop /app/share/applications/dev.angz.NaniteClip.desktop
+      - install -Dm644 dev.angz.NaniteClip.metainfo.xml /app/share/metainfo/dev.angz.NaniteClip.metainfo.xml
+      - install -Dm644 dev.angz.NaniteClip.png /app/share/icons/hicolor/512x512/apps/dev.angz.NaniteClip.png
+    sources:
+      - type: dir
+        path: ../../flatpak-staging

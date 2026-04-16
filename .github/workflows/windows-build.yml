@@ -1,0 +1,50 @@
+name: Windows build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Guard OBS parameter keys
+        shell: bash
+        run: |
+          if rg -n '"RecFormat2?"' src/ | rg -v 'src/capture/obs.rs'; then
+            echo "OBS parameter literal found outside src/capture/obs.rs"
+            exit 1
+          fi
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: cargo test
+        run: cargo test --target x86_64-pc-windows-msvc
+
+      - name: cargo clippy
+        run: cargo clippy --target x86_64-pc-windows-msvc --all-targets --all-features -- -D warnings
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: nanite-clip-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/nanite-clip.exe

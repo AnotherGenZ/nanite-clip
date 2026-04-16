@@ -1,0 +1,57 @@
+schema_version = 6
+service_id = "s:example"
+active_profile_id = "default"
+characters = []
+rule_definitions = []
+rule_profiles = []
+auto_switch_rules = []
+auto_start_monitoring = false
+start_minimized = false
+minimize_to_tray = false
+clip_naming_template = "{timestamp}_{source}_{character}_{rule}_{score}"
+
+[launch_at_login]
+enabled = false
+provider = "auto"
+
+[manual_clip]
+enabled = false
+hotkey = "Ctrl+Shift+F8"
+duration_secs = 30
+
+[storage_tiering]
+enabled = false
+tier_directory = "/tmp/archive"
+min_age_days = 7
+max_score = 50
+
+[uploads.copyparty]
+enabled = false
+upload_url = ""
+public_base_url = ""
+username = ""
+
+[uploads.youtube]
+enabled = false
+client_id = ""
+privacy_status = "unlisted"
+
+[discord_webhook]
+enabled = false
+min_score = 100
+include_thumbnail = false
+
+[capture]
+backend = "gsr"
+
+[recorder]
+replay_buffer_secs = 300
+save_directory = "/tmp/clips"
+capture_source = "planetside2"
+framerate = 60
+codec = "h264"
+audio_sources = []
+container = "mkv"
+quality = "40000"
+clip_saved_notifications = true
+save_delay_secs = 2
