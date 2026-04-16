@@ -41,6 +41,7 @@ pub struct CaptureCapabilities {
     pub cursor_capture: bool,
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryHint {
     None,
@@ -124,6 +125,7 @@ pub trait CaptureSession: Send {
     fn save_in_progress(&self) -> bool;
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub enum AudioSourceError {
     #[error("gpu-screen-recorder is not installed or not available in PATH")]
@@ -143,6 +145,7 @@ pub enum AudioSourceError {
     WrongBackend { expected: String, actual: String },
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
     #[error("recorder is already running")]

@@ -104,9 +104,9 @@ impl TrayController {
         #[cfg(target_os = "windows")]
         {
             let tray = build_cross_platform_tray(&snapshot)?;
-            return Ok(Self {
+            Ok(Self {
                 backend: TrayBackend::CrossPlatform { tray },
-            });
+            })
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -191,7 +191,7 @@ impl TrayController {
                 }
             }
 
-            return events;
+            events
         }
 
         #[cfg(not(target_os = "windows"))]

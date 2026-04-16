@@ -31,6 +31,7 @@ pub struct CaptureSourcePlan {
     pub backend_hints: BackendHints,
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureTarget {
     X11Window(u32),
@@ -45,6 +46,7 @@ pub struct BackendHints {
     pub restore_portal_session: bool,
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureTargetError {
     #[error("PlanetSide 2 window is not available on X11 yet")]

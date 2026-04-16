@@ -57,8 +57,8 @@ pub struct App {
     toasts: ToastStack,
     rule_engine: RuleEngine,
     process_watcher: Arc<dyn process::GameProcessWatcher>,
-    hotkeys: Arc<Mutex<HotkeyManager>>,
-    tray: Option<Arc<Mutex<TrayController>>>,
+    hotkeys: HotkeyManager,
+    tray: Option<TrayController>,
     main_window_id: Option<window::Id>,
     clip_store: Option<ClipStore>,
     clip_store_notice: Option<String>,
@@ -256,6 +256,18 @@ struct PendingClipDelete {
 type RecorderStartResult =
     Result<Box<dyn crate::capture::CaptureSession>, crate::capture::CaptureError>;
 type RecorderStartSlot = Arc<Mutex<Option<RecorderStartResult>>>;
+
+#[cfg(not(target_os = "windows"))]
+#[allow(clippy::arc_with_non_send_sync)]
+fn share_hotkey_config_result(hotkeys: HotkeyManager) -> Arc<Mutex<HotkeyManager>> {
+    Arc::new(Mutex::new(hotkeys))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn take_hotkey_config_result(hotkeys: Arc<Mutex<HotkeyManager>>) -> HotkeyManager {
+    let mut hotkeys = hotkeys.lock().expect("hotkey manager mutex poisoned");
+    std::mem::replace(&mut *hotkeys, HotkeyManager::disabled())
+}
 
 struct PendingRecorderStart {
     id: u64,
@@ -593,7 +605,7 @@ impl App {
             rule_engine,
             process_watcher,
             event_log: EventLog::new(event_log_retention_secs),
-            hotkeys: Arc::new(Mutex::new(HotkeyManager::disabled())),
+            hotkeys: HotkeyManager::disabled(),
             tray: None,
             main_window_id: None,
             clip_store: None,
@@ -688,7 +700,7 @@ impl App {
         let initial_tray_snapshot = app.tray_snapshot();
         match TrayController::spawn(initial_tray_snapshot) {
             Ok(tray) => {
-                app.tray = Some(Arc::new(Mutex::new(tray)));
+                app.tray = Some(tray);
             }
             Err(error) => {
                 app.push_feedback_toast("Tray", error, true);
@@ -951,11 +963,7 @@ impl App {
                     }
                 }
 
-                let hotkey_events = self
-                    .hotkeys
-                    .lock()
-                    .expect("hotkey manager mutex poisoned")
-                    .drain_events();
+                let hotkey_events = self.hotkeys.drain_events();
                 for event in hotkey_events {
                     match event {
                         HotkeyEvent::Activated => {
@@ -965,10 +973,7 @@ impl App {
                 }
 
                 if let Some(tray) = &self.tray {
-                    let tray_events = tray
-                        .lock()
-                        .expect("tray controller mutex poisoned")
-                        .drain_events();
+                    let tray_events = tray.drain_events();
                     for event in tray_events {
                         match event {
                             TrayEvent::StartMonitoring => {
@@ -1658,7 +1663,7 @@ impl App {
                     return Task::none();
                 }
 
-                self.finish_hotkey_configuration(result);
+                self.finish_hotkey_configuration(result.map(take_hotkey_config_result));
                 Task::none()
             }
         }
@@ -4594,10 +4599,9 @@ impl App {
         #[cfg(target_os = "windows")]
         {
             let result =
-                HotkeyManager::configure_sync(&config, display_server, desktop_environment)
-                    .map(|hotkeys| Arc::new(Mutex::new(hotkeys)));
+                HotkeyManager::configure_sync(&config, display_server, desktop_environment);
             self.finish_hotkey_configuration(result);
-            return Task::none();
+            Task::none()
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -4605,22 +4609,17 @@ impl App {
             async move {
                 HotkeyManager::configure(&config, display_server, desktop_environment)
                     .await
-                    .map(|hotkeys| Arc::new(Mutex::new(hotkeys)))
+                    .map(share_hotkey_config_result)
             },
             move |result| Message::HotkeysConfigured { generation, result },
         )
     }
 
-    fn finish_hotkey_configuration(&mut self, result: Result<Arc<Mutex<HotkeyManager>>, String>) {
+    fn finish_hotkey_configuration(&mut self, result: Result<HotkeyManager, String>) {
         match result {
             Ok(hotkeys) => {
-                let (binding_label, configuration_note) = {
-                    let hotkeys = hotkeys.lock().expect("hotkey manager mutex poisoned");
-                    (
-                        hotkeys.binding_label().map(str::to_string),
-                        hotkeys.configuration_note().map(str::to_string),
-                    )
-                };
+                let binding_label = hotkeys.binding_label().map(str::to_string);
+                let configuration_note = hotkeys.configuration_note().map(str::to_string);
                 self.hotkeys = hotkeys;
                 if self.config.manual_clip.enabled {
                     if let Some(binding_label) = binding_label {
@@ -4635,7 +4634,7 @@ impl App {
             }
             Err(error) => {
                 self.set_settings_feedback(error, false);
-                self.hotkeys = Arc::new(Mutex::new(HotkeyManager::disabled()));
+                self.hotkeys = HotkeyManager::disabled();
             }
         }
     }
@@ -4687,9 +4686,7 @@ impl App {
         let Some(tray) = &self.tray else {
             return Task::none();
         };
-        tray.lock()
-            .expect("tray controller mutex poisoned")
-            .update_snapshot(self.tray_snapshot());
+        tray.update_snapshot(self.tray_snapshot());
         Task::none()
     }
 
@@ -5218,7 +5215,7 @@ mod tests {
             notifications: NotificationCenter::new(),
             toasts: ToastStack::new(),
             process_watcher,
-            hotkeys: Arc::new(Mutex::new(HotkeyManager::disabled())),
+            hotkeys: HotkeyManager::disabled(),
             tray: None,
             main_window_id: None,
             clip_store: None,

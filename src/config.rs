@@ -1052,7 +1052,7 @@ fn default_save_delay_secs() -> u32 {
 fn default_capture_backend() -> String {
     #[cfg(target_os = "windows")]
     {
-        return "obs".into();
+        "obs".into()
     }
 
     #[cfg(not(target_os = "windows"))]

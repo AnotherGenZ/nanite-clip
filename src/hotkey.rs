@@ -167,6 +167,7 @@ impl HotkeyManager {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     pub async fn configure(
         config: &ManualClipConfig,
         display_server: DisplayServer,
