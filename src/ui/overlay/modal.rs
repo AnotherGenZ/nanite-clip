@@ -32,7 +32,7 @@ where
     let backdrop_container: Container<'a, Message> = container(iced::widget::Space::new())
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|theme| backdrop_style(theme));
+        .style(backdrop_style);
 
     let backdrop: Element<'a, Message> = if let Some(msg) = on_dismiss {
         let area: MouseArea<'a, Message> = mouse_area(backdrop_container).on_press(msg);
@@ -49,7 +49,7 @@ where
             right: theme::SPACE.xl,
         })
         .max_width(520.0)
-        .style(|theme| card_style(theme));
+        .style(card_style);
 
     let centered: Container<'a, Message> = container(card)
         .width(Length::Fill)

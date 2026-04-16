@@ -466,10 +466,8 @@ fn background_job_related_clips_label(job: &BackgroundJobRecord) -> String {
 }
 
 fn background_job_detail_label(job: &BackgroundJobRecord, active: bool) -> String {
-    if active {
-        if let Some(progress) = &job.progress {
-            return progress.message.clone();
-        }
+    if active && let Some(progress) = &job.progress {
+        return progress.message.clone();
     }
 
     job.detail

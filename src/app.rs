@@ -253,14 +253,14 @@ struct PendingClipDelete {
     file_size_bytes: Option<u64>,
 }
 
+type RecorderStartResult =
+    Result<Box<dyn crate::capture::CaptureSession>, crate::capture::CaptureError>;
+type RecorderStartSlot = Arc<Mutex<Option<RecorderStartResult>>>;
+
 struct PendingRecorderStart {
     id: u64,
     capture_plan: process::CaptureSourcePlan,
-    result_slot: Arc<
-        Mutex<
-            Option<Result<Box<dyn crate::capture::CaptureSession>, crate::capture::CaptureError>>,
-        >,
-    >,
+    result_slot: RecorderStartSlot,
     abort_handle: iced::task::Handle,
 }
 
@@ -1716,14 +1716,13 @@ impl App {
                     character_id: active,
                     ..
                 } = &self.state
+                    && *active == character_id
                 {
-                    if *active == character_id {
-                        tracing::info!("character {character_id} logged out");
-                        self.state = AppState::WaitingForLogin;
-                        self.rule_engine.reset();
-                        self.honu_session_id = None;
-                        return self.finish_active_session();
-                    }
+                    tracing::info!("character {character_id} logged out");
+                    self.state = AppState::WaitingForLogin;
+                    self.rule_engine.reset();
+                    self.honu_session_id = None;
+                    return self.finish_active_session();
                 }
                 Task::none()
             }
@@ -1781,14 +1780,13 @@ impl App {
         let service_id = self.config.service_id.clone();
         Task::perform(
             async move {
-                if let Some(store) = &store {
-                    if let Some(CharacterOutfitCacheEntry { outfit_id, .. }) = store
+                if let Some(store) = &store
+                    && let Some(CharacterOutfitCacheEntry { outfit_id, .. }) = store
                         .cached_character_outfit(other_character_id)
                         .await
                         .map_err(|error| error.to_string())?
-                    {
-                        return Ok::<Option<u64>, String>(outfit_id);
-                    }
+                {
+                    return Ok::<Option<u64>, String>(outfit_id);
                 }
 
                 if service_id.trim().is_empty() {
@@ -2379,10 +2377,8 @@ impl App {
             self.config.rule_profiles.clone(),
             self.config.active_profile_id.clone(),
         );
-        if persist {
-            if let Err(error) = self.config.save() {
-                tracing::error!("Failed to save config: {error}");
-            }
+        if persist && let Err(error) = self.config.save() {
+            tracing::error!("Failed to save config: {error}");
         }
         self.notify_active_profile_activated();
         let _ = self.sync_tray_snapshot();
@@ -2509,9 +2505,7 @@ impl App {
     }
 
     fn poll_active_clip_capture(&mut self) -> Option<Task<Message>> {
-        let Some(active_capture) = self.active_clip_capture.as_ref() else {
-            return None;
-        };
+        let active_capture = self.active_clip_capture.as_ref()?;
         if self.recorder.save_in_progress() {
             return None;
         }
@@ -4711,7 +4705,7 @@ impl App {
                     changed
                 }
                 ref other @ capture::ObsConnectionStatus::Failed { ref reason } => {
-                    let changed = self.obs_connection_status.as_ref() != Some(&other);
+                    let changed = self.obs_connection_status.as_ref() != Some(other);
                     self.obs_restart_requires_manual_restart = true;
                     self.obs_connection_status = Some(other.clone());
                     if changed {
@@ -5048,7 +5042,10 @@ fn infer_storage_move_retry_target(record: &BackgroundJobRecord) -> Result<Stora
 }
 
 fn main_window_settings() -> window::Settings {
+    #[cfg(target_os = "linux")]
     let mut platform_specific = window::settings::PlatformSpecific::default();
+    #[cfg(not(target_os = "linux"))]
+    let platform_specific = window::settings::PlatformSpecific::default();
     #[cfg(target_os = "linux")]
     {
         platform_specific.application_id = "nanite-clip".into();
@@ -5124,6 +5121,7 @@ fn output_tracks_to_drafts(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::rules::{AutoSwitchCondition, AutoSwitchRule, default_rule_profiles};

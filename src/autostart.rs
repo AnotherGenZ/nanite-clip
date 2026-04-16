@@ -493,6 +493,11 @@ mod tests {
                 selected_provider(&config),
                 SelectedLaunchAtLoginProvider::XdgAutostart
             );
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(
+                selected_provider(&config),
+                SelectedLaunchAtLoginProvider::WindowsStartupFolder
+            );
         } else {
             assert_eq!(
                 selected_provider(&config),

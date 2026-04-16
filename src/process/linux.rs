@@ -107,6 +107,7 @@ pub fn find_ps2_pid() -> Option<u32> {
     None
 }
 
+#[allow(dead_code)]
 pub fn is_process_running(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -179,12 +180,11 @@ fn top_level_windows(
         .get_property(false, root, net_client_list, AtomEnum::WINDOW, 0, u32::MAX)
         .map_err(|e| CaptureTargetError::X11Query(e.to_string()))?
         .reply()
+        && let Some(windows) = reply.value32()
     {
-        if let Some(windows) = reply.value32() {
-            let windows: Vec<u32> = windows.collect();
-            if !windows.is_empty() {
-                return Ok(windows);
-            }
+        let windows: Vec<u32> = windows.collect();
+        if !windows.is_empty() {
+            return Ok(windows);
         }
     }
 

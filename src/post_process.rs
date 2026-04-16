@@ -88,6 +88,7 @@ pub enum PostProcessError {
     #[error(
         "layout mismatch between config and probe: expected {expected} audio streams, found {actual}"
     )]
+    #[allow(dead_code)]
     LayoutMismatch { expected: usize, actual: usize },
     #[error("failed to build ffmpeg filter graph: {0}")]
     FilterGraphBuild(String),
@@ -202,9 +203,10 @@ pub fn run_blocking(
 pub fn needs_post_process(req: &PostProcessRequest, probed: &[ProbedAudioStream]) -> bool {
     req.trim.is_some()
         || (probed.len() >= 2 && req.post_processing.premix.enabled)
-        || (probed.len() >= 1 && req.post_processing.rewrite_track_titles)
+        || (!probed.is_empty() && req.post_processing.rewrite_track_titles)
 }
 
+#[allow(dead_code)]
 pub async fn probe_audio_streams(
     path: PathBuf,
 ) -> Result<Vec<ProbedAudioStream>, PostProcessError> {
@@ -517,7 +519,7 @@ fn build_execution_plan(
                 },
                 gain_db: entry.config.gain_db,
                 muted: entry.config.muted_in_premix,
-                source_kind: audio_source_kind_name(&entry.config),
+                source_kind: audio_source_kind_name(entry.config),
                 source_value: entry.config.kind.config_display_value(),
             });
             preserved_count = index + 1;

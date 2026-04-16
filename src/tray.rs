@@ -1,5 +1,8 @@
+#[cfg(not(target_os = "windows"))]
 use std::sync::mpsc;
+#[cfg(not(target_os = "windows"))]
 use std::thread;
+#[cfg(not(target_os = "windows"))]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -548,6 +551,7 @@ fn prefers_ksni(desktop_environment: DesktopEnvironment) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use super::*;
 
     #[cfg(target_os = "linux")]

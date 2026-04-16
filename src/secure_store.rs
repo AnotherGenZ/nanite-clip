@@ -550,9 +550,13 @@ mod tests {
     #[test]
     fn backend_is_always_selected() {
         let store = SecureStore::new();
-        assert!(matches!(
-            store.backend(),
-            SecureStoreBackend::SecretTool | SecureStoreBackend::LocalFile
-        ));
+        if cfg!(target_os = "windows") {
+            assert!(matches!(store.backend(), SecureStoreBackend::WindowsDpapi));
+        } else {
+            assert!(matches!(
+                store.backend(),
+                SecureStoreBackend::SecretTool | SecureStoreBackend::LocalFile
+            ));
+        }
     }
 }

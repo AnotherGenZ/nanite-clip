@@ -20,6 +20,7 @@ pub struct Recorder {
     config: RecorderConfig,
     session: Option<Box<dyn CaptureSession>>,
     active_capture: Option<CaptureSourcePlan>,
+    #[allow(dead_code)]
     ffmpeg_available: bool,
 }
 
@@ -71,14 +72,17 @@ impl Recorder {
         self.backend.id()
     }
 
+    #[allow(dead_code)]
     pub fn backend_display_name(&self) -> &str {
         self.backend.display_name()
     }
 
+    #[allow(dead_code)]
     pub fn capabilities(&self) -> CaptureCapabilities {
         self.backend.capabilities()
     }
 
+    #[allow(dead_code)]
     pub async fn discover_audio_sources(
         &self,
     ) -> Result<Vec<DiscoveredAudioSource>, AudioSourceError> {
@@ -89,6 +93,7 @@ impl Recorder {
         self.backend.clone()
     }
 
+    #[allow(dead_code)]
     pub fn translate_audio_source(
         &self,
         kind: &crate::config::AudioSourceKind,
@@ -96,6 +101,7 @@ impl Recorder {
         self.backend.validate_audio_source(kind)
     }
 
+    #[allow(dead_code)]
     pub fn has_ffmpeg(&self) -> bool {
         self.ffmpeg_available
     }
@@ -107,6 +113,7 @@ impl Recorder {
         }
     }
 
+    #[allow(dead_code)]
     pub fn spawn_replay_session(
         &self,
         capture: &CaptureSourcePlan,
@@ -128,6 +135,7 @@ impl Recorder {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn start_replay(&mut self, capture: &CaptureSourcePlan) -> Result<(), CaptureError> {
         let session = self.spawn_replay_session(capture)?;
         self.attach_session(capture.clone(), session)
@@ -185,6 +193,7 @@ impl Recorder {
         self.session.is_some()
     }
 
+    #[allow(dead_code)]
     pub fn active_audio_layout(&self) -> &[ResolvedAudioSource] {
         self.session
             .as_ref()

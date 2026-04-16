@@ -13,7 +13,9 @@ pub struct HonuClient {
 pub struct Session {
     pub id: i64,
     #[serde(rename = "characterID")]
+    #[allow(dead_code)]
     pub character_id: String,
+    #[allow(dead_code)]
     pub start: String,
     pub end: Option<String>,
 }

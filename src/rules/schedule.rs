@@ -433,14 +433,13 @@ impl CronSchedule {
 
         let day_of_month_matches = self.day_of_month.matches(local.day());
         let day_of_week_matches = self.day_of_week.matches_weekday(local.weekday());
-        let date_matches = match (self.day_of_month.wildcard, self.day_of_week.wildcard) {
+
+        match (self.day_of_month.wildcard, self.day_of_week.wildcard) {
             (true, true) => true,
             (true, false) => day_of_week_matches,
             (false, true) => day_of_month_matches,
             (false, false) => day_of_month_matches || day_of_week_matches,
-        };
-
-        date_matches
+        }
     }
 }
 

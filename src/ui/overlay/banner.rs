@@ -105,7 +105,7 @@ impl<'a, Message: 'a + Clone> BannerBuilder<'a, Message> {
                     right: space.xs,
                 })
                 .on_press(message)
-                .style(|theme, status| dismiss_style(theme, status));
+                .style(dismiss_style);
             inner = inner.push(close);
         }
 

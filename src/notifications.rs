@@ -3,6 +3,7 @@ use std::process::{Child, Command, Stdio};
 
 use crate::rules::ClipLength;
 
+#[cfg(target_os = "linux")]
 const NOTIFICATION_TIMEOUT_SECS: &str = "3.0";
 const REPLAY_ICON: &str = "replay";
 
@@ -82,10 +83,10 @@ impl NotificationCenter {
             return;
         };
 
-        if let Err(error) = child.kill() {
-            if error.kind() != io::ErrorKind::InvalidInput {
-                tracing::warn!("Failed to stop previous gsr-notify process: {error}");
-            }
+        if let Err(error) = child.kill()
+            && error.kind() != io::ErrorKind::InvalidInput
+        {
+            tracing::warn!("Failed to stop previous gsr-notify process: {error}");
         }
 
         if let Err(error) = child.wait() {

@@ -139,10 +139,12 @@ pub enum BackgroundJobSuccess {
     },
     Montage {
         output_path: String,
+        #[allow(dead_code)]
         source_clip_ids: Vec<i64>,
         message: String,
     },
     DiscordWebhook {
+        #[allow(dead_code)]
         clip_id: i64,
         message: String,
     },
@@ -173,6 +175,7 @@ pub struct BackgroundJobContext {
 }
 
 impl BackgroundJobContext {
+    #[allow(dead_code)]
     pub fn id(&self) -> BackgroundJobId {
         self.id
     }
@@ -616,11 +619,11 @@ mod tests {
         let mut saw_cancelled = false;
         for _ in 0..20 {
             for notification in manager.drain_notifications() {
-                if let BackgroundJobNotification::Finished { record, .. } = notification {
-                    if record.id == id {
-                        saw_cancelled = true;
-                        assert_eq!(record.state, BackgroundJobState::Cancelled);
-                    }
+                if let BackgroundJobNotification::Finished { record, .. } = notification
+                    && record.id == id
+                {
+                    saw_cancelled = true;
+                    assert_eq!(record.state, BackgroundJobState::Cancelled);
                 }
             }
             if saw_cancelled {

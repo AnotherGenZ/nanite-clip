@@ -31,6 +31,7 @@ use crate::platform_service::{
 };
 use crate::process::{DesktopEnvironment, DisplayServer};
 
+#[cfg(target_os = "linux")]
 const MANUAL_CLIP_SHORTCUT_ID: &str = "manual_clip_save";
 #[cfg(target_os = "linux")]
 const KDE_KGLOBALACCEL_SERVICE: &str = "org.kde.kglobalaccel";
@@ -682,6 +683,7 @@ fn kde_key_code(key: HotKeyCode) -> Result<i32, String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn kde_shortcut_from_sequence(sequence: &[i32]) -> Option<String> {
     if sequence.len() != 1 {
         return None;
@@ -1126,6 +1128,8 @@ async fn clear_plasma_portal_shortcut_conflict() -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
+#[cfg(test)]
 fn env_flag_enabled(value: Option<String>) -> bool {
     matches!(
         value.as_deref().map(str::trim),

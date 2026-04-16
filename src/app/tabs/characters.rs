@@ -220,17 +220,17 @@ fn character_card<'a>(
         ));
     }
 
-    if let Some(faction_id) = character.faction_id {
-        if let Some(logo) = faction_logo(faction_id) {
-            content = content.push(with_tooltip(
-                image(logo)
-                    .width(24)
-                    .height(24)
-                    .content_fit(ContentFit::Contain)
-                    .into(),
-                format!("Faction {faction_id}: {}", census::faction_name(faction_id)),
-            ));
-        }
+    if let Some(faction_id) = character.faction_id
+        && let Some(logo) = faction_logo(faction_id)
+    {
+        content = content.push(with_tooltip(
+            image(logo)
+                .width(24)
+                .height(24)
+                .content_fit(ContentFit::Contain)
+                .into(),
+            format!("Faction {faction_id}: {}", census::faction_name(faction_id)),
+        ));
     }
 
     content = content.push(Space::new().width(Length::Fill));

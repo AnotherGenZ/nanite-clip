@@ -14,6 +14,7 @@ mod hotkey;
 mod launcher;
 mod montage;
 mod notifications;
+#[cfg(target_os = "linux")]
 mod platform_service;
 mod post_process;
 mod process;

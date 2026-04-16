@@ -280,7 +280,7 @@ where
                 right: space.xs,
             })
             .on_press(on_toggle_expand(id))
-            .style(|theme, status| expand_button_style(theme, status));
+            .style(expand_button_style);
             body = body.push(toggle);
         }
     }
@@ -293,7 +293,7 @@ where
             right: space.xs,
         })
         .on_press(on_dismiss(id))
-        .style(|theme, status| dismiss_button_style(theme, status));
+        .style(dismiss_button_style);
 
     let content: Row<'a, Message> = row![body, close]
         .spacing(space.md)

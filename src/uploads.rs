@@ -25,6 +25,7 @@ pub struct UploadRequest {
 
 #[derive(Debug, Clone)]
 pub struct UploadCompletion {
+    #[allow(dead_code)]
     pub provider: UploadProvider,
     pub provider_label: String,
     pub external_id: Option<String>,
@@ -445,10 +446,10 @@ fn exchange_youtube_code(
         ("grant_type", "authorization_code".into()),
         ("redirect_uri", redirect_uri.to_string()),
     ];
-    if let Some(client_secret) = client.client_secret {
-        if !client_secret.trim().is_empty() {
-            params.push(("client_secret", client_secret));
-        }
+    if let Some(client_secret) = client.client_secret
+        && !client_secret.trim().is_empty()
+    {
+        params.push(("client_secret", client_secret));
     }
 
     let client = reqwest::blocking::Client::new();
@@ -503,10 +504,10 @@ async fn refresh_youtube_access_token(
         ("grant_type", "refresh_token".into()),
         ("refresh_token", credentials.refresh_token.clone()),
     ];
-    if let Some(client_secret) = &credentials.client_secret {
-        if !client_secret.trim().is_empty() {
-            params.push(("client_secret", client_secret.clone()));
-        }
+    if let Some(client_secret) = &credentials.client_secret
+        && !client_secret.trim().is_empty()
+    {
+        params.push(("client_secret", client_secret.clone()));
     }
 
     let response = reqwest::Client::new()
@@ -763,11 +764,7 @@ fn join_copyparty_url(base_url: &str, suffix: &str) -> Result<String, String> {
     let mut path = url.path().trim_end_matches('/').to_string();
     let clean_suffix = suffix.trim().trim_start_matches('/');
     if !clean_suffix.is_empty() {
-        if path.is_empty() {
-            path.push('/');
-        } else {
-            path.push('/');
-        }
+        path.push('/');
         path.push_str(clean_suffix);
         url.set_path(&path);
     }
@@ -779,7 +776,7 @@ fn copyparty_external_id_from_url(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     parsed
         .path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
         .map(|segment| segment.to_string())
 }
 

@@ -168,7 +168,7 @@ struct DiscordWebhookPayload {
 
 impl DiscordWebhookPayload {
     fn from_request(request: &DiscordWebhookRequest, has_thumbnail: bool) -> Self {
-        let description = vec![
+        let description = [
             format!("Profile: {}", request.profile_name),
             format!("Rule: {}", request.rule_name),
             format!("Character: {}", request.character_name),

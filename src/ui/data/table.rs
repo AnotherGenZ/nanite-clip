@@ -156,7 +156,7 @@ fn row_view<'a, Message: Clone + 'a>(
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
-    for (col, cell) in columns.iter().zip(cells.into_iter()) {
+    for (col, cell) in columns.iter().zip(cells) {
         let wrapped = container(cell)
             .padding(Padding {
                 top: space.sm,

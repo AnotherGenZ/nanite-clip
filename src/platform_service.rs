@@ -388,6 +388,9 @@ mod tests {
     #[test]
     fn bundled_paths_include_sibling_and_lib_locations() {
         let paths = bundled_platform_service_paths();
+        let expected_lib_path = std::path::Path::new("lib")
+            .join("nanite-clip")
+            .join(PLATFORM_SERVICE_BINARY_NAME);
 
         assert!(paths.len() >= 2);
         assert!(
@@ -395,9 +398,6 @@ mod tests {
                 .iter()
                 .any(|path| path.ends_with("nanite-clip-platform-service"))
         );
-        assert!(paths.iter().any(|path| {
-            path.to_string_lossy()
-                .contains("/lib/nanite-clip/nanite-clip-platform-service")
-        }));
+        assert!(paths.iter().any(|path| path.ends_with(&expected_lib_path)));
     }
 }

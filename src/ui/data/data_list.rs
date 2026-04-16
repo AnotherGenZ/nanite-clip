@@ -164,7 +164,7 @@ fn outer_style(theme: &iced::Theme) -> iced::widget::container::Style {
     }
 }
 
-fn row_style(theme: &iced::Theme, is_last: bool) -> iced::widget::container::Style {
+fn row_style(theme: &iced::Theme, _is_last: bool) -> iced::widget::container::Style {
     let tokens: &Tokens = theme::tokens_for(theme);
     let c = &tokens.color;
     iced::widget::container::Style {
@@ -172,7 +172,7 @@ fn row_style(theme: &iced::Theme, is_last: bool) -> iced::widget::container::Sty
         background: None,
         border: iced::border::Border {
             color: c.border,
-            width: if is_last { 0.0 } else { 0.0 },
+            width: 0.0,
             radius: 0.0.into(),
         },
         shadow: Default::default(),

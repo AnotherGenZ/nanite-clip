@@ -536,6 +536,7 @@ enum ClickAction {
     Day,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn histogram_panel(
     title: &str,
     description: &str,
@@ -654,6 +655,7 @@ fn histogram_header_themed(
         .into()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn histogram_row_themed(
     data: &CountByLabel,
     max_count: u32,
@@ -1018,7 +1020,7 @@ fn histogram_bar_fill_portion(count: u32, max_count: u32) -> u16 {
 }
 
 fn table_body_height(row_count: usize) -> f32 {
-    let visible_rows = row_count.min(MAX_VISIBLE_ROWS).max(1);
+    let visible_rows = row_count.clamp(1, MAX_VISIBLE_ROWS);
     visible_rows as f32 * STAT_ROW_HEIGHT
 }
 

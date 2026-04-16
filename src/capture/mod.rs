@@ -29,6 +29,7 @@ pub struct DiscoveredAudioSource {
     pub available: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CaptureCapabilities {
     pub per_app_audio: bool,
@@ -86,6 +87,7 @@ pub enum ObsConnectionStatus {
     },
 }
 
+#[allow(dead_code)]
 pub trait CaptureBackend: Send + Sync {
     fn id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
@@ -116,6 +118,7 @@ pub trait CaptureSession: Send {
     fn save_clip(&mut self, length: ClipLength) -> Result<(), CaptureError>;
     fn poll_results(&mut self) -> Vec<SavePollResult>;
     fn stop(&mut self) -> Result<(), CaptureError>;
+    #[allow(dead_code)]
     fn active_audio_layout(&self) -> &[ResolvedAudioSource];
     fn is_running(&mut self) -> bool;
     fn save_in_progress(&self) -> bool;

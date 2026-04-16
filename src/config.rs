@@ -237,7 +237,7 @@ pub struct StorageTieringConfig {
     pub max_score: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct UploadsConfig {
     #[serde(default, alias = "streamable")]
     pub copyparty: CopypartyUploadConfig,
@@ -448,15 +448,6 @@ impl Default for StorageTieringConfig {
             tier_directory: default_storage_tiering_directory(),
             min_age_days: default_storage_tiering_min_age_days(),
             max_score: default_storage_tiering_max_score(),
-        }
-    }
-}
-
-impl Default for UploadsConfig {
-    fn default() -> Self {
-        Self {
-            copyparty: CopypartyUploadConfig::default(),
-            youtube: YouTubeUploadConfig::default(),
         }
     }
 }
@@ -756,9 +747,7 @@ impl Config {
 
 impl LaunchAtLoginConfig {
     pub fn normalize(&mut self) {
-        if !self.enabled && self.provider == LaunchAtLoginProvider::Auto {
-            return;
-        }
+        if !self.enabled && self.provider == LaunchAtLoginProvider::Auto {}
     }
 }
 
@@ -825,6 +814,7 @@ where
 }
 
 impl RecorderConfig {
+    #[allow(dead_code)]
     pub fn audio_sources(&self) -> &[AudioSourceConfig] {
         &self.audio_sources
     }
@@ -1459,6 +1449,7 @@ struct LegacySequenceStep {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

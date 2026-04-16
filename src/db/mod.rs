@@ -31,7 +31,8 @@ const INTERRUPTED_BACKGROUND_JOB_DETAIL: &str =
 mod entities;
 mod migrations;
 
-mod db {
+#[allow(dead_code)]
+mod primitives {
     use super::*;
     use std::ops::{Deref, DerefMut};
 
@@ -396,7 +397,7 @@ mod db {
 
 #[derive(Clone)]
 pub struct ClipStore {
-    pool: db::Pool,
+    pool: primitives::Pool,
     database_path: Option<PathBuf>,
     startup_notice: Option<String>,
 }
@@ -665,6 +666,7 @@ pub enum PostProcessStatus {
 }
 
 impl PostProcessStatus {
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NotRequired => "NotRequired",
@@ -780,6 +782,7 @@ impl ClipUploadState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ClipUploadRecord {
     pub id: i64,
     pub provider: UploadProvider,
@@ -803,6 +806,7 @@ pub struct ClipUploadDraft {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MontageRecord {
     pub id: i64,
     pub output_path: String,
@@ -885,7 +889,7 @@ impl ClipStore {
             std::fs::create_dir_all(parent)?;
         }
 
-        let pool = db::connect_at(&path, 4).await?;
+        let pool = primitives::connect_at(&path, 4).await?;
 
         let store = Self {
             pool,
@@ -899,7 +903,7 @@ impl ClipStore {
 
     #[cfg(test)]
     pub(crate) async fn open_in_memory() -> Result<Self, ClipStoreError> {
-        let pool = db::connect_in_memory(1).await?;
+        let pool = primitives::connect_in_memory(1).await?;
         let store = Self {
             pool,
             database_path: None,
@@ -912,7 +916,7 @@ impl ClipStore {
     pub async fn insert_clip(&self, clip: ClipDraft) -> Result<i64, ClipStoreError> {
         let clip_start_ms = clip.clip_start_at.timestamp_millis();
         let clip_end_ms = clip.clip_end_at.timestamp_millis();
-        let mut tx = db::begin(&self.pool).await?;
+        let tx = primitives::begin(&self.pool).await?;
 
         let inserted = entities::clips::ActiveModel {
             id: NotSet,
@@ -935,7 +939,7 @@ impl ClipStore {
             post_process_status: Set(entities::PostProcessStatus::NotRequired),
             post_process_error: Set(None),
         }
-        .insert(&mut *tx)
+        .insert(&*tx)
         .await?;
         let clip_id = inserted.id;
 
@@ -952,7 +956,7 @@ impl ClipStore {
                 })
                 .collect::<Vec<_>>();
             entities::clip_events::Entity::insert_many(event_models)
-                .exec(&mut *tx)
+                .exec(&*tx)
                 .await?;
         }
 
@@ -980,7 +984,7 @@ impl ClipStore {
                 })
                 .collect::<Vec<_>>();
             entities::clip_raw_events::Entity::insert_many(raw_event_models)
-                .exec(&mut *tx)
+                .exec(&*tx)
                 .await?;
         }
 
@@ -1002,7 +1006,7 @@ impl ClipStore {
                     .do_nothing()
                     .to_owned(),
                 )
-                .exec(&mut *tx)
+                .exec(&*tx)
                 .await?;
         }
 
@@ -1010,7 +1014,7 @@ impl ClipStore {
             .filter(entities::clips::Column::Id.ne(clip_id))
             .filter(entities::clips::Column::ClipEndTs.gt(clip_start_ms))
             .filter(entities::clips::Column::ClipStartTs.lt(clip_end_ms))
-            .all(&mut *tx)
+            .all(&*tx)
             .await?;
 
         for other_clip in overlapping_clips {
@@ -1043,7 +1047,7 @@ impl ClipStore {
                 ])
                 .to_owned(),
             )
-            .exec(&mut *tx)
+            .exec(&*tx)
             .await?;
         }
 
@@ -1322,7 +1326,7 @@ impl ClipStore {
                 ),
                 Order::Asc,
             );
-        let target_rows = db::fetch_all_stmt(&target_query, &self.pool).await?;
+        let target_rows = primitives::fetch_all_stmt(&target_query, &self.pool).await?;
 
         let weapon_lookup = Alias::new("weapon_lookup");
         let mut weapon_query = Query::select();
@@ -1367,7 +1371,7 @@ impl ClipStore {
                 ),
                 Order::Asc,
             );
-        let weapon_rows = db::fetch_all_stmt(&weapon_query, &self.pool).await?;
+        let weapon_rows = primitives::fetch_all_stmt(&weapon_query, &self.pool).await?;
 
         let mut alert_query = Query::select();
         alert_query
@@ -1378,7 +1382,7 @@ impl ClipStore {
                 Expr::cust("LOWER(\"alert_instances\".\"label\")"),
                 Order::Asc,
             );
-        let alert_rows = db::fetch_all_stmt(&alert_query, &self.pool).await?;
+        let alert_rows = primitives::fetch_all_stmt(&alert_query, &self.pool).await?;
 
         Ok(ClipFilterOptions {
             targets: read_string_option_rows(target_rows)?,
@@ -1678,7 +1682,7 @@ impl ClipStore {
         if let Some(cond) = &time_cond {
             total_query.cond_where(cond.clone());
         }
-        let total_row = db::fetch_one_stmt(&total_query, &self.pool).await?;
+        let total_row = primitives::fetch_one_stmt(&total_query, &self.pool).await?;
 
         let total_clips = total_row.try_get::<i64>("clip_count")? as u32;
         let total_duration_secs = total_row.try_get::<i64>("total_duration_secs")? as u64;
@@ -1702,7 +1706,7 @@ impl ClipStore {
             .order_by(Alias::new("label"), Order::Desc)
             .limit(30);
         let clips_per_day =
-            read_count_rows(db::fetch_all_stmt(&clips_per_day_query, &self.pool).await?)?;
+            read_count_rows(primitives::fetch_all_stmt(&clips_per_day_query, &self.pool).await?)?;
 
         let mut clips_per_rule_query = Query::select();
         clips_per_rule_query
@@ -1721,7 +1725,7 @@ impl ClipStore {
             .order_by(Alias::new("label"), Order::Asc)
             .limit(10);
         let clips_per_rule =
-            read_count_rows(db::fetch_all_stmt(&clips_per_rule_query, &self.pool).await?)?;
+            read_count_rows(primitives::fetch_all_stmt(&clips_per_rule_query, &self.pool).await?)?;
 
         let mut score_distribution_query = Query::select();
         score_distribution_query
@@ -1737,8 +1741,9 @@ impl ClipStore {
         score_distribution_query
             .group_by_columns([Alias::new("label")])
             .order_by_expr(Expr::cust("(\"score\" / 10)"), Order::Asc);
-        let score_distribution =
-            read_count_rows(db::fetch_all_stmt(&score_distribution_query, &self.pool).await?)?;
+        let score_distribution = read_count_rows(
+            primitives::fetch_all_stmt(&score_distribution_query, &self.pool).await?,
+        )?;
 
         let facility_lookup = Alias::new("facility_lookup");
         let mut top_bases_query = Query::select();
@@ -1785,7 +1790,7 @@ impl ClipStore {
             .order_by(Alias::new("count"), Order::Desc)
             .order_by(Alias::new("label"), Order::Asc)
             .limit(10);
-        let top_bases_rows = db::fetch_all_stmt(&top_bases_query, &self.pool).await?;
+        let top_bases_rows = primitives::fetch_all_stmt(&top_bases_query, &self.pool).await?;
 
         // For clip_raw_events queries, join to clips when a time filter is active.
         let raw_event_time_cond = since_ts.map(|ts| {
@@ -1850,7 +1855,7 @@ impl ClipStore {
             .order_by(Alias::new("label"), Order::Asc)
             .limit(10);
         let top_weapons =
-            read_count_rows(db::fetch_all_stmt(&top_weapons_query, &self.pool).await?)?;
+            read_count_rows(primitives::fetch_all_stmt(&top_weapons_query, &self.pool).await?)?;
 
         let character_lookup = Alias::new("character_lookup");
         let mut top_targets_query = Query::select();
@@ -1901,7 +1906,7 @@ impl ClipStore {
             .order_by(Alias::new("label"), Order::Asc)
             .limit(10);
         let top_targets =
-            read_count_rows(db::fetch_all_stmt(&top_targets_query, &self.pool).await?)?;
+            read_count_rows(primitives::fetch_all_stmt(&top_targets_query, &self.pool).await?)?;
 
         let mut raw_event_kinds_query = Query::select();
         raw_event_kinds_query
@@ -1926,7 +1931,7 @@ impl ClipStore {
             .order_by(Alias::new("label"), Order::Asc)
             .limit(10);
         let raw_event_kinds =
-            read_count_rows(db::fetch_all_stmt(&raw_event_kinds_query, &self.pool).await?)?;
+            read_count_rows(primitives::fetch_all_stmt(&raw_event_kinds_query, &self.pool).await?)?;
 
         Ok(ClipStatsSnapshot {
             total_clips,
@@ -1959,7 +1964,7 @@ impl ClipStore {
             )
             .from(entities::clips::Entity)
             .cond_where(entities::clips::Column::SessionId.eq(session_id));
-        let summary_row = db::fetch_one_stmt(&summary_query, &self.pool).await?;
+        let summary_row = primitives::fetch_one_stmt(&summary_query, &self.pool).await?;
 
         let top_clip = entities::clips::Entity::find()
             .filter(entities::clips::Column::SessionId.eq(session_id))
@@ -1992,7 +1997,7 @@ impl ClipStore {
             .order_by(Alias::new("count"), Order::Desc)
             .order_by(Alias::new("label"), Order::Asc);
         let rule_breakdown =
-            read_count_rows(db::fetch_all_stmt(&rule_breakdown_query, &self.pool).await?)?;
+            read_count_rows(primitives::fetch_all_stmt(&rule_breakdown_query, &self.pool).await?)?;
 
         let facility_lookup = Alias::new("facility_lookup");
         let mut base_breakdown_query = Query::select();
@@ -2036,8 +2041,9 @@ impl ClipStore {
             .order_by(Alias::new("count"), Order::Desc)
             .order_by(Alias::new("label"), Order::Asc)
             .limit(5);
-        let base_breakdown =
-            read_base_count_rows(db::fetch_all_stmt(&base_breakdown_query, &self.pool).await?)?;
+        let base_breakdown = read_base_count_rows(
+            primitives::fetch_all_stmt(&base_breakdown_query, &self.pool).await?,
+        )?;
 
         Ok(SessionSummary {
             session_id: session_id.to_string(),
@@ -2087,7 +2093,7 @@ impl ClipStore {
             .order_by(entities::lookup_cache::Column::ResolvedTs, Order::Desc)
             .limit(1);
 
-        match db::fetch_optional_stmt(&query, &self.pool).await? {
+        match primitives::fetch_optional_stmt(&query, &self.pool).await? {
             Some(row) => Ok(Some((
                 row.try_get("lookup_id")?,
                 row.try_get("display_name")?,
@@ -2211,15 +2217,15 @@ impl ClipStore {
         &self,
         references: &[WeaponReferenceCacheEntry],
     ) -> Result<(), ClipStoreError> {
-        let mut tx = db::begin(&self.pool).await?;
+        let tx = primitives::begin(&self.pool).await?;
         let resolved_ts = Utc::now().timestamp_millis();
 
         entities::weapon_reference_cache::Entity::delete_many()
-            .exec(&mut *tx)
+            .exec(&*tx)
             .await?;
         entities::lookup_cache::Entity::delete_many()
             .filter(entities::lookup_cache::Column::LookupKind.eq(LookupKind::Weapon.as_str()))
-            .exec(&mut *tx)
+            .exec(&*tx)
             .await?;
 
         if !references.is_empty() {
@@ -2236,7 +2242,7 @@ impl ClipStore {
                 })
                 .collect::<Vec<_>>();
             entities::weapon_reference_cache::Entity::insert_many(weapon_models)
-                .exec(&mut *tx)
+                .exec(&*tx)
                 .await?;
 
             let lookup_models = references
@@ -2260,7 +2266,7 @@ impl ClipStore {
                     ])
                     .to_owned(),
                 )
-                .exec(&mut *tx)
+                .exec(&*tx)
                 .await?;
         }
 
@@ -2561,35 +2567,32 @@ impl ClipStore {
 
         if job.kind == BackgroundJobKind::PostProcess.as_str() {
             let related_clip_ids: Vec<i64> = serde_json::from_str(&job.related_clip_ids_json)?;
-            if let Some(clip_id) = related_clip_ids.first().copied() {
-                if let Some(clip) = entities::clips::Entity::find_by_id(clip_id)
+            if let Some(clip_id) = related_clip_ids.first().copied()
+                && let Some(clip) = entities::clips::Entity::find_by_id(clip_id)
                     .one(&self.pool)
                     .await?
-                {
-                    let recovered_state = PostProcessStatus::from_entity(clip.post_process_status);
-                    match recovered_state {
-                        PostProcessStatus::Completed => {
-                            model.state = Set(BackgroundJobState::Succeeded.as_str().to_string());
-                            model.detail =
-                                Set(Some("Audio post-processing completed.".to_string()));
-                            return Ok(model);
-                        }
-                        PostProcessStatus::NotRequired => {
-                            model.state = Set(BackgroundJobState::Succeeded.as_str().to_string());
-                            model.detail =
-                                Set(Some("Audio post-processing was not required.".to_string()));
-                            return Ok(model);
-                        }
-                        PostProcessStatus::Failed => {
-                            model.state = Set(BackgroundJobState::Failed.as_str().to_string());
-                            model.detail =
-                                Set(Some(clip.post_process_error.unwrap_or_else(|| {
-                                    interrupted_background_job_detail(job.detail.clone())
-                                })));
-                            return Ok(model);
-                        }
-                        PostProcessStatus::Pending | PostProcessStatus::Legacy => {}
+            {
+                let recovered_state = PostProcessStatus::from_entity(clip.post_process_status);
+                match recovered_state {
+                    PostProcessStatus::Completed => {
+                        model.state = Set(BackgroundJobState::Succeeded.as_str().to_string());
+                        model.detail = Set(Some("Audio post-processing completed.".to_string()));
+                        return Ok(model);
                     }
+                    PostProcessStatus::NotRequired => {
+                        model.state = Set(BackgroundJobState::Succeeded.as_str().to_string());
+                        model.detail =
+                            Set(Some("Audio post-processing was not required.".to_string()));
+                        return Ok(model);
+                    }
+                    PostProcessStatus::Failed => {
+                        model.state = Set(BackgroundJobState::Failed.as_str().to_string());
+                        model.detail = Set(Some(clip.post_process_error.unwrap_or_else(|| {
+                            interrupted_background_job_detail(job.detail.clone())
+                        })));
+                        return Ok(model);
+                    }
+                    PostProcessStatus::Pending | PostProcessStatus::Legacy => {}
                 }
             }
         }
@@ -2611,14 +2614,14 @@ impl ClipStore {
         output_path: &str,
         source_clip_ids: &[i64],
     ) -> Result<i64, ClipStoreError> {
-        let mut tx = db::begin(&self.pool).await?;
+        let tx = primitives::begin(&self.pool).await?;
         let created_ts = Utc::now().timestamp_millis();
         let montage = entities::montages::ActiveModel {
             id: NotSet,
             output_path: Set(output_path.to_string()),
             created_ts: Set(created_ts),
         }
-        .insert(&mut *tx)
+        .insert(&*tx)
         .await?;
 
         if !source_clip_ids.is_empty() {
@@ -2632,7 +2635,7 @@ impl ClipStore {
                 })
                 .collect::<Vec<_>>();
             entities::montage_clips::Entity::insert_many(links)
-                .exec(&mut *tx)
+                .exec(&*tx)
                 .await?;
         }
 
@@ -2688,6 +2691,7 @@ impl ClipStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn load_audio_tracks(
         &self,
         clip_id: i64,
@@ -2765,6 +2769,7 @@ impl ClipStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn database_path(&self) -> Option<&Path> {
         self.database_path.as_deref()
     }
@@ -2971,7 +2976,7 @@ impl ClipStore {
             return Ok(None);
         }
 
-        let current_version = db::query("PRAGMA user_version")
+        let current_version = primitives::query("PRAGMA user_version")
             .fetch_one(&self.pool)
             .await?
             .try_get_at::<i64>(0)?;
@@ -2984,16 +2989,15 @@ impl ClipStore {
         let requires_backup = legacy_state.pending_migrations() > 0;
         let mut startup_notice = None;
 
-        if requires_backup {
-            if let Some(backup_path) = self
+        if requires_backup
+            && let Some(backup_path) = self
                 .create_pre_migration_backup(current_version, CLIP_STORE_SCHEMA_VERSION)
                 .await?
-            {
-                startup_notice = Some(format!(
-                    "Clip database migrated to schema v{CLIP_STORE_SCHEMA_VERSION}. A backup was created at {} before the migration ran.",
-                    backup_path.display()
-                ));
-            }
+        {
+            startup_notice = Some(format!(
+                "Clip database migrated to schema v{CLIP_STORE_SCHEMA_VERSION}. A backup was created at {} before the migration ran.",
+                backup_path.display()
+            ));
         }
 
         migrations::reconcile_migration_history(&self.pool, legacy_state).await?;
@@ -3010,11 +3014,9 @@ impl ClipStore {
     }
 
     async fn set_schema_version(&self) -> Result<(), ClipStoreError> {
-        db::query(&format!(
-            "PRAGMA user_version = {CLIP_STORE_SCHEMA_VERSION}"
-        ))
-        .execute(&self.pool)
-        .await?;
+        primitives::query(format!("PRAGMA user_version = {CLIP_STORE_SCHEMA_VERSION}"))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -3063,10 +3065,10 @@ impl ClipStore {
     async fn write_sqlite_backup(&self, destination: &Path) -> Result<(), ClipStoreError> {
         let escaped = destination.display().to_string().replace('\'', "''");
 
-        db::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        primitives::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await?;
-        db::query(&format!("VACUUM INTO '{escaped}'"))
+        primitives::query(format!("VACUUM INTO '{escaped}'"))
             .execute(&self.pool)
             .await?;
 
@@ -3107,6 +3109,7 @@ where
     table
 }
 
+#[allow(dead_code)]
 fn entity_indexes<E>(entity: E) -> Vec<IndexCreateStatement>
 where
     E: EntityTrait,
@@ -3449,7 +3452,8 @@ fn append_csv_row(output: &mut String, columns: &[String]) {
     output.push('\n');
 }
 
-fn rows_to_clip_records(rows: Vec<db::Row>) -> Result<Vec<ClipRecord>, ClipStoreError> {
+#[allow(dead_code)]
+fn rows_to_clip_records(rows: Vec<primitives::Row>) -> Result<Vec<ClipRecord>, ClipStoreError> {
     let mut records = Vec::new();
 
     for row in rows {
@@ -3505,7 +3509,8 @@ fn rows_to_clip_records(rows: Vec<db::Row>) -> Result<Vec<ClipRecord>, ClipStore
     Ok(records)
 }
 
-fn rows_to_clip_alerts(rows: Vec<db::Row>) -> Result<Vec<ClipAlertRecord>, ClipStoreError> {
+#[allow(dead_code)]
+fn rows_to_clip_alerts(rows: Vec<primitives::Row>) -> Result<Vec<ClipAlertRecord>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
             Ok(ClipAlertRecord {
@@ -3526,7 +3531,10 @@ fn rows_to_clip_alerts(rows: Vec<db::Row>) -> Result<Vec<ClipAlertRecord>, ClipS
         .collect()
 }
 
-fn rows_to_clip_overlaps(rows: Vec<db::Row>) -> Result<Vec<ClipOverlapRecord>, ClipStoreError> {
+#[allow(dead_code)]
+fn rows_to_clip_overlaps(
+    rows: Vec<primitives::Row>,
+) -> Result<Vec<ClipOverlapRecord>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
             Ok(ClipOverlapRecord {
@@ -3543,7 +3551,10 @@ fn rows_to_clip_overlaps(rows: Vec<db::Row>) -> Result<Vec<ClipOverlapRecord>, C
         .collect()
 }
 
-fn rows_to_clip_uploads(rows: Vec<db::Row>) -> Result<Vec<ClipUploadRecord>, ClipStoreError> {
+#[allow(dead_code)]
+fn rows_to_clip_uploads(
+    rows: Vec<primitives::Row>,
+) -> Result<Vec<ClipUploadRecord>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
             Ok(ClipUploadRecord {
@@ -3564,7 +3575,10 @@ fn rows_to_clip_uploads(rows: Vec<db::Row>) -> Result<Vec<ClipUploadRecord>, Cli
         .collect()
 }
 
-fn rows_to_background_jobs(rows: Vec<db::Row>) -> Result<Vec<BackgroundJobRecord>, ClipStoreError> {
+#[allow(dead_code)]
+fn rows_to_background_jobs(
+    rows: Vec<primitives::Row>,
+) -> Result<Vec<BackgroundJobRecord>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
             let related_clip_ids_json: String = row.try_get("related_clip_ids_json")?;
@@ -3648,8 +3662,9 @@ fn interrupted_background_job_detail(existing_detail: Option<String>) -> String 
     }
 }
 
+#[allow(dead_code)]
 fn raw_rows_to_clip_raw_events(
-    rows: Vec<db::Row>,
+    rows: Vec<primitives::Row>,
 ) -> Result<Vec<ClipRawEventRecord>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
@@ -3694,7 +3709,7 @@ fn raw_rows_to_clip_raw_events(
         .collect()
 }
 
-fn read_count_rows(rows: Vec<db::Row>) -> Result<Vec<CountByLabel>, ClipStoreError> {
+fn read_count_rows(rows: Vec<primitives::Row>) -> Result<Vec<CountByLabel>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
             Ok(CountByLabel {
@@ -3705,7 +3720,7 @@ fn read_count_rows(rows: Vec<db::Row>) -> Result<Vec<CountByLabel>, ClipStoreErr
         .collect()
 }
 
-fn read_base_count_rows(rows: Vec<db::Row>) -> Result<Vec<BaseCount>, ClipStoreError> {
+fn read_base_count_rows(rows: Vec<primitives::Row>) -> Result<Vec<BaseCount>, ClipStoreError> {
     rows.into_iter()
         .map(|row| {
             Ok(BaseCount {
@@ -3719,7 +3734,7 @@ fn read_base_count_rows(rows: Vec<db::Row>) -> Result<Vec<BaseCount>, ClipStoreE
         .collect()
 }
 
-fn read_string_option_rows(rows: Vec<db::Row>) -> Result<Vec<String>, ClipStoreError> {
+fn read_string_option_rows(rows: Vec<primitives::Row>) -> Result<Vec<String>, ClipStoreError> {
     rows.into_iter()
         .map(|row| row.try_get::<String>("label").map_err(ClipStoreError::from))
         .collect()
@@ -3740,7 +3755,7 @@ pub enum ClipStoreError {
     #[error("failed to prepare clip database directory: {0}")]
     Io(#[from] std::io::Error),
     #[error("sqlite query failed: {0}")]
-    Sqlx(#[from] db::Error),
+    Sqlx(#[from] primitives::Error),
     #[error("serialization failed: {0}")]
     SerdeJson(#[from] serde_json::Error),
     #[error("invalid timestamp in clip database: {0}")]
@@ -3755,7 +3770,7 @@ pub enum ClipStoreError {
 
 impl From<DbErr> for ClipStoreError {
     fn from(value: DbErr) -> Self {
-        Self::Sqlx(db::Error::from(value))
+        Self::Sqlx(primitives::Error::from(value))
     }
 }
 
@@ -4207,7 +4222,7 @@ mod tests {
         let store = open_test_store().await;
         let stale_ts = Utc::now().timestamp_millis() - CHARACTER_OUTFIT_CACHE_TTL_MS - 1;
 
-        db::query(
+        primitives::query(
             r#"
             INSERT INTO character_outfit_cache (character_id, outfit_id, outfit_tag, resolved_ts)
             VALUES (?, ?, ?, ?)
@@ -4224,12 +4239,13 @@ mod tests {
         let cached = store.cached_character_outfit(42).await.unwrap();
         assert_eq!(cached, None);
 
-        let remaining: i64 =
-            db::query_scalar("SELECT COUNT(*) FROM character_outfit_cache WHERE character_id = ?")
-                .bind(42_i64)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
+        let remaining: i64 = primitives::query_scalar(
+            "SELECT COUNT(*) FROM character_outfit_cache WHERE character_id = ?",
+        )
+        .bind(42_i64)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
         assert_eq!(remaining, 0);
     }
 
@@ -4238,7 +4254,7 @@ mod tests {
         let store = open_test_store().await;
         let stale_ts = Utc::now().timestamp_millis() - CHARACTER_OUTFIT_CACHE_TTL_MS - 1;
 
-        db::query(
+        primitives::query(
             r#"
             INSERT INTO character_outfit_cache (character_id, outfit_id, outfit_tag, resolved_ts)
             VALUES (?, ?, ?, ?)
@@ -4257,7 +4273,7 @@ mod tests {
             .await
             .unwrap();
 
-        let remaining: Vec<i64> = db::query_scalar(
+        let remaining: Vec<i64> = primitives::query_scalar(
             "SELECT character_id FROM character_outfit_cache ORDER BY character_id ASC",
         )
         .fetch_all(&store.pool)
@@ -4315,7 +4331,7 @@ mod tests {
         let clips = store.recent_clips(10).await.unwrap();
         assert!(clips.is_empty());
 
-        let remaining_events: i64 = db::query_scalar("SELECT COUNT(*) FROM clip_events")
+        let remaining_events: i64 = primitives::query_scalar("SELECT COUNT(*) FROM clip_events")
             .fetch_one(&store.pool)
             .await
             .unwrap();
@@ -4326,10 +4342,11 @@ mod tests {
     async fn fresh_schema_populates_seaql_migrations() {
         let store = open_test_store().await;
 
-        let migration_count: i64 = db::query_scalar("SELECT COUNT(*) FROM seaql_migrations")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+        let migration_count: i64 =
+            primitives::query_scalar("SELECT COUNT(*) FROM seaql_migrations")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(
             migration_count,
             migrations::Migrator::migrations().len() as i64
@@ -4346,7 +4363,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("clips.sqlite3");
 
-        let pool = db::connect_at(&db_path, 1).await.unwrap();
+        let pool = primitives::connect_at(&db_path, 1).await.unwrap();
 
         for statement in [
             r#"
@@ -4378,7 +4395,7 @@ mod tests {
             "#,
             "PRAGMA user_version = 1",
         ] {
-            db::query(statement).execute(&pool).await.unwrap();
+            primitives::query(statement).execute(&pool).await.unwrap();
         }
         drop(pool);
 
@@ -4386,7 +4403,7 @@ mod tests {
         let clips = store.recent_clips(10).await.unwrap();
         assert!(clips.is_empty());
 
-        let clip_origin_column_exists: bool = db::query_scalar(
+        let clip_origin_column_exists: bool = primitives::query_scalar(
             "SELECT COUNT(*) > 0 FROM pragma_table_info('clips') WHERE name = 'clip_origin'",
         )
         .fetch_one(&store.pool)
@@ -4411,8 +4428,8 @@ mod tests {
         let store = ClipStore::open_at(&db_path).await.unwrap();
         drop(store);
 
-        let pool = db::connect_at(&db_path, 1).await.unwrap();
-        db::query("DROP INDEX IF EXISTS \"idx-clips-session_id\"")
+        let pool = primitives::connect_at(&db_path, 1).await.unwrap();
+        primitives::query("DROP INDEX IF EXISTS \"idx-clips-session_id\"")
             .execute(&pool)
             .await
             .unwrap();
@@ -4422,7 +4439,7 @@ mod tests {
         let notice = store.startup_notice().unwrap_or_default().to_string();
         assert!(notice.contains("backup was created"));
 
-        let index_exists: bool = db::query_scalar(
+        let index_exists: bool = primitives::query_scalar(
             "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'index' AND name = 'idx-clips-session_id'",
         )
         .fetch_one(&store.pool)
@@ -4447,8 +4464,8 @@ mod tests {
         let store = ClipStore::open_at(&db_path).await.unwrap();
         drop(store);
 
-        let pool = db::connect_at(&db_path, 1).await.unwrap();
-        db::query("DROP INDEX IF EXISTS idx_clip_uploads_provider")
+        let pool = primitives::connect_at(&db_path, 1).await.unwrap();
+        primitives::query("DROP INDEX IF EXISTS idx_clip_uploads_provider")
             .execute(&pool)
             .await
             .unwrap();
@@ -4458,7 +4475,7 @@ mod tests {
         let notice = store.startup_notice().unwrap_or_default().to_string();
         assert!(notice.contains("backup was created"));
 
-        let index_exists: bool = db::query_scalar(
+        let index_exists: bool = primitives::query_scalar(
             "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'index' AND name = 'idx_clip_uploads_provider'",
         )
         .fetch_one(&store.pool)
@@ -4480,7 +4497,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("clips.sqlite3");
 
-        let pool = db::connect_at(&db_path, 1).await.unwrap();
+        let pool = primitives::connect_at(&db_path, 1).await.unwrap();
 
         for statement in [
             r#"
@@ -4520,7 +4537,7 @@ mod tests {
             "INSERT INTO clips (trigger_event_ts, saved_ts, rule_id, clip_duration_secs, character_id, world_id, zone_id, facility_id, profile_id, path, score) VALUES (1710000000000, 1710000000000, 'rule_kill_streak', 30, 42, 17, 2, 1234, 'profile_1', NULL, 9)",
             "PRAGMA user_version = 0",
         ] {
-            db::query(statement).execute(&pool).await.unwrap();
+            primitives::query(statement).execute(&pool).await.unwrap();
         }
         drop(pool);
 
@@ -4550,10 +4567,11 @@ mod tests {
         assert_eq!(clips[0].origin, ClipOrigin::Rule);
         assert_eq!(clips[0].honu_session_id, None);
 
-        let migration_count: i64 = db::query_scalar("SELECT COUNT(*) FROM seaql_migrations")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+        let migration_count: i64 =
+            primitives::query_scalar("SELECT COUNT(*) FROM seaql_migrations")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
         assert_eq!(
             migration_count,
             migrations::Migrator::migrations().len() as i64
@@ -4573,7 +4591,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("clips.sqlite3");
 
-        let pool = db::connect_at(&db_path, 1).await.unwrap();
+        let pool = primitives::connect_at(&db_path, 1).await.unwrap();
 
         for statement in [
             r#"
@@ -4687,7 +4705,7 @@ mod tests {
             "#,
             "PRAGMA user_version = 7",
         ] {
-            db::query(statement).execute(&pool).await.unwrap();
+            primitives::query(statement).execute(&pool).await.unwrap();
         }
         drop(pool);
 

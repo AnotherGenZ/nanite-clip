@@ -7,6 +7,7 @@ use super::{AutoSwitchCondition, AutoSwitchRule, EventKind, normalized_active_ch
 pub enum AutoSwitchSource {
     Schedule,
     ActiveCharacter(u64),
+    #[allow(dead_code)]
     Event(EventKind),
 }
 
@@ -91,6 +92,7 @@ pub fn choose_runtime_rule(
     })
 }
 
+#[allow(dead_code)]
 pub fn choose_event_based_rule(
     rules: &[AutoSwitchRule],
     event_kind: EventKind,

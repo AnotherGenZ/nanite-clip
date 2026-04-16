@@ -156,6 +156,7 @@ pub enum CharacterClass {
 }
 
 impl CharacterClass {
+    #[allow(dead_code)]
     pub const ALL: [CharacterClass; 6] = [
         CharacterClass::Infiltrator,
         CharacterClass::LightAssault,
@@ -540,6 +541,7 @@ impl ScoredEventFilters {
         self.enabled.unwrap_or_else(|| self.has_criteria())
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.groups.is_empty() && !self.has_legacy_criteria()
     }
@@ -549,10 +551,10 @@ impl ScoredEventFilters {
     }
 
     pub fn normalize(&mut self) {
-        if self.groups.is_empty() {
-            if let Some(group) = self.legacy_group() {
-                self.groups.push(group);
-            }
+        if self.groups.is_empty()
+            && let Some(group) = self.legacy_group()
+        {
+            self.groups.push(group);
         }
 
         for group in &mut self.groups {
@@ -1012,6 +1014,7 @@ impl ScoreBreakdown {
 #[derive(Debug, Clone)]
 pub struct ClipAction {
     pub rule_id: String,
+    #[allow(dead_code)]
     pub rule_name: String,
     pub lifecycle: ClipActionLifecycle,
     pub clip_length: ClipLength,

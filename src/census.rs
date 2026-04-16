@@ -113,11 +113,7 @@ pub async fn resolve_character_reference(
 
     let response = client
         .get("character")
-        .filter(
-            "name.first_lower",
-            FilterType::EqualTo,
-            &name.to_lowercase(),
-        )
+        .filter("name.first_lower", FilterType::EqualTo, name.to_lowercase())
         .show("character_id")
         .show("name.first")
         .show("name.first_lower")
@@ -584,6 +580,7 @@ pub fn alert_label(metagame_event_id: u8, zone_id: u32) -> String {
     format!("{event_label} ({})", continent_name(Some(zone_id)))
 }
 
+#[allow(dead_code)]
 pub fn vehicle_name(vehicle_id: Option<u16>) -> Option<String> {
     vehicle_id.map(|id| format!("Vehicle #{id}"))
 }
@@ -893,20 +890,20 @@ fn parse_non_zero_u32_field(item: &Value, candidates: &[&str]) -> Option<u32> {
 
 /// Check if an event is a PlayerLogin for one of our tracked characters.
 pub fn is_character_login(event: &Event, character_ids: &[CharacterID]) -> Option<CharacterID> {
-    if let Event::PlayerLogin(login) = event {
-        if character_ids.contains(&login.character_id) {
-            return Some(login.character_id);
-        }
+    if let Event::PlayerLogin(login) = event
+        && character_ids.contains(&login.character_id)
+    {
+        return Some(login.character_id);
     }
     None
 }
 
 /// Check if an event is a PlayerLogout for one of our tracked characters.
 pub fn is_character_logout(event: &Event, character_ids: &[CharacterID]) -> Option<CharacterID> {
-    if let Event::PlayerLogout(logout) = event {
-        if character_ids.contains(&logout.character_id) {
-            return Some(logout.character_id);
-        }
+    if let Event::PlayerLogout(logout) = event
+        && character_ids.contains(&logout.character_id)
+    {
+        return Some(logout.character_id);
     }
     None
 }
@@ -1052,7 +1049,7 @@ pub fn classify_alert_update(event: &Event) -> Option<AlertUpdate> {
 
     let lifecycle = metagame_event_lifecycle(&metagame.metagame_event_state_name);
     let world_id = metagame.world_id as u32;
-    let zone_id = metagame.zone_id as u32;
+    let zone_id = metagame.zone_id;
     Some(AlertUpdate {
         alert_key: format!("{world_id}:{zone_id}:{}", metagame.instance_id),
         world_id,

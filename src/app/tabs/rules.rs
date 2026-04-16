@@ -228,18 +228,18 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }
         }
         Message::DeleteRule => {
-            if app.config.rule_definitions.len() > 1 {
-                if let Some(rule_id) = app.selected_rule_id.clone() {
-                    app.config
-                        .rule_definitions
-                        .retain(|rule| rule.id != rule_id);
-                    for profile in &mut app.config.rule_profiles {
-                        profile.enabled_rule_ids.retain(|id| id != &rule_id);
-                    }
-                    clear_rule_filter_ui_state(app, &rule_id);
-                    app.selected_rule_id = None;
-                    persist(app);
+            if app.config.rule_definitions.len() > 1
+                && let Some(rule_id) = app.selected_rule_id.clone()
+            {
+                app.config
+                    .rule_definitions
+                    .retain(|rule| rule.id != rule_id);
+                for profile in &mut app.config.rule_profiles {
+                    profile.enabled_rule_ids.retain(|id| id != &rule_id);
                 }
+                clear_rule_filter_ui_state(app, &rule_id);
+                app.selected_rule_id = None;
+                persist(app);
             }
         }
         Message::RenameRule(name) => {
@@ -311,8 +311,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             if let Some(index) = selected_rule_index(app) {
                 let rule = &mut app.config.rule_definitions[index];
                 let max_reset = rule.trigger_threshold.saturating_sub(1);
-                rule.reset_threshold =
-                    step_value(rule.reset_threshold, delta, 1, 0, max_reset.max(0));
+                rule.reset_threshold = step_value(rule.reset_threshold, delta, 1, 0, max_reset);
                 persist(app);
             }
         }
@@ -446,22 +445,21 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }
         }
         Message::DeleteScoredEventFilterGroup(event_index, group_index) => {
-            if let Some(rule_id) = selected_rule(app).map(|rule| rule.id.clone()) {
-                if let Some(filters) = scored_event_filters_mut(app, event_index) {
-                    if group_index < filters.groups.len() {
-                        filters.groups.remove(group_index);
-                        clear_rule_filter_ui_state(app, &rule_id);
-                        persist(app);
-                    }
-                }
+            if let Some(rule_id) = selected_rule(app).map(|rule| rule.id.clone())
+                && let Some(filters) = scored_event_filters_mut(app, event_index)
+                && group_index < filters.groups.len()
+            {
+                filters.groups.remove(group_index);
+                clear_rule_filter_ui_state(app, &rule_id);
+                persist(app);
             }
         }
         Message::AddScoredEventFilterClause(event_index, group_index) => {
-            if let Some(filters) = scored_event_filters_mut(app, event_index) {
-                if let Some(group) = filters.groups.get_mut(group_index) {
-                    group.clauses.push(default_filter_clause());
-                    persist(app);
-                }
+            if let Some(filters) = scored_event_filters_mut(app, event_index)
+                && let Some(group) = filters.groups.get_mut(group_index)
+            {
+                group.clauses.push(default_filter_clause());
+                persist(app);
             }
         }
         Message::AddNestedOrClause(path) => {
@@ -471,30 +469,29 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }
         }
         Message::DeleteScoredEventFilterClause(path) => {
-            if let Some(rule_id) = selected_rule(app).map(|rule| rule.id.clone()) {
-                if delete_filter_clause(app, &path) {
-                    let remove_group = scored_event_filters_mut(app, path.event_index)
-                        .and_then(|filters| filters.groups.get(path.group_index))
-                        .is_some_and(|group| group.clauses.is_empty());
-                    if remove_group {
-                        if let Some(filters) = scored_event_filters_mut(app, path.event_index) {
-                            if path.group_index < filters.groups.len() {
-                                filters.groups.remove(path.group_index);
-                            }
-                        }
-                    }
-                    clear_rule_filter_ui_state(app, &rule_id);
-                    persist(app);
+            if let Some(rule_id) = selected_rule(app).map(|rule| rule.id.clone())
+                && delete_filter_clause(app, &path)
+            {
+                let remove_group = scored_event_filters_mut(app, path.event_index)
+                    .and_then(|filters| filters.groups.get(path.group_index))
+                    .is_some_and(|group| group.clauses.is_empty());
+                if remove_group
+                    && let Some(filters) = scored_event_filters_mut(app, path.event_index)
+                    && path.group_index < filters.groups.len()
+                {
+                    filters.groups.remove(path.group_index);
                 }
+                clear_rule_filter_ui_state(app, &rule_id);
+                persist(app);
             }
         }
         Message::ScoredEventFilterClauseKindChanged(path, choice) => {
-            if let Some(rule_id) = selected_rule(app).map(|rule| rule.id.clone()) {
-                if let Some(clause) = filter_clause_mut(app, &path) {
-                    *clause = choice.default_clause();
-                    clear_rule_filter_ui_state(app, &rule_id);
-                    persist(app);
-                }
+            if let Some(rule_id) = selected_rule(app).map(|rule| rule.id.clone())
+                && let Some(clause) = filter_clause_mut(app, &path)
+            {
+                *clause = choice.default_clause();
+                clear_rule_filter_ui_state(app, &rule_id);
+                persist(app);
             }
         }
         Message::StartFilterClauseDrag(path) => {
@@ -515,10 +512,10 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }));
         }
         Message::HoverFilterClauseDrop(list_path, target_index) => {
-            if let Some(RuleDragState::FilterClause(drag)) = &mut app.rule_drag_state {
-                if drag.list_path == list_path {
-                    drag.target_index = target_index.min(drag.list_len);
-                }
+            if let Some(RuleDragState::FilterClause(drag)) = &mut app.rule_drag_state
+                && drag.list_path == list_path
+            {
+                drag.target_index = target_index.min(drag.list_len);
             }
         }
         Message::RuleFilterDraftChanged(key, value) => {
@@ -547,19 +544,18 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 async move {
                     match key.field {
                         FilterTextField::TargetCharacter => {
-                            if let Some(store) = &store {
-                                if let Some((lookup_id, display_name)) = store
+                            if let Some(store) = &store
+                                && let Some((lookup_id, display_name)) = store
                                     .find_lookup_by_name(LookupKind::Character, &input)
                                     .await
                                     .map_err(|error| error.to_string())?
-                                {
-                                    return Ok(ResolvedFilterReference::Character(
-                                        CharacterReferenceFilter {
-                                            name: Some(display_name),
-                                            character_id: Some(lookup_id as u64),
-                                        },
-                                    ));
-                                }
+                            {
+                                return Ok(ResolvedFilterReference::Character(
+                                    CharacterReferenceFilter {
+                                        name: Some(display_name),
+                                        character_id: Some(lookup_id as u64),
+                                    },
+                                ));
                             }
 
                             if service_id.trim().is_empty() {
@@ -593,19 +589,18 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                             ))
                         }
                         FilterTextField::TargetOutfit => {
-                            if let Some(store) = &store {
-                                if let Some((lookup_id, display_name)) = store
+                            if let Some(store) = &store
+                                && let Some((lookup_id, display_name)) = store
                                     .find_lookup_by_name(LookupKind::Outfit, &input)
                                     .await
                                     .map_err(|error| error.to_string())?
-                                {
-                                    return Ok(ResolvedFilterReference::Outfit(
-                                        OutfitReferenceFilter {
-                                            tag: Some(display_name),
-                                            outfit_id: Some(lookup_id as u64),
-                                        },
-                                    ));
-                                }
+                            {
+                                return Ok(ResolvedFilterReference::Outfit(
+                                    OutfitReferenceFilter {
+                                        tag: Some(display_name),
+                                        outfit_id: Some(lookup_id as u64),
+                                    },
+                                ));
                             }
 
                             if service_id.trim().is_empty() {
@@ -729,19 +724,19 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             );
         }
         Message::ScoredEventVehicleChanged(path, choice) => {
-            if let Some(clause) = filter_clause_mut(app, &path) {
-                if let Some(vehicle) = vehicle_match_filter_mut(clause) {
-                    apply_vehicle_filter_choice(vehicle, choice);
-                    persist(app);
-                }
+            if let Some(clause) = filter_clause_mut(app, &path)
+                && let Some(vehicle) = vehicle_match_filter_mut(clause)
+            {
+                apply_vehicle_filter_choice(vehicle, choice);
+                persist(app);
             }
         }
         Message::ScoredEventWeaponChanged(path, choice) => {
-            if let Some(clause) = filter_clause_mut(app, &path) {
-                if let Some(weapon) = weapon_match_filter_mut(clause) {
-                    apply_weapon_filter_choice(weapon, choice);
-                    persist(app);
-                }
+            if let Some(clause) = filter_clause_mut(app, &path)
+                && let Some(weapon) = weapon_match_filter_mut(clause)
+            {
+                apply_weapon_filter_choice(weapon, choice);
+                persist(app);
             }
         }
         Message::CreateAutoSwitchRule => {
@@ -863,32 +858,29 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }
         }
         Message::AutoSwitchStartTimeStepped(rule_id, delta) => {
-            if let Some(rule) = auto_switch_rule_mut(app, &rule_id) {
-                if let AutoSwitchCondition::LocalSchedule {
+            if let Some(rule) = auto_switch_rule_mut(app, &rule_id)
+                && let AutoSwitchCondition::LocalSchedule {
                     ref mut start_hour,
                     ref mut start_minute,
                     ..
                 } = rule.condition
-                {
-                    let next =
-                        wrap_schedule_slot(schedule_slot(*start_hour, *start_minute), delta, 47);
-                    (*start_hour, *start_minute) = slot_time(next);
-                    persist(app);
-                }
+            {
+                let next = wrap_schedule_slot(schedule_slot(*start_hour, *start_minute), delta, 47);
+                (*start_hour, *start_minute) = slot_time(next);
+                persist(app);
             }
         }
         Message::AutoSwitchEndTimeStepped(rule_id, delta) => {
-            if let Some(rule) = auto_switch_rule_mut(app, &rule_id) {
-                if let AutoSwitchCondition::LocalSchedule {
+            if let Some(rule) = auto_switch_rule_mut(app, &rule_id)
+                && let AutoSwitchCondition::LocalSchedule {
                     ref mut end_hour,
                     ref mut end_minute,
                     ..
                 } = rule.condition
-                {
-                    let next = wrap_schedule_slot(schedule_slot(*end_hour, *end_minute), delta, 48);
-                    (*end_hour, *end_minute) = slot_time(next);
-                    persist(app);
-                }
+            {
+                let next = wrap_schedule_slot(schedule_slot(*end_hour, *end_minute), delta, 48);
+                (*end_hour, *end_minute) = slot_time(next);
+                persist(app);
             }
         }
         Message::RuleDragReleased => {
@@ -2252,7 +2244,7 @@ fn schedule_slot(hour: u8, minute: u8) -> u8 {
 }
 
 fn slot_time(slot: u8) -> (u8, u8) {
-    (slot / 2, if slot % 2 == 0 { 0 } else { 30 })
+    (slot / 2, if slot.is_multiple_of(2) { 0 } else { 30 })
 }
 
 fn wrap_schedule_slot(current: u8, delta: i32, max: u8) -> u8 {
@@ -2632,6 +2624,7 @@ fn reindex_rule_ui_state_after_clause_reorder(
     app.rule_filter_text_drafts = drafts;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn remap_clause_key(
     rule_id: &mut String,
     event_index: &mut usize,
@@ -3599,10 +3592,10 @@ fn weapon_browse_faction_choices(
     labels.dedup();
     factions.extend(labels);
 
-    if let Some(current_option) = current {
-        if !factions.contains(&current_option.faction) {
-            factions.push(current_option.faction);
-        }
+    if let Some(current_option) = current
+        && !factions.contains(&current_option.faction)
+    {
+        factions.push(current_option.faction);
     }
 
     factions
@@ -3633,14 +3626,13 @@ fn weapon_filter_choices(
             .map(WeaponFilterChoice::Specific),
     );
 
-    if let Some(current_option) = current_weapon_option(options, current) {
-        if !choices
+    if let Some(current_option) = current_weapon_option(options, current)
+        && !choices
             .iter()
             .any(|choice| matches!(choice, WeaponFilterChoice::Specific(option) if option == &current_option))
         {
             choices.push(WeaponFilterChoice::Specific(current_option));
         }
-    }
 
     choices
 }
@@ -3941,7 +3933,7 @@ fn weapon_browse_group_for_category_label(label: &str) -> WeaponBrowseGroup {
 }
 
 fn matches_any_weapon_category(normalized: &str, categories: &[&str]) -> bool {
-    categories.iter().any(|category| normalized == *category)
+    categories.contains(&normalized)
 }
 
 fn contains_any_weapon_category(normalized: &str, categories: &[&str]) -> bool {
@@ -4011,14 +4003,13 @@ fn vehicle_filter_choices(
             .map(VehicleFilterChoice::Specific),
     );
 
-    if let Some(current_option) = current_vehicle_option(options, current) {
-        if !choices
+    if let Some(current_option) = current_vehicle_option(options, current)
+        && !choices
             .iter()
             .any(|choice| matches!(choice, VehicleFilterChoice::Specific(option) if option == &current_option))
         {
             choices.push(VehicleFilterChoice::Specific(current_option));
         }
-    }
 
     choices
 }
@@ -4186,7 +4177,7 @@ fn vehicle_browse_category_for_option(option: &LookupOption) -> VehicleBrowseCat
 }
 
 fn matches_any_vehicle_name(normalized: &str, names: &[&str]) -> bool {
-    names.iter().any(|name| normalized == *name)
+    names.contains(&normalized)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

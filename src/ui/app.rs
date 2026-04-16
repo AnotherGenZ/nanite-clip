@@ -50,11 +50,11 @@ pub fn mouse_area<'a, Message>(child: impl Into<Element<'a, Message>>) -> MouseA
     iced_mouse_area(child)
 }
 
-pub fn horizontal_space<'a>() -> Space {
+pub fn horizontal_space() -> Space {
     Space::new().width(iced::Length::Fill)
 }
 
-pub fn vertical_space<'a>() -> Space {
+pub fn vertical_space() -> Space {
     Space::new().height(iced::Length::Fill)
 }
 

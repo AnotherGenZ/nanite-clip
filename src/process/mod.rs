@@ -16,6 +16,7 @@ pub use windows::WindowsToolhelpWatcher;
 
 pub trait GameProcessWatcher: Send + Sync {
     fn find_running_pid(&self) -> Option<u32>;
+    #[allow(dead_code)]
     fn is_running(&self, pid: u32) -> bool;
     fn resolve_capture_target(
         &self,
@@ -55,6 +56,7 @@ pub enum CaptureTargetError {
     #[error("X11 connection did not expose a screen")]
     NoX11Screen,
     #[error("{0}")]
+    #[allow(dead_code)]
     Unsupported(String),
 }
 

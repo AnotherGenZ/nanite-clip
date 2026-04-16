@@ -769,10 +769,10 @@ fn resolution_looks_like_launcher_sized_portal_capture(resolution: VideoResoluti
 
 fn resolve_saved_path(raw_path: &str, save_directory: &Path) -> PathBuf {
     let trimmed = raw_path.trim();
-    if let Some(stripped) = trimmed.strip_prefix("~/") {
-        if let Some(home) = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = trimmed.strip_prefix("~/")
+        && let Some(home) = directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+    {
+        return home.join(stripped);
     }
 
     let path = PathBuf::from(trimmed);

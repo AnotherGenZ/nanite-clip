@@ -2413,6 +2413,7 @@ fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
         .map_err(|_| "Windows folder picker thread panicked".to_string())?
 }
 
+#[cfg(not(target_os = "windows"))]
 fn build_zenity_args(current_dir: &str) -> Vec<String> {
     let mut args = vec!["--file-selection".into(), "--directory".into()];
     if let Some(initial) = sanitize_dialog_start_dir(current_dir) {
@@ -2422,6 +2423,7 @@ fn build_zenity_args(current_dir: &str) -> Vec<String> {
     args
 }
 
+#[cfg(not(target_os = "windows"))]
 fn build_kdialog_args(current_dir: &str) -> Vec<String> {
     let mut args = vec!["--getexistingdirectory".into()];
     if let Some(initial) = sanitize_dialog_start_dir(current_dir) {
@@ -2494,6 +2496,7 @@ mod tests {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn sanitize_dialog_start_dir(current_dir: &str) -> Option<String> {
     let trimmed = current_dir.trim();
     if trimmed.is_empty() {
@@ -2525,6 +2528,7 @@ fn sanitize_windows_dialog_start_dir(current_dir: &str) -> Option<String> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn with_trailing_slash(path: &str) -> String {
     let mut value = path.to_string();
     if !value.ends_with('/') {
@@ -2533,6 +2537,7 @@ fn with_trailing_slash(path: &str) -> String {
     value
 }
 
+#[cfg(not(target_os = "windows"))]
 fn is_dialog_cancelled(program: &str, code: Option<i32>) -> bool {
     match program {
         "zenity" | "qarma" | "yad" | "kdialog" => code == Some(1),

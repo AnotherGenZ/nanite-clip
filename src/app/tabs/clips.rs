@@ -217,19 +217,14 @@ pub enum CalendarField {
     End,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClipSortColumn {
+    #[default]
     When,
     Rule,
     Character,
     Score,
     Duration,
-}
-
-impl Default for ClipSortColumn {
-    fn default() -> Self {
-        Self::When
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -541,11 +536,10 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 .clip_history_source
                 .iter()
                 .find(|record| record.id == clip_id)
+                && let Some(reason) = super::super::clip_post_process_block_reason(record)
             {
-                if let Some(reason) = super::super::clip_post_process_block_reason(record) {
-                    app.set_clip_error(reason);
-                    return Task::none();
-                }
+                app.set_clip_error(reason);
+                return Task::none();
             }
             if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id) {
                 app.montage_selection.remove(index);
@@ -559,18 +553,18 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             Task::none()
         }
         Message::MontageMoveUp(clip_id) => {
-            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id) {
-                if index > 0 {
-                    app.montage_selection.swap(index, index - 1);
-                }
+            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id)
+                && index > 0
+            {
+                app.montage_selection.swap(index, index - 1);
             }
             Task::none()
         }
         Message::MontageMoveDown(clip_id) => {
-            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id) {
-                if index + 1 < app.montage_selection.len() {
-                    app.montage_selection.swap(index, index + 1);
-                }
+            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id)
+                && index + 1 < app.montage_selection.len()
+            {
+                app.montage_selection.swap(index, index + 1);
             }
             Task::none()
         }
@@ -900,11 +894,11 @@ fn apply_date_range(app: &mut App) -> Task<AppMessage> {
         }
     };
 
-    if let (Some(start), Some(end)) = (start, end) {
-        if start > end {
-            app.set_clip_filter_feedback("Custom range start must be before the end.", true);
-            return Task::none();
-        }
+    if let (Some(start), Some(end)) = (start, end)
+        && start > end
+    {
+        app.set_clip_filter_feedback("Custom range start must be before the end.", true);
+        return Task::none();
     }
 
     app.clip_filters.event_after_ts = start.map(|value| value.timestamp_millis());
@@ -2856,7 +2850,7 @@ fn active_filter_count(app: &App) -> usize {
 fn total_pages(app: &App) -> usize {
     let len = app.clip_history.len();
     let size = app.clip_history_page_size.max(1);
-    if len == 0 { 1 } else { (len + size - 1) / size }
+    if len == 0 { 1 } else { len.div_ceil(size) }
 }
 
 pub(in crate::app) fn rebuild_history(app: &mut App) {
@@ -3024,6 +3018,7 @@ fn exact_filter_matches(filter: &str, value: &str) -> bool {
     filter.is_empty() || filter == normalize(value)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn quick_search_matches(
     search: &str,
     record: &ClipRecord,
