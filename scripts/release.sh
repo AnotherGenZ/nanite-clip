@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="AnotherGenZ/nanite-clip"
 CARGO_TOML="Cargo.toml"
+CLIFF_CONFIG="cliff.toml"
 
 # --- helpers ---
 
@@ -21,7 +22,9 @@ current_version() {
 
 command -v gh >/dev/null || die "gh CLI is required"
 command -v git >/dev/null || die "git is required"
+command -v git-cliff >/dev/null || die "git-cliff is required"
 [[ -f "$CARGO_TOML" ]] || die "run this script from the repo root"
+[[ -f "$CLIFF_CONFIG" ]] || die "missing $CLIFF_CONFIG"
 [[ -z "$(git status --porcelain)" ]] || die "working tree is dirty — commit or stash first"
 
 # --- version ---
@@ -55,12 +58,15 @@ sed -i "0,/^version = \"$OLD_VERSION\"/s//version = \"$NEW_VERSION\"/" "$CARGO_T
 echo "==> Updating Cargo.lock"
 cargo update --workspace --quiet
 
+echo "==> Regenerating CHANGELOG.md"
+git-cliff --config "$CLIFF_CONFIG" --tag "$TAG" --output CHANGELOG.md
+
 # --- commit and tag ---
 
 echo ""
 echo "==> Committing version bump"
-git add "$CARGO_TOML" Cargo.lock
-git commit -m "release: v$NEW_VERSION"
+git add "$CARGO_TOML" Cargo.lock CHANGELOG.md
+git commit -m "chore(release): v$NEW_VERSION"
 
 echo "==> Tagging $TAG"
 git tag "$TAG"

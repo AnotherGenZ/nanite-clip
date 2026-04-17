@@ -131,6 +131,8 @@ the active capture backend to save the relevant segment.
 - cargo test runs rule-engine unit tests.
 - cargo fmt and cargo clippy --all-targets --all-features match CI.
 - RUST_LOG=nanite_clip=debug cargo run -- for verbose logging.
+- Releases are assembled with scripts/release.sh (or just release <version>) and require git-cliff.
+- Release notes and CHANGELOG.md are generated from Conventional Commit scanning via git-cliff.
 
 ## Configuration
 

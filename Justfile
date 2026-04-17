@@ -41,6 +41,6 @@ install-desktop:
 clean:
     cargo clean
 
-# Tag and release a new version
+# Tag and release a new version (requires git-cliff)
 release VERSION:
     ./scripts/release.sh {{VERSION}}
