@@ -25,7 +25,7 @@ env:
   CARGO_WIX_VERSION: "0.3.9"
   FPM_VERSION: "1.17.0"
   RELEASE_BUILD_IMAGE: ghcr.io/anothergenz/nanite-clip-release-build:ubuntu25.04
-  RELEASE_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref_name || github.ref_name }}
+  RELEASE_REF_NAME: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.release_ref_name || 'v0.0.0-test' }}
 
 jobs:
   build:
@@ -327,7 +327,7 @@ jobs:
   release:
     name: Create GitHub release
     needs: [build, windows-build, windows-msi, linux-native-packages, pacman, flatpak]
-    if: github.event_name != 'workflow_dispatch' || inputs.publish_release
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.publish_release == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
