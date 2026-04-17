@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_ref_name:
+        description: Release-like ref name used for packaging during manual test runs
+        required: false
+        default: v0.0.0-test
+      publish_release:
+        description: Create a draft GitHub release during a manual dispatch
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,6 +25,7 @@ env:
   CARGO_WIX_VERSION: "0.3.9"
   FPM_VERSION: "1.17.0"
   RELEASE_BUILD_IMAGE: ghcr.io/anothergenz/nanite-clip-release-build:ubuntu25.04
+  RELEASE_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref_name || github.ref_name }}
 
 jobs:
   build:
@@ -47,11 +59,11 @@ jobs:
           scripts/package-release-linux.sh \
             target/release/nanite-clip \
             target/platform-service-release/nanite-clip-platform-service \
-            "${GITHUB_REF_NAME}" \
+            "${RELEASE_REF_NAME}" \
             dist
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: binary-tarball
           path: dist/nanite-clip-*.tar.gz
@@ -64,7 +76,7 @@ jobs:
             platform-service-release/nanite-clip-platform-service
 
       - name: Upload Linux build outputs artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: linux-build-outputs
           path: dist/linux-build-outputs.tar.gz
@@ -86,7 +98,7 @@ jobs:
         run: cargo build --locked --release --target x86_64-pc-windows-msvc
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: nanite-clip-windows-x64
           path: target/x86_64-pc-windows-msvc/release/nanite-clip.exe
@@ -128,10 +140,10 @@ jobs:
           if (-not $msi) {
             throw "MSI artifact not found in target/wix"
           }
-          Copy-Item $msi.FullName "target/wix/nanite-clip-$env:GITHUB_REF_NAME-x86_64.msi" -Force
+          Copy-Item $msi.FullName "target/wix/nanite-clip-$env:RELEASE_REF_NAME-x86_64.msi" -Force
 
       - name: Upload MSI artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: windows-msi
           path: target/wix/nanite-clip-*.msi
@@ -162,7 +174,7 @@ jobs:
           sudo gem install --no-document fpm --version "$FPM_VERSION"
 
       - name: Download Linux build outputs
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: linux-build-outputs
           path: target/reused-build
@@ -182,7 +194,7 @@ jobs:
           "scripts/package-release-${{ matrix.package_format }}.sh" \
             target/reused-build/release/nanite-clip \
             target/reused-build/platform-service-release/nanite-clip-platform-service \
-            "${GITHUB_REF_NAME}" \
+            "${RELEASE_REF_NAME}" \
             dist
 
       - name: Lint and smoke test DEB
@@ -208,7 +220,7 @@ jobs:
           sudo rpm -e nanite-clip
 
       - name: Upload Linux package artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.package_format }}-package
           path: dist/*.${{ matrix.package_format }}
@@ -228,7 +240,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download Linux build outputs
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: linux-build-outputs
           path: target/reused-build
@@ -244,7 +256,7 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${RELEASE_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release PKGBUILD
         run: |
@@ -259,7 +271,7 @@ jobs:
           su builder -c 'cd packaging/pacman && makepkg -sf --noconfirm'
 
       - name: Upload pacman package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: pacman-package
           path: packaging/pacman/*.pkg.tar.zst
@@ -282,7 +294,7 @@ jobs:
           flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
 
       - name: Download Linux build outputs
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: linux-build-outputs
           path: target/reused-build
@@ -296,7 +308,7 @@ jobs:
           chmod +x scripts/package-release-flatpak.sh
           scripts/package-release-flatpak.sh \
             target/reused-build/release/nanite-clip \
-            "${GITHUB_REF_NAME}" \
+            "${RELEASE_REF_NAME}" \
             dist
 
       - name: Smoke test Flatpak install
@@ -307,7 +319,7 @@ jobs:
           flatpak uninstall --user -y dev.angz.NaniteClip
 
       - name: Upload Flatpak artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: flatpak-package
           path: dist/*.flatpak
@@ -315,10 +327,11 @@ jobs:
   release:
     name: Create GitHub release
     needs: [build, windows-build, windows-msi, linux-native-packages, pacman, flatpak]
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_release
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
 
       - name: Generate checksums
         run: |
