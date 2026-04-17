@@ -7,6 +7,7 @@ VERSION_TAG=${3:-}
 OUTPUT_DIR=${4:-dist}
 PACKAGE_NAME="nanite-clip"
 PACKAGE_VERSION="${VERSION_TAG#v}"
+PACKAGE_ICON="assets/NaniteClips-512.png"
 
 die() {
     echo "error: $*" >&2
@@ -19,7 +20,7 @@ die() {
 [[ -f "$APP_BINARY" ]] || die "app binary not found: $APP_BINARY"
 [[ -f "$PLATFORM_SERVICE_BINARY" ]] || die "platform service binary not found: $PLATFORM_SERVICE_BINARY"
 [[ -f LICENSE ]] || die "LICENSE not found"
-[[ -f assets/NaniteClips.png ]] || die "icon asset not found: assets/NaniteClips.png"
+[[ -f "$PACKAGE_ICON" ]] || die "icon asset not found: $PACKAGE_ICON"
 [[ -f assets/linux/nanite-clip.desktop ]] || die "desktop file not found: assets/linux/nanite-clip.desktop"
 [[ -f assets/linux/dev.angz.NaniteClip.metainfo.xml ]] || die "AppStream file not found: assets/linux/dev.angz.NaniteClip.metainfo.xml"
 [[ -f packaging/linux/maintainer-scripts/after-install.sh ]] || die "after-install hook not found"
@@ -33,7 +34,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 install -Dm755 "$APP_BINARY" "$STAGING_DIR/usr/bin/$PACKAGE_NAME"
 install -Dm755 "$PLATFORM_SERVICE_BINARY" \
     "$STAGING_DIR/usr/lib/$PACKAGE_NAME/nanite-clip-platform-service"
-install -Dm644 assets/NaniteClips.png \
+install -Dm644 "$PACKAGE_ICON" \
     "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/$PACKAGE_NAME.png"
 install -Dm644 assets/linux/nanite-clip.desktop \
     "$STAGING_DIR/usr/share/applications/$PACKAGE_NAME.desktop"

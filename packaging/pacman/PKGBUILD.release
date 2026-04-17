@@ -1,0 +1,29 @@
+# Maintainer: AnotherGenZ <git@angz.dev>
+pkgname=nanite-clip
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Desktop companion for PlanetSide 2 that automatically saves gameplay clips on notable events"
+arch=('x86_64')
+url="https://github.com/AnotherGenZ/nanite-clip"
+license=('Apache-2.0')
+depends=('gpu-screen-recorder' 'gpu-screen-recorder-notification' 'sqlite')
+source=()
+sha256sums=()
+
+package() {
+    local repo_root
+    repo_root="$(cd "$startdir/../.." && pwd)"
+
+    install -Dm755 "$repo_root/target/reused-build/release/$pkgname" \
+        "$pkgdir/usr/bin/$pkgname"
+    install -Dm755 "$repo_root/target/reused-build/platform-service-release/nanite-clip-platform-service" \
+        "$pkgdir/usr/lib/$pkgname/nanite-clip-platform-service"
+    install -Dm644 "$repo_root/assets/NaniteClips-512.png" \
+        "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
+    install -Dm644 "$repo_root/assets/linux/nanite-clip.desktop" \
+        "$pkgdir/usr/share/applications/nanite-clip.desktop"
+    install -Dm644 "$repo_root/assets/linux/dev.angz.NaniteClip.metainfo.xml" \
+        "$pkgdir/usr/share/metainfo/dev.angz.NaniteClip.metainfo.xml"
+    install -Dm644 "$repo_root/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

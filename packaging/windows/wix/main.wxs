@@ -4,7 +4,7 @@
     Id="*"
     Name="NaniteClip"
     Language="1033"
-    Version="$(var.CargoVersion)"
+    Version="$(var.Version)"
     Manufacturer="AnotherGenZ"
     UpgradeCode="C65B9E43-D5EA-44F5-8EA0-6BF7F6727A33">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />

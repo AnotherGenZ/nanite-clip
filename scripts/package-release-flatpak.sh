@@ -9,7 +9,7 @@ APP_ID="dev.angz.NaniteClip"
 MANIFEST="packaging/flatpak/${APP_ID}.yaml"
 DESKTOP_FILE="packaging/flatpak/${APP_ID}.desktop"
 METAINFO_FILE="packaging/flatpak/${APP_ID}.metainfo.xml"
-ICON_FILE="assets/NaniteClips.png"
+ICON_FILE="assets/NaniteClips-512.png"
 
 cleanup() {
     rm -rf "$BUILD_DIR" "$REPO_DIR" "$STAGING_DIR"

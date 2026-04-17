@@ -7,7 +7,7 @@ arch=('x86_64')
 url="https://github.com/AnotherGenZ/nanite-clip"
 license=('Apache-2.0')
 depends=('gpu-screen-recorder' 'gpu-screen-recorder-notification' 'sqlite')
-makedepends=('cargo' 'cmake' 'ninja' 'extra-cmake-modules' 'qt6-base' 'kcoreaddons' 'kdbusaddons' 'kglobalaccel' 'glib2' 'gtk3' 'libpipewire' 'xdotool')
+makedepends=('rustup' 'clang' 'cmake' 'ninja' 'extra-cmake-modules' 'qt6-base' 'kcoreaddons' 'kdbusaddons' 'kglobalaccel' 'glib2' 'gtk3' 'libpipewire' 'xdotool')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
@@ -32,7 +32,7 @@ package() {
     install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
     install -Dm755 "target/platform-service-package/nanite-clip-platform-service" \
         "$pkgdir/usr/lib/$pkgname/nanite-clip-platform-service"
-    install -Dm644 "assets/NaniteClips.png" \
+    install -Dm644 "assets/NaniteClips-512.png" \
         "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
     install -Dm644 "assets/linux/nanite-clip.desktop" \
         "$pkgdir/usr/share/applications/nanite-clip.desktop"
