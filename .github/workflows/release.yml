@@ -14,11 +14,11 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_WIX_VERSION: "0.3.9"
   FPM_VERSION: "1.17.0"
-  RELEASE_REF_NAME: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-test' }}
+  RELEASE_REF_NAME: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0test1' }}
 
 jobs:
   build:
-    name: Build
+    name: Build Linux outputs
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/anothergenz/nanite-clip-release-build:ubuntu25.04
@@ -41,21 +41,6 @@ jobs:
         run: |
           cmake -S native/platform_service -B target/platform-service-release -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build target/platform-service-release
-
-      - name: Package release bundle
-        run: |
-          chmod +x scripts/package-release-linux.sh
-          scripts/package-release-linux.sh \
-            target/release/nanite-clip \
-            target/platform-service-release/nanite-clip-platform-service \
-            "${RELEASE_REF_NAME}" \
-            dist
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-tarball
-          path: dist/nanite-clip-*.tar.gz
 
       - name: Upload Linux build outputs
         run: |
@@ -137,106 +122,188 @@ jobs:
           name: windows-msi
           path: target/wix/nanite-clip-*.msi
 
-  linux-native-packages:
-    name: Build Linux ${{ matrix.package_format }} package
-    needs: build
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        package_format: [deb, rpm]
+  deb:
+    name: Build Debian package
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Set up build environment
+        run: |
+          apt-get update
+          apt-get install -y \
+            appstream \
+            build-essential \
+            ca-certificates \
+            clang \
+            cmake \
+            curl \
+            desktop-file-utils \
+            git \
+            libclang-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libpipewire-0.3-dev \
+            libxdo-dev \
+            lintian \
+            ninja-build \
+            pkg-config \
+            ruby \
+            ruby-dev
+          gem install --no-document fpm --version "$FPM_VERSION"
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain nightly
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - uses: actions/checkout@v6
 
-      - name: Install native build dependencies and packaging tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ruby \
-            ruby-dev \
-            build-essential \
-            rpm \
-            desktop-file-utils \
-            appstream \
-            lintian \
-            rpmlint
-          sudo gem install --no-document fpm --version "$FPM_VERSION"
-
-      - name: Download Linux build outputs
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-build-outputs
-          path: target/reused-build
-
-      - name: Extract Linux build outputs
-        run: |
-          tar -xzf target/reused-build/linux-build-outputs.tar.gz -C target/reused-build
+      - name: Build release binary
+        run: NANITE_CLIP_SKIP_PLATFORM_SERVICE_BUILD=1 cargo build --locked --release
 
       - name: Validate desktop metadata
         run: |
           desktop-file-validate assets/linux/nanite-clip.desktop
           appstreamcli validate --no-net assets/linux/dev.angz.NaniteClip.metainfo.xml
 
-      - name: Package native installer
+      - name: Package Debian installer
         run: |
-          chmod +x "scripts/package-release-${{ matrix.package_format }}.sh"
-          "scripts/package-release-${{ matrix.package_format }}.sh" \
-            target/reused-build/release/nanite-clip \
-            target/reused-build/platform-service-release/nanite-clip-platform-service \
+          chmod +x scripts/package-release-deb.sh
+          scripts/package-release-deb.sh \
+            target/release/nanite-clip \
+            "" \
             "${RELEASE_REF_NAME}" \
             dist
 
       - name: Lint and smoke test DEB
-        if: matrix.package_format == 'deb'
         run: |
           PKG=$(ls dist/*.deb | head -n1)
           lintian "$PKG" || true
-          sudo apt-get install -y "./$PKG"
+          DEBIAN_FRONTEND=noninteractive apt-get install -y "./$PKG"
           test -x /usr/bin/nanite-clip
+          ! ldd /usr/bin/nanite-clip | grep -q "not found"
           test -f /usr/share/applications/nanite-clip.desktop
           test -f /usr/share/metainfo/dev.angz.NaniteClip.metainfo.xml
-          sudo apt-get remove -y nanite-clip
+          DEBIAN_FRONTEND=noninteractive apt-get remove -y nanite-clip
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-package
+          path: dist/*.deb
+
+  rpm:
+    name: Build Fedora RPM package
+    runs-on: ubuntu-latest
+    container: fedora:42
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set up build environment
+        run: |
+          dnf install -y \
+            appstream \
+            clang \
+            cmake \
+            curl \
+            desktop-file-utils \
+            extra-cmake-modules \
+            gcc \
+            gcc-c++ \
+            git \
+            glib2-devel \
+            gtk3-devel \
+            kf6-kcoreaddons-devel \
+            kf6-kdbusaddons-devel \
+            kf6-kglobalaccel-devel \
+            libxdo-devel \
+            make \
+            ninja-build \
+            perl \
+            pipewire-devel \
+            pkgconf-pkg-config \
+            qt6-qtbase-devel \
+            ruby \
+            ruby-devel \
+            rubygems \
+            rpmlint
+          gem install --no-document fpm --version "$FPM_VERSION"
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain nightly
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v6
+
+      - name: Build release binary
+        run: cargo build --locked --release
+
+      - name: Build platform service
+        run: |
+          cmake -S native/platform_service -B target/platform-service-release -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build target/platform-service-release
+
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate assets/linux/nanite-clip.desktop
+          appstreamcli validate --no-net assets/linux/dev.angz.NaniteClip.metainfo.xml
+
+      - name: Package RPM installer
+        run: |
+          chmod +x scripts/package-release-rpm.sh
+          scripts/package-release-rpm.sh \
+            target/release/nanite-clip \
+            target/platform-service-release/nanite-clip-platform-service \
+            "${RELEASE_REF_NAME}" \
+            dist
 
       - name: Lint and smoke test RPM
-        if: matrix.package_format == 'rpm'
         run: |
           PKG=$(ls dist/*.rpm | head -n1)
           rpmlint "$PKG" || true
-          sudo rpm -ivh --nodeps "$PKG"
+          dnf install -y "$PKG"
           test -x /usr/bin/nanite-clip
+          ! ldd /usr/bin/nanite-clip | grep -q "not found"
           test -f /usr/share/applications/nanite-clip.desktop
           test -f /usr/share/metainfo/dev.angz.NaniteClip.metainfo.xml
-          sudo rpm -e nanite-clip
+          dnf remove -y nanite-clip
 
-      - name: Upload Linux package artifact
+      - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-${{ matrix.package_format }}-package
-          path: dist/*.${{ matrix.package_format }}
+          name: linux-rpm-package
+          path: dist/*.rpm
 
   pacman:
     name: Build pacman package
-    needs: build
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
       - name: Set up build environment
         run: |
-          pacman -Syu --noconfirm base-devel desktop-file-utils appstream
+          pacman -Syu --noconfirm \
+            appstream \
+            base-devel \
+            clang \
+            cmake \
+            desktop-file-utils \
+            extra-cmake-modules \
+            glib2 \
+            gtk3 \
+            kcoreaddons \
+            kdbusaddons \
+            kglobalaccel \
+            libpipewire \
+            ninja \
+            qt6-base \
+            rustup \
+            xdotool
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
       - uses: actions/checkout@v6
 
-      - name: Download Linux build outputs
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-build-outputs
-          path: target/reused-build
-
-      - name: Extract Linux build outputs
-        run: |
-          tar -xzf target/reused-build/linux-build-outputs.tar.gz -C target/reused-build
+      - name: Install Rust nightly for builder
+        run: su builder -c 'rustup default nightly'
 
       - name: Validate desktop metadata
         run: |
@@ -315,7 +382,7 @@ jobs:
 
   release:
     name: Create GitHub release
-    needs: [build, windows-build, windows-msi, linux-native-packages, pacman, flatpak]
+    needs: [build, deb, rpm, windows-build, windows-msi, pacman, flatpak]
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -338,7 +405,6 @@ jobs:
       - name: Generate checksums
         run: |
           find . -type f \( \
-            -name "*.tar.gz" -o \
             -name "*.exe" -o \
             -name "*.msi" -o \
             -name "*.deb" -o \
@@ -353,7 +419,6 @@ jobs:
           draft: true
           body_path: RELEASE_NOTES.md
           files: |
-            binary-tarball/*.tar.gz
             nanite-clip-windows-x64/nanite-clip.exe
             windows-msi/*.msi
             linux-deb-package/*.deb

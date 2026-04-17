@@ -55,35 +55,40 @@ the active capture backend to save the relevant segment.
 	 - Download the latest .deb artifact.
 	 - Install it:
 	   - sudo apt install ./nanite-clip_<version>_amd64.deb
-2. Fedora/openSUSE/RHEL-like:
+	 - Release packages are built on Ubuntu 24.04 so the bundled binary matches current
+	   Debian/Ubuntu userspace.
+2. Fedora:
 	 - Download the latest .rpm artifact.
 	 - Install it with your package manager (example for dnf):
 	   - sudo dnf install ./nanite-clip-<version>-1.x86_64.rpm
+	 - Release packages are built on Fedora so the bundled binary matches Fedora's current
+	   library set.
 3. Arch Linux:
 	 - Download the latest .pkg.tar.zst artifact.
 	 - Install it:
 	   - sudo pacman -U ./nanite-clip-<version>-1-x86_64.pkg.tar.zst
+	 - Avoid the published `v0.2.0` pacman artifact on current Arch systems; it was packaged from an
+	   Ubuntu-built binary and can fail with `libxdo.so.3` / `libxdo.so.4` ABI mismatches.
 4. Flatpak (experimental, OBS backend focused):
 	 - Download the latest .flatpak artifact.
 	 - Install it:
 	   - flatpak install ./nanite-clip-<version>-x86_64.flatpak
 	 - Run it:
 	   - flatpak run dev.angz.NaniteClip
-5. Portable tarball fallback:
-	 - Download nanite-clip-<version>-x86_64-linux.tar.gz.
-	 - Extract and run:
-	   - tar -xzf nanite-clip-<version>-x86_64-linux.tar.gz
-	   - ./nanite-clip
-	 - Keep nanite-clip-platform-service next to the main binary if you want KDE Wayland hotkeys.
-	 - Optional desktop integration (per-user): copy desktop/icon files from usr/share in the archive
-	   into ~/.local/share/applications and ~/.local/share/icons/hicolor/512x512/apps.
-6. Linux backend dependencies:
+5. Linux backend dependencies:
+	 - On Debian/Ubuntu, the release package declares runtime dependencies on `libsqlite3-0` and
+	   `libxdo3`.
+	 - On Fedora, the release package declares runtime dependencies on `sqlite-libs` and `libxdo`.
+	 - On Arch, `xdotool` is required at runtime because the tray integration links against
+	   `libxdo`.
+	 - Each release package is built on its target distro family. Repackaging a binary built on one
+	   distro for another distro is not supported.
 	 - The .deb and .rpm release packages declare optional metadata for the default Linux backend
 	   (recommended: gpu-screen-recorder, suggested: gpu-screen-recorder-notification).
 	 - The .deb/.rpm/.pkg.tar.zst packages also install AppStream metadata and refresh desktop/icon
 	   caches during install/remove where the host tooling is available.
 	 - If your distro repository does not provide those exact package names, install the dependencies
-	   manually and use the portable tarball release.
+	   manually or build from source.
 
 ### Windows (x86_64)
 

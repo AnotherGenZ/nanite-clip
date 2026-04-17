@@ -6,17 +6,41 @@ pkgdesc="Desktop companion for PlanetSide 2 that automatically saves gameplay cl
 arch=('x86_64')
 url="https://github.com/AnotherGenZ/nanite-clip"
 license=('Apache-2.0')
-depends=('gpu-screen-recorder' 'gpu-screen-recorder-notification' 'sqlite')
+options=('!lto')
+depends=('gpu-screen-recorder' 'gpu-screen-recorder-notification' 'sqlite' 'xdotool')
+makedepends=('rustup' 'clang' 'cmake' 'ninja' 'extra-cmake-modules' 'qt6-base' 'kcoreaddons' 'kdbusaddons' 'kglobalaccel' 'glib2' 'gtk3' 'libpipewire' 'xdotool')
 source=()
 sha256sums=()
+
+prepare() {
+    local repo_root
+    repo_root="$(cd "$startdir/../.." && pwd)"
+
+    cd "$repo_root"
+    export RUSTUP_TOOLCHAIN=nightly
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    local repo_root
+    repo_root="$(cd "$startdir/../.." && pwd)"
+
+    cd "$repo_root"
+    export RUSTUP_TOOLCHAIN=nightly
+    export CARGO_TARGET_DIR=target/pacman-release
+    cargo build --frozen --release
+
+    cmake -S native/platform_service -B target/pacman-platform-service -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake --build target/pacman-platform-service
+}
 
 package() {
     local repo_root
     repo_root="$(cd "$startdir/../.." && pwd)"
 
-    install -Dm755 "$repo_root/target/reused-build/release/$pkgname" \
+    install -Dm755 "$repo_root/target/pacman-release/release/$pkgname" \
         "$pkgdir/usr/bin/$pkgname"
-    install -Dm755 "$repo_root/target/reused-build/platform-service-release/nanite-clip-platform-service" \
+    install -Dm755 "$repo_root/target/pacman-platform-service/nanite-clip-platform-service" \
         "$pkgdir/usr/lib/$pkgname/nanite-clip-platform-service"
     install -Dm644 "$repo_root/assets/NaniteClips-512.png" \
         "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"

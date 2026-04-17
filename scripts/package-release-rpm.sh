@@ -14,11 +14,12 @@ die() {
     exit 1
 }
 
-[[ -n "$APP_BINARY" ]] || die "usage: $0 <app-binary> <platform-service-binary> <version-tag> [output-dir]"
-[[ -n "$PLATFORM_SERVICE_BINARY" ]] || die "missing platform service binary path"
+[[ -n "$APP_BINARY" ]] || die "usage: $0 <app-binary> [platform-service-binary] <version-tag> [output-dir]"
 [[ -n "$VERSION_TAG" ]] || die "missing version tag"
 [[ -f "$APP_BINARY" ]] || die "app binary not found: $APP_BINARY"
-[[ -f "$PLATFORM_SERVICE_BINARY" ]] || die "platform service binary not found: $PLATFORM_SERVICE_BINARY"
+if [[ -n "$PLATFORM_SERVICE_BINARY" && ! -f "$PLATFORM_SERVICE_BINARY" ]]; then
+    die "platform service binary not found: $PLATFORM_SERVICE_BINARY"
+fi
 [[ -f LICENSE ]] || die "LICENSE not found"
 [[ -f "$PACKAGE_ICON" ]] || die "icon asset not found: $PACKAGE_ICON"
 [[ -f assets/linux/nanite-clip.desktop ]] || die "desktop file not found: assets/linux/nanite-clip.desktop"
@@ -32,8 +33,10 @@ STAGING_DIR=$(mktemp -d "$OUTPUT_DIR/rpm-root.XXXXXX")
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
 install -Dm755 "$APP_BINARY" "$STAGING_DIR/usr/bin/$PACKAGE_NAME"
-install -Dm755 "$PLATFORM_SERVICE_BINARY" \
-    "$STAGING_DIR/usr/lib/$PACKAGE_NAME/nanite-clip-platform-service"
+if [[ -n "$PLATFORM_SERVICE_BINARY" ]]; then
+    install -Dm755 "$PLATFORM_SERVICE_BINARY" \
+        "$STAGING_DIR/usr/lib/$PACKAGE_NAME/nanite-clip-platform-service"
+fi
 install -Dm644 "$PACKAGE_ICON" \
     "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/$PACKAGE_NAME.png"
 install -Dm644 assets/linux/nanite-clip.desktop \
@@ -55,7 +58,8 @@ fpm \
     --description "Desktop companion for PlanetSide 2 that automatically saves gameplay clips on notable events" \
     --rpm-tag "Recommends: gpu-screen-recorder" \
     --rpm-tag "Suggests: gpu-screen-recorder-notification" \
-    --depends "sqlite" \
+    --depends "libxdo" \
+    --depends "sqlite-libs" \
     --after-install packaging/linux/maintainer-scripts/after-install.sh \
     --after-remove packaging/linux/maintainer-scripts/after-remove.sh \
     --package "$OUTPUT_DIR" \
