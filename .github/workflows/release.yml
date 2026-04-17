@@ -14,7 +14,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_WIX_VERSION: "0.3.9"
   FPM_VERSION: "1.17.0"
-  RELEASE_BUILD_IMAGE: ghcr.io/anothergenz/nanite-clip-release-build:ubuntu25.04
   RELEASE_REF_NAME: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-test' }}
 
 jobs:
@@ -22,7 +21,7 @@ jobs:
     name: Build
     runs-on: ubuntu-24.04
     container:
-      image: ${{ env.RELEASE_BUILD_IMAGE }}
+      image: ghcr.io/anothergenz/nanite-clip-release-build:ubuntu25.04
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
