@@ -34,6 +34,7 @@ use crate::post_process::{
     TrimSpec,
 };
 use crate::process;
+use crate::profile_transfer::{ProfileTransferBundle, ProfileTransferConflicts};
 use crate::recorder::{Recorder, SavePollResult, VideoResolution};
 use crate::rules::engine::RuleEngine;
 use crate::rules::switching::choose_runtime_rule;
@@ -116,6 +117,7 @@ pub struct App {
     status_feedback_expires_at: Option<Instant>,
     rules_feedback: Option<String>,
     rules_feedback_expires_at: Option<Instant>,
+    pending_profile_import: Option<PendingProfileImport>,
     resolving_characters: BTreeSet<String>,
     resolving_lookups: BTreeSet<(LookupKind, i64)>,
     selected_rule_id: Option<String>,
@@ -251,6 +253,13 @@ struct PendingClipDelete {
     clip_id: i64,
     path: Option<PathBuf>,
     file_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingProfileImport {
+    pub source_path: String,
+    pub bundle: ProfileTransferBundle,
+    pub conflicts: ProfileTransferConflicts,
 }
 
 type RecorderStartResult =
@@ -659,6 +668,7 @@ impl App {
             status_feedback_expires_at: None,
             rules_feedback: initial_rules_feedback.clone(),
             rules_feedback_expires_at: None,
+            pending_profile_import: None,
             resolving_characters: BTreeSet::new(),
             resolving_lookups: BTreeSet::new(),
             selected_rule_id: None,
@@ -4682,7 +4692,7 @@ impl App {
         }
     }
 
-    fn sync_tray_snapshot(&self) -> Task<Message> {
+    pub(in crate::app) fn sync_tray_snapshot(&self) -> Task<Message> {
         let Some(tray) = &self.tray else {
             return Task::none();
         };
@@ -5271,6 +5281,7 @@ mod tests {
             status_feedback_expires_at: None,
             rules_feedback: None,
             rules_feedback_expires_at: None,
+            pending_profile_import: None,
             resolving_characters: BTreeSet::new(),
             resolving_lookups: BTreeSet::new(),
             selected_rule_id: None,

@@ -18,6 +18,7 @@ mod notifications;
 mod platform_service;
 mod post_process;
 mod process;
+mod profile_transfer;
 mod recorder;
 mod rules;
 mod secure_store;

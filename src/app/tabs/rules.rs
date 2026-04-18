@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use auraxis::Faction;
 use chrono::Utc;
 use iced::{Element, Length, mouse};
 
+use crate::app::PendingProfileImport;
 use crate::census;
 use crate::db::{LookupKind, WeaponReferenceCacheEntry};
+use crate::profile_transfer::ProfileTransferBundle;
 use crate::rules::schedule::{
     ScheduleWeekday, default_schedule_weekdays, format_schedule_time, normalize_schedule_weekdays,
 };
@@ -35,6 +38,7 @@ use crate::ui::layout::section::section;
 use crate::ui::layout::sidebar::{SidebarItem, sidebar};
 use crate::ui::layout::tabs::{Tab, tabs};
 use crate::ui::overlay::banner::banner;
+use crate::ui::overlay::modal::modal;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::primitives::switch::switch as toggle_switch;
 
@@ -54,6 +58,12 @@ pub enum Message {
     CreateProfile,
     DuplicateActiveProfile,
     DeleteActiveProfile,
+    ExportActiveProfile,
+    ActiveProfileExported(Result<Option<String>, String>),
+    ImportProfiles,
+    ProfilesImportPrepared(Result<Option<PendingProfileImport>, String>),
+    ConfirmProfileImportOverwrite,
+    CancelProfileImportOverwrite,
     RenameActiveProfile(String),
     ToggleRule(String, bool),
     SelectRule(String),
@@ -183,6 +193,93 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 persist(app);
                 app.notify_active_profile_activated();
             }
+        }
+        Message::ExportActiveProfile => {
+            let Some(profile) = app.active_profile().cloned() else {
+                app.set_rules_feedback("No active profile is available to export.", true);
+                return iced::Task::none();
+            };
+            let bundle = ProfileTransferBundle::from_profiles(
+                &[profile.clone()],
+                &app.config.rule_definitions,
+            );
+            let suggested_path = default_profile_export_path(app, &profile.name);
+
+            return iced::Task::perform(
+                async move {
+                    let Some(path) = super::settings::save_file(
+                        suggested_path,
+                        "Export NaniteClip profile".into(),
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+
+                    let contents = bundle.to_toml_string()?;
+                    tokio::fs::write(&path, contents)
+                        .await
+                        .map_err(|error| format!("Failed to write {}: {error}", path))?;
+                    Ok(Some(path))
+                },
+                |result| AppMessage::Rules(Message::ActiveProfileExported(result)),
+            );
+        }
+        Message::ActiveProfileExported(result) => match result {
+            Ok(Some(path)) => {
+                app.set_rules_feedback(format!("Exported active profile to {path}"), false)
+            }
+            Ok(None) => {}
+            Err(error) => app.set_rules_feedback(error, true),
+        },
+        Message::ImportProfiles => {
+            let initial_path = default_profile_import_path(app);
+            let existing_profiles = app.config.rule_profiles.clone();
+            let existing_rules = app.config.rule_definitions.clone();
+
+            return iced::Task::perform(
+                async move {
+                    let Some(path) = super::settings::pick_file(
+                        initial_path,
+                        "Import NaniteClip profiles".into(),
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+
+                    let contents = tokio::fs::read_to_string(&path)
+                        .await
+                        .map_err(|error| format!("Failed to read {}: {error}", path))?;
+                    let bundle = ProfileTransferBundle::from_toml(&contents)?;
+                    let conflicts = bundle.detect_conflicts(&existing_profiles, &existing_rules);
+                    Ok(Some(PendingProfileImport {
+                        source_path: path,
+                        bundle,
+                        conflicts,
+                    }))
+                },
+                |result| AppMessage::Rules(Message::ProfilesImportPrepared(result)),
+            );
+        }
+        Message::ProfilesImportPrepared(result) => match result {
+            Ok(Some(pending)) if pending.conflicts.is_empty() => {
+                apply_profile_import(app, pending, false);
+            }
+            Ok(Some(pending)) => {
+                app.pending_profile_import = Some(pending);
+            }
+            Ok(None) => {}
+            Err(error) => app.set_rules_feedback(error, true),
+        },
+        Message::ConfirmProfileImportOverwrite => {
+            let Some(pending) = app.pending_profile_import.take() else {
+                return iced::Task::none();
+            };
+            apply_profile_import(app, pending, true);
+        }
+        Message::CancelProfileImportOverwrite => {
+            app.pending_profile_import = None;
         }
         Message::RenameActiveProfile(name) => {
             if let Some(index) = app.active_profile_index() {
@@ -936,10 +1033,19 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     };
 
     let content = column![header, body].spacing(12);
-
-    mouse_area(content)
+    let base: Element<'_, Message> = mouse_area(content)
         .on_release(Message::RuleDragReleased)
-        .into()
+        .into();
+
+    if let Some(pending) = &app.pending_profile_import {
+        modal(
+            base,
+            profile_import_overwrite_dialog(pending),
+            Some(Message::CancelProfileImportOverwrite),
+        )
+    } else {
+        base
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,6 +1198,18 @@ fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Elemen
                     .on_press(Message::DeleteActiveProfile)
                     .into(),
                 "Delete the current profile (at least one must remain).",
+            ),
+            with_tooltip(
+                styled_button("Export Active", ButtonTone::Secondary)
+                    .on_press(Message::ExportActiveProfile)
+                    .into(),
+                "Export the active profile and the rules it enables.",
+            ),
+            with_tooltip(
+                styled_button("Import", ButtonTone::Primary)
+                    .on_press(Message::ImportProfiles)
+                    .into(),
+                "Import one or more profiles and their associated rules from a TOML bundle.",
             ),
         ]
         .spacing(8)
@@ -2008,6 +2126,168 @@ pub(in crate::app) fn load_reference_data(app: &App) -> iced::Task<AppMessage> {
     tasks.push(refresh_weapon_task);
 
     iced::Task::batch(tasks)
+}
+
+fn apply_profile_import(app: &mut App, pending: PendingProfileImport, overwrite_existing: bool) {
+    let active_profile_touched = pending
+        .bundle
+        .profiles
+        .iter()
+        .any(|profile| profile.id == app.config.active_profile_id);
+
+    match pending.bundle.apply(
+        &mut app.config.rule_profiles,
+        &mut app.config.rule_definitions,
+        overwrite_existing,
+    ) {
+        Ok(outcome) => {
+            app.pending_profile_import = None;
+            persist(app);
+            let _ = app.sync_tray_snapshot();
+            if active_profile_touched {
+                app.notify_active_profile_activated();
+            }
+
+            let source_name = Path::new(&pending.source_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(pending.source_path.as_str());
+            let summary_text = outcome.summary();
+            let summary = summary_text.trim_end_matches('.');
+            app.set_rules_feedback(format!("{summary}. Source: {source_name}."), false);
+        }
+        Err(error) => {
+            app.pending_profile_import = None;
+            app.set_rules_feedback(error, true);
+        }
+    }
+}
+
+fn default_profile_export_path(app: &App, profile_name: &str) -> String {
+    let file_name = format!(
+        "nanite-clip-profile-{}.toml",
+        slugify_profile_name(profile_name)
+    );
+    app.config
+        .recorder
+        .save_directory
+        .join(file_name)
+        .display()
+        .to_string()
+}
+
+fn default_profile_import_path(app: &App) -> String {
+    app.config.recorder.save_directory.display().to_string()
+}
+
+fn slugify_profile_name(profile_name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+
+    for ch in profile_name.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if matches!(ch, ' ' | '-' | '_') {
+            Some('-')
+        } else {
+            None
+        };
+
+        match normalized {
+            Some('-') if !slug.is_empty() && !last_was_separator => {
+                slug.push('-');
+                last_was_separator = true;
+            }
+            Some(value) => {
+                slug.push(value);
+                last_was_separator = false;
+            }
+            None => {}
+        }
+    }
+
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "profile".into()
+    } else {
+        slug.into()
+    }
+}
+
+fn profile_import_overwrite_dialog<'a>(pending: &'a PendingProfileImport) -> Element<'a, Message> {
+    let conflict_count = pending.conflicts.profile_ids.len() + pending.conflicts.rule_ids.len();
+    let source_name = Path::new(&pending.source_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(pending.source_path.as_str());
+
+    let mut body = column![
+        text("Overwrite existing profiles or rules?").size(24),
+        text(format!(
+            "Importing {} profile(s) and {} rule(s) from {source_name}.",
+            pending.bundle.profiles.len(),
+            pending.bundle.rules.len()
+        ))
+        .size(14),
+        banner(format!("{conflict_count} existing item(s) already use the same id."))
+            .warning()
+            .description(
+                "Continuing will replace the matching profiles and rules. Overwritten rules also affect any existing profiles that already enable them.",
+            )
+            .build(),
+    ]
+    .spacing(12)
+    .width(Length::Fill);
+
+    if !pending.conflicts.profile_ids.is_empty() {
+        body = body.push(conflict_section(
+            "Conflicting Profiles",
+            &pending.conflicts.profile_ids,
+        ));
+    }
+
+    if !pending.conflicts.rule_ids.is_empty() {
+        body = body.push(conflict_section(
+            "Conflicting Rules",
+            &pending.conflicts.rule_ids,
+        ));
+    }
+
+    body = body.push(
+        row![
+            iced::widget::Space::new().width(Length::Fill),
+            styled_button("Cancel", ButtonTone::Secondary)
+                .on_press(Message::CancelProfileImportOverwrite),
+            styled_button("Overwrite & Import", ButtonTone::Danger)
+                .on_press(Message::ConfirmProfileImportOverwrite),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+    );
+
+    container(body).width(Length::Fill).into()
+}
+
+fn conflict_section<'a>(title: &'a str, ids: &'a [String]) -> Element<'a, Message> {
+    column![
+        text(title).size(16),
+        container(text(conflict_preview(ids)).size(14))
+            .width(Length::Fill)
+            .padding(12)
+            .style(rounded_box),
+    ]
+    .spacing(6)
+    .into()
+}
+
+fn conflict_preview(ids: &[String]) -> String {
+    const MAX_PREVIEW_IDS: usize = 8;
+
+    let mut preview: Vec<String> = ids.iter().take(MAX_PREVIEW_IDS).cloned().collect();
+    if ids.len() > MAX_PREVIEW_IDS {
+        preview.push(format!("and {} more", ids.len() - MAX_PREVIEW_IDS));
+    }
+    preview.join(", ")
 }
 
 pub(in crate::app) fn persist(app: &mut App) {

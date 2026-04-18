@@ -2361,6 +2361,20 @@ async fn pick_directory(current_dir: String) -> Result<Option<String>, String> {
     pick_directory_impl(current_dir)
 }
 
+pub(super) async fn pick_file(
+    current_path: String,
+    title: String,
+) -> Result<Option<String>, String> {
+    pick_file_impl(current_path, title)
+}
+
+pub(super) async fn save_file(
+    initial_path: String,
+    title: String,
+) -> Result<Option<String>, String> {
+    save_file_impl(initial_path, title)
+}
+
 #[cfg(not(target_os = "windows"))]
 fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
     let dialog_attempts = [
@@ -2414,6 +2428,75 @@ fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+fn pick_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
+    run_path_dialog(
+        [
+            (
+                "zenity",
+                build_zenity_open_file_args(current_path.as_str(), title.as_str()),
+            ),
+            (
+                "qarma",
+                build_zenity_open_file_args(current_path.as_str(), title.as_str()),
+            ),
+            (
+                "yad",
+                build_zenity_open_file_args(current_path.as_str(), title.as_str()),
+            ),
+            (
+                "kdialog",
+                build_kdialog_open_file_args(current_path.as_str(), title.as_str()),
+            ),
+        ],
+        "No supported file picker found. Install `zenity`, `qarma`, `yad`, or `kdialog`.",
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn pick_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
+    let (initial_directory, _) = sanitize_windows_file_dialog_target(current_path.as_str());
+    std::thread::spawn(move || pick_file_with_windows_shell_dialog(initial_directory, title))
+        .join()
+        .map_err(|_| "Windows file picker thread panicked".to_string())?
+}
+
+#[cfg(not(target_os = "windows"))]
+fn save_file_impl(initial_path: String, title: String) -> Result<Option<String>, String> {
+    run_path_dialog(
+        [
+            (
+                "zenity",
+                build_zenity_save_file_args(initial_path.as_str(), title.as_str()),
+            ),
+            (
+                "qarma",
+                build_zenity_save_file_args(initial_path.as_str(), title.as_str()),
+            ),
+            (
+                "yad",
+                build_zenity_save_file_args(initial_path.as_str(), title.as_str()),
+            ),
+            (
+                "kdialog",
+                build_kdialog_save_file_args(initial_path.as_str(), title.as_str()),
+            ),
+        ],
+        "No supported save-file picker found. Install `zenity`, `qarma`, `yad`, or `kdialog`.",
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn save_file_impl(initial_path: String, title: String) -> Result<Option<String>, String> {
+    let (initial_directory, suggested_name) =
+        sanitize_windows_file_dialog_target(initial_path.as_str());
+    std::thread::spawn(move || {
+        save_file_with_windows_shell_dialog(initial_directory, suggested_name, title)
+    })
+    .join()
+    .map_err(|_| "Windows save-file picker thread panicked".to_string())?
+}
+
+#[cfg(not(target_os = "windows"))]
 fn build_zenity_args(current_dir: &str) -> Vec<String> {
     let mut args = vec!["--file-selection".into(), "--directory".into()];
     if let Some(initial) = sanitize_dialog_start_dir(current_dir) {
@@ -2430,6 +2513,87 @@ fn build_kdialog_args(current_dir: &str) -> Vec<String> {
         args.push(initial);
     }
     args
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_zenity_open_file_args(current_path: &str, title: &str) -> Vec<String> {
+    let mut args = vec!["--file-selection".into(), "--title".into(), title.into()];
+    if let Some(initial) = sanitize_dialog_file_path(current_path, false) {
+        args.push("--filename".into());
+        args.push(initial);
+    }
+    args
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_zenity_save_file_args(initial_path: &str, title: &str) -> Vec<String> {
+    let mut args = vec![
+        "--file-selection".into(),
+        "--save".into(),
+        "--confirm-overwrite".into(),
+        "--title".into(),
+        title.into(),
+    ];
+    if let Some(initial) = sanitize_dialog_file_path(initial_path, true) {
+        args.push("--filename".into());
+        args.push(initial);
+    }
+    args
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_kdialog_open_file_args(current_path: &str, title: &str) -> Vec<String> {
+    let mut args = vec!["--title".into(), title.into(), "--getopenfilename".into()];
+    if let Some(initial) = sanitize_dialog_file_path(current_path, false) {
+        args.push(initial);
+    }
+    args
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_kdialog_save_file_args(initial_path: &str, title: &str) -> Vec<String> {
+    let mut args = vec!["--title".into(), title.into(), "--getsavefilename".into()];
+    if let Some(initial) = sanitize_dialog_file_path(initial_path, true) {
+        args.push(initial);
+    }
+    args
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_path_dialog<const N: usize>(
+    dialog_attempts: [(&str, Vec<String>); N],
+    missing_dialog_error: &str,
+) -> Result<Option<String>, String> {
+    for (program, args) in dialog_attempts {
+        let output = match std::process::Command::new(program).args(&args).output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{program} failed to start: {error}")),
+        };
+
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return if path.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(path))
+            };
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if is_dialog_cancelled(program, output.status.code()) {
+            return Ok(None);
+        }
+
+        let detail = if stderr.is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            stderr
+        };
+        return Err(format!("{program} failed: {detail}"));
+    }
+
+    Err(missing_dialog_error.into())
 }
 
 #[cfg(test)]
@@ -2512,6 +2676,31 @@ fn sanitize_dialog_start_dir(current_dir: &str) -> Option<String> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn sanitize_dialog_file_path(path_hint: &str, allow_nonexistent_file_name: bool) -> Option<String> {
+    let trimmed = path_hint.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let path = std::path::Path::new(trimmed);
+    if path.exists() {
+        return if path.is_dir() {
+            Some(with_trailing_slash(trimmed))
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+
+    if allow_nonexistent_file_name && path.parent().is_some_and(std::path::Path::exists) {
+        return Some(path.to_string_lossy().into_owned());
+    }
+
+    path.parent()
+        .filter(|parent| parent.exists())
+        .map(|parent| with_trailing_slash(parent.to_string_lossy().as_ref()))
+}
+
 #[cfg(target_os = "windows")]
 fn sanitize_windows_dialog_start_dir(current_dir: &str) -> Option<String> {
     let trimmed = current_dir.trim();
@@ -2526,6 +2715,35 @@ fn sanitize_windows_dialog_start_dir(current_dir: &str) -> Option<String> {
         path.parent()
             .map(|parent| parent.to_string_lossy().into_owned())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn sanitize_windows_file_dialog_target(path_hint: &str) -> (Option<String>, Option<String>) {
+    let trimmed = path_hint.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+
+    let path = std::path::Path::new(trimmed);
+    if path.exists() {
+        if path.is_dir() {
+            return (Some(trimmed.to_string()), None);
+        }
+
+        return (
+            path.parent()
+                .map(|parent| parent.to_string_lossy().into_owned()),
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+        );
+    }
+
+    (
+        path.parent()
+            .map(|parent| parent.to_string_lossy().into_owned()),
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2624,6 +2842,197 @@ fn pick_directory_with_windows_shell_dialog(
         let path = selected_path
             .to_string()
             .map_err(|error| format!("selected folder path was not valid UTF-16: {error}"))?;
+        CoTaskMemFree(Some(selected_path.0.cast()));
+
+        if path.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(path))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn pick_file_with_windows_shell_dialog(
+    initial_directory: Option<String>,
+    title: String,
+) -> Result<Option<String>, String> {
+    use windows::Win32::Foundation::ERROR_CANCELLED;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
+        CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FileOpenDialog, IFileOpenDialog,
+        IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    };
+    use windows::core::{HRESULT, HSTRING};
+
+    struct ComApartment;
+
+    impl Drop for ComApartment {
+        fn drop(&mut self) {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+            .ok()
+            .map_err(|error| format!("failed to initialize the Windows file picker: {error}"))?;
+        let _com_apartment = ComApartment;
+
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|error| format!("failed to create the Windows file picker: {error}"))?;
+
+        dialog
+            .SetTitle(&HSTRING::from(title))
+            .map_err(|error| format!("failed to set the Windows file picker title: {error}"))?;
+
+        let options = dialog
+            .GetOptions()
+            .map_err(|error| format!("failed to read Windows file picker options: {error}"))?;
+        dialog
+            .SetOptions(options | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)
+            .map_err(|error| format!("failed to configure the Windows file picker: {error}"))?;
+
+        if let Some(initial_directory) = initial_directory.as_ref() {
+            let shell_item: IShellItem =
+                SHCreateItemFromParsingName(&HSTRING::from(initial_directory), None).map_err(
+                    |error| {
+                        format!("failed to resolve the initial directory for the picker: {error}")
+                    },
+                )?;
+            dialog
+                .SetFolder(&shell_item)
+                .map_err(|error| format!("failed to set the initial picker directory: {error}"))?;
+            dialog
+                .SetDefaultFolder(&shell_item)
+                .map_err(|error| format!("failed to set the default picker directory: {error}"))?;
+        }
+
+        match dialog.Show(None) {
+            Ok(()) => {}
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(format!("Windows file picker failed: {error}"));
+            }
+        }
+
+        let selected_item = dialog
+            .GetResult()
+            .map_err(|error| format!("failed to read the selected file: {error}"))?;
+        let selected_path = selected_item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|error| format!("failed to resolve the selected file path: {error}"))?;
+        let path = selected_path
+            .to_string()
+            .map_err(|error| format!("selected file path was not valid UTF-16: {error}"))?;
+        CoTaskMemFree(Some(selected_path.0.cast()));
+
+        if path.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(path))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn save_file_with_windows_shell_dialog(
+    initial_directory: Option<String>,
+    suggested_name: Option<String>,
+    title: String,
+) -> Result<Option<String>, String> {
+    use windows::Win32::Foundation::ERROR_CANCELLED;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
+        CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FileSaveDialog,
+        IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    };
+    use windows::core::{HRESULT, HSTRING};
+
+    struct ComApartment;
+
+    impl Drop for ComApartment {
+        fn drop(&mut self) {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+            .ok()
+            .map_err(|error| format!("failed to initialize the Windows save picker: {error}"))?;
+        let _com_apartment = ComApartment;
+
+        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|error| format!("failed to create the Windows save picker: {error}"))?;
+
+        dialog
+            .SetTitle(&HSTRING::from(title))
+            .map_err(|error| format!("failed to set the Windows save picker title: {error}"))?;
+
+        let options = dialog
+            .GetOptions()
+            .map_err(|error| format!("failed to read Windows save picker options: {error}"))?;
+        dialog
+            .SetOptions(options | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT)
+            .map_err(|error| format!("failed to configure the Windows save picker: {error}"))?;
+
+        if let Some(initial_directory) = initial_directory.as_ref() {
+            let shell_item: IShellItem =
+                SHCreateItemFromParsingName(&HSTRING::from(initial_directory), None).map_err(
+                    |error| {
+                        format!("failed to resolve the initial directory for the picker: {error}")
+                    },
+                )?;
+            dialog
+                .SetFolder(&shell_item)
+                .map_err(|error| format!("failed to set the initial picker directory: {error}"))?;
+            dialog
+                .SetDefaultFolder(&shell_item)
+                .map_err(|error| format!("failed to set the default picker directory: {error}"))?;
+        }
+
+        if let Some(suggested_name) = suggested_name.as_ref() {
+            dialog
+                .SetFileName(&HSTRING::from(suggested_name))
+                .map_err(|error| format!("failed to set the suggested file name: {error}"))?;
+        }
+
+        dialog
+            .SetDefaultExtension(&HSTRING::from("toml"))
+            .map_err(|error| format!("failed to set the save picker extension: {error}"))?;
+
+        match dialog.Show(None) {
+            Ok(()) => {}
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(format!("Windows save picker failed: {error}"));
+            }
+        }
+
+        let selected_item = dialog
+            .GetResult()
+            .map_err(|error| format!("failed to read the selected save path: {error}"))?;
+        let selected_path = selected_item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|error| format!("failed to resolve the selected save path: {error}"))?;
+        let path = selected_path
+            .to_string()
+            .map_err(|error| format!("selected save path was not valid UTF-16: {error}"))?;
         CoTaskMemFree(Some(selected_path.0.cast()));
 
         if path.trim().is_empty() {
