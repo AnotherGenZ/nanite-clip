@@ -2361,11 +2361,11 @@ async fn pick_directory(current_dir: String) -> Result<Option<String>, String> {
     pick_directory_impl(current_dir)
 }
 
-pub(super) async fn pick_file(
+pub(super) async fn pick_toml_file(
     current_path: String,
     title: String,
 ) -> Result<Option<String>, String> {
-    pick_file_impl(current_path, title)
+    pick_toml_file_impl(current_path, title)
 }
 
 pub(super) async fn save_file(
@@ -2428,36 +2428,42 @@ fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn pick_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
-    run_path_dialog(
+fn pick_toml_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
+    let result = run_path_dialog(
         [
             (
                 "zenity",
-                build_zenity_open_file_args(current_path.as_str(), title.as_str()),
+                build_zenity_open_toml_file_args(current_path.as_str(), title.as_str()),
             ),
             (
                 "qarma",
-                build_zenity_open_file_args(current_path.as_str(), title.as_str()),
+                build_zenity_open_toml_file_args(current_path.as_str(), title.as_str()),
             ),
             (
                 "yad",
-                build_zenity_open_file_args(current_path.as_str(), title.as_str()),
+                build_zenity_open_toml_file_args(current_path.as_str(), title.as_str()),
             ),
             (
                 "kdialog",
-                build_kdialog_open_file_args(current_path.as_str(), title.as_str()),
+                build_kdialog_open_toml_file_args(current_path.as_str(), title.as_str()),
             ),
         ],
         "No supported file picker found. Install `zenity`, `qarma`, `yad`, or `kdialog`.",
-    )
+    )?;
+
+    validate_toml_file_selection(result)
 }
 
 #[cfg(target_os = "windows")]
-fn pick_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
+fn pick_toml_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
     let (initial_directory, _) = sanitize_windows_file_dialog_target(current_path.as_str());
-    std::thread::spawn(move || pick_file_with_windows_shell_dialog(initial_directory, title))
-        .join()
-        .map_err(|_| "Windows file picker thread panicked".to_string())?
+    let result = std::thread::spawn(move || {
+        pick_toml_file_with_windows_shell_dialog(initial_directory, title)
+    })
+    .join()
+    .map_err(|_| "Windows file picker thread panicked".to_string())??;
+
+    validate_toml_file_selection(result)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2526,6 +2532,14 @@ fn build_zenity_open_file_args(current_path: &str, title: &str) -> Vec<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+fn build_zenity_open_toml_file_args(current_path: &str, title: &str) -> Vec<String> {
+    let mut args = build_zenity_open_file_args(current_path, title);
+    args.push("--file-filter".into());
+    args.push("TOML files | *.toml".into());
+    args
+}
+
+#[cfg(not(target_os = "windows"))]
 fn build_zenity_save_file_args(initial_path: &str, title: &str) -> Vec<String> {
     let mut args = vec![
         "--file-selection".into(),
@@ -2547,6 +2561,13 @@ fn build_kdialog_open_file_args(current_path: &str, title: &str) -> Vec<String> 
     if let Some(initial) = sanitize_dialog_file_path(current_path, false) {
         args.push(initial);
     }
+    args
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_kdialog_open_toml_file_args(current_path: &str, title: &str) -> Vec<String> {
+    let mut args = build_kdialog_open_file_args(current_path, title);
+    args.push("TOML files (*.toml)".into());
     args
 }
 
@@ -2596,10 +2617,27 @@ fn run_path_dialog<const N: usize>(
     Err(missing_dialog_error.into())
 }
 
+fn validate_toml_file_selection(selection: Option<String>) -> Result<Option<String>, String> {
+    let Some(path) = selection else {
+        return Ok(None);
+    };
+
+    if std::path::Path::new(&path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+    {
+        Ok(Some(path))
+    } else {
+        Err("Select a `.toml` file to import profiles.".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ApplyDiscoveredAudioSource, apply_discovered_audio_source, audio_source_draft_is_blank,
+        validate_toml_file_selection,
     };
     use crate::app::AudioSourceDraft;
     use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
@@ -2657,6 +2695,39 @@ mod tests {
             source: String::new(),
             ..AudioSourceDraft::default()
         }));
+    }
+
+    #[test]
+    fn toml_picker_validation_accepts_toml_extensions_case_insensitively() {
+        assert_eq!(
+            validate_toml_file_selection(Some("/tmp/profile-export.TOML".into())).unwrap(),
+            Some("/tmp/profile-export.TOML".into())
+        );
+    }
+
+    #[test]
+    fn toml_picker_validation_rejects_non_toml_extensions() {
+        let error =
+            validate_toml_file_selection(Some("/tmp/profile-export.json".into())).unwrap_err();
+
+        assert!(error.contains("`.toml`"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn zenity_toml_picker_args_include_file_filter() {
+        let args = super::build_zenity_open_toml_file_args("/tmp", "Import");
+
+        assert!(args.iter().any(|arg| arg == "--file-filter"));
+        assert!(args.iter().any(|arg| arg == "TOML files | *.toml"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn kdialog_toml_picker_args_include_file_filter() {
+        let args = super::build_kdialog_open_toml_file_args("/tmp", "Import");
+
+        assert!(args.iter().any(|arg| arg == "TOML files (*.toml)"));
     }
 }
 
@@ -2853,7 +2924,7 @@ fn pick_directory_with_windows_shell_dialog(
 }
 
 #[cfg(target_os = "windows")]
-fn pick_file_with_windows_shell_dialog(
+fn pick_toml_file_with_windows_shell_dialog(
     initial_directory: Option<String>,
     title: String,
 ) -> Result<Option<String>, String> {
@@ -2862,11 +2933,12 @@ fn pick_file_with_windows_shell_dialog(
         CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
         CoInitializeEx, CoTaskMemFree, CoUninitialize,
     };
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
     use windows::Win32::UI::Shell::{
         FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FileOpenDialog, IFileOpenDialog,
         IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
     };
-    use windows::core::{HRESULT, HSTRING};
+    use windows::core::{HRESULT, HSTRING, PCWSTR};
 
     struct ComApartment;
 
@@ -2890,6 +2962,16 @@ fn pick_file_with_windows_shell_dialog(
         dialog
             .SetTitle(&HSTRING::from(title))
             .map_err(|error| format!("failed to set the Windows file picker title: {error}"))?;
+
+        let filter_name = HSTRING::from("TOML files");
+        let filter_spec = HSTRING::from("*.toml");
+        let file_types = [COMDLG_FILTERSPEC {
+            pszName: PCWSTR(filter_name.as_ptr()),
+            pszSpec: PCWSTR(filter_spec.as_ptr()),
+        }];
+        dialog
+            .SetFileTypes(&file_types)
+            .map_err(|error| format!("failed to set the Windows file picker filter: {error}"))?;
 
         let options = dialog
             .GetOptions()

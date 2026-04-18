@@ -5,10 +5,10 @@ use auraxis::Faction;
 use chrono::Utc;
 use iced::{Element, Length, mouse};
 
-use crate::app::PendingProfileImport;
+use crate::app::{PendingProfileImport, PendingRuleImport};
 use crate::census;
 use crate::db::{LookupKind, WeaponReferenceCacheEntry};
-use crate::profile_transfer::ProfileTransferBundle;
+use crate::profile_transfer::{ProfileTransferBundle, RuleTransferBundle};
 use crate::rules::schedule::{
     ScheduleWeekday, default_schedule_weekdays, format_schedule_time, normalize_schedule_weekdays,
 };
@@ -38,7 +38,7 @@ use crate::ui::layout::section::section;
 use crate::ui::layout::sidebar::{SidebarItem, sidebar};
 use crate::ui::layout::tabs::{Tab, tabs};
 use crate::ui::overlay::banner::banner;
-use crate::ui::overlay::modal::modal;
+use crate::ui::overlay::modal::modal_with_backdrop_action;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::primitives::switch::switch as toggle_switch;
 
@@ -64,6 +64,14 @@ pub enum Message {
     ProfilesImportPrepared(Result<Option<PendingProfileImport>, String>),
     ConfirmProfileImportOverwrite,
     CancelProfileImportOverwrite,
+    RequireProfileImportDecision,
+    ExportSelectedRule,
+    SelectedRuleExported(Result<Option<String>, String>),
+    ImportRules,
+    RulesImportPrepared(Result<Option<PendingRuleImport>, String>),
+    ConfirmRuleImportOverwrite,
+    CancelRuleImportOverwrite,
+    RequireRuleImportDecision,
     RenameActiveProfile(String),
     ToggleRule(String, bool),
     SelectRule(String),
@@ -200,7 +208,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 return iced::Task::none();
             };
             let bundle = ProfileTransferBundle::from_profiles(
-                &[profile.clone()],
+                std::slice::from_ref(&profile),
                 &app.config.rule_definitions,
             );
             let suggested_path = default_profile_export_path(app, &profile.name);
@@ -239,7 +247,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
 
             return iced::Task::perform(
                 async move {
-                    let Some(path) = super::settings::pick_file(
+                    let Some(path) = super::settings::pick_toml_file(
                         initial_path,
                         "Import NaniteClip profiles".into(),
                     )
@@ -267,6 +275,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 apply_profile_import(app, pending, false);
             }
             Ok(Some(pending)) => {
+                app.pending_profile_import_shake_started_at = None;
                 app.pending_profile_import = Some(pending);
             }
             Ok(None) => {}
@@ -276,10 +285,102 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             let Some(pending) = app.pending_profile_import.take() else {
                 return iced::Task::none();
             };
+            app.pending_profile_import_shake_started_at = None;
             apply_profile_import(app, pending, true);
         }
         Message::CancelProfileImportOverwrite => {
             app.pending_profile_import = None;
+            app.pending_profile_import_shake_started_at = None;
+        }
+        Message::RequireProfileImportDecision => {
+            app.pending_profile_import_shake_started_at = Some(std::time::Instant::now());
+        }
+        Message::ExportSelectedRule => {
+            let Some(rule) = selected_rule(app).cloned() else {
+                app.set_rules_feedback("No selected rule is available to export.", true);
+                return iced::Task::none();
+            };
+            let bundle = RuleTransferBundle::from_rules(std::slice::from_ref(&rule));
+            let suggested_path = default_rule_export_path(app, &rule.name);
+
+            return iced::Task::perform(
+                async move {
+                    let Some(path) =
+                        super::settings::save_file(suggested_path, "Export NaniteClip rule".into())
+                            .await?
+                    else {
+                        return Ok(None);
+                    };
+
+                    let contents = bundle.to_toml_string()?;
+                    tokio::fs::write(&path, contents)
+                        .await
+                        .map_err(|error| format!("Failed to write {}: {error}", path))?;
+                    Ok(Some(path))
+                },
+                |result| AppMessage::Rules(Message::SelectedRuleExported(result)),
+            );
+        }
+        Message::SelectedRuleExported(result) => match result {
+            Ok(Some(path)) => {
+                app.push_success_toast("Rules", format!("Exported selected rule to {path}"), true)
+            }
+            Ok(None) => {}
+            Err(error) => app.set_rules_feedback(error, true),
+        },
+        Message::ImportRules => {
+            let initial_path = default_rule_import_path(app);
+            let existing_rules = app.config.rule_definitions.clone();
+
+            return iced::Task::perform(
+                async move {
+                    let Some(path) = super::settings::pick_toml_file(
+                        initial_path,
+                        "Import NaniteClip rules".into(),
+                    )
+                    .await?
+                    else {
+                        return Ok(None);
+                    };
+
+                    let contents = tokio::fs::read_to_string(&path)
+                        .await
+                        .map_err(|error| format!("Failed to read {}: {error}", path))?;
+                    let bundle = RuleTransferBundle::from_toml(&contents)?;
+                    let conflicts = bundle.detect_conflicts(&existing_rules);
+                    Ok(Some(PendingRuleImport {
+                        source_path: path,
+                        bundle,
+                        conflicts,
+                    }))
+                },
+                |result| AppMessage::Rules(Message::RulesImportPrepared(result)),
+            );
+        }
+        Message::RulesImportPrepared(result) => match result {
+            Ok(Some(pending)) if pending.conflicts.is_empty() => {
+                apply_rule_import(app, pending, false);
+            }
+            Ok(Some(pending)) => {
+                app.pending_rule_import_shake_started_at = None;
+                app.pending_rule_import = Some(pending);
+            }
+            Ok(None) => {}
+            Err(error) => app.set_rules_feedback(error, true),
+        },
+        Message::ConfirmRuleImportOverwrite => {
+            let Some(pending) = app.pending_rule_import.take() else {
+                return iced::Task::none();
+            };
+            app.pending_rule_import_shake_started_at = None;
+            apply_rule_import(app, pending, true);
+        }
+        Message::CancelRuleImportOverwrite => {
+            app.pending_rule_import = None;
+            app.pending_rule_import_shake_started_at = None;
+        }
+        Message::RequireRuleImportDecision => {
+            app.pending_rule_import_shake_started_at = Some(std::time::Instant::now());
         }
         Message::RenameActiveProfile(name) => {
             if let Some(index) = app.active_profile_index() {
@@ -1037,11 +1138,19 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         .on_release(Message::RuleDragReleased)
         .into();
 
-    if let Some(pending) = &app.pending_profile_import {
-        modal(
+    if let Some(pending) = &app.pending_rule_import {
+        modal_with_backdrop_action(
             base,
-            profile_import_overwrite_dialog(pending),
-            Some(Message::CancelProfileImportOverwrite),
+            rule_import_overwrite_dialog(app, pending),
+            Some(Message::RequireRuleImportDecision),
+            import_decision_shake_offset(app.pending_rule_import_shake_started_at),
+        )
+    } else if let Some(pending) = &app.pending_profile_import {
+        modal_with_backdrop_action(
+            base,
+            profile_import_overwrite_dialog(app, pending),
+            Some(Message::RequireProfileImportDecision),
+            import_decision_shake_offset(app.pending_profile_import_shake_started_at),
         )
     } else {
         base
@@ -1073,7 +1182,7 @@ fn rules_split_view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(4);
 
-    let actions_row = row![
+    let primary_actions_row = row![
         with_tooltip(
             styled_button_row(icon_label("plus", "New"), ButtonTone::Success)
                 .on_press(Message::CreateRule)
@@ -1096,9 +1205,26 @@ fn rules_split_view(app: &App) -> Element<'_, Message> {
     .spacing(4)
     .align_y(iced::Alignment::Center);
 
+    let transfer_actions_row = row![
+        with_tooltip(
+            styled_button_row(icon_label("upload", "Export"), ButtonTone::Secondary)
+                .on_press(Message::ExportSelectedRule)
+                .into(),
+            "Export the selected rule as a standalone TOML bundle.",
+        ),
+        with_tooltip(
+            styled_button_row(icon_label("download", "Import"), ButtonTone::Primary)
+                .on_press(Message::ImportRules)
+                .into(),
+            "Import one or more standalone rules from a TOML bundle.",
+        ),
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center);
+
     let mut rule_sidebar = sidebar(selected_rule_id, Message::SelectRule)
         .width(260.0)
-        .header(column![profile_picker, actions_row].spacing(8));
+        .header(column![profile_picker, primary_actions_row, transfer_actions_row].spacing(8));
 
     for rule_def in &app.config.rule_definitions {
         let enabled = app
@@ -2142,6 +2268,7 @@ fn apply_profile_import(app: &mut App, pending: PendingProfileImport, overwrite_
     ) {
         Ok(outcome) => {
             app.pending_profile_import = None;
+            app.pending_profile_import_shake_started_at = None;
             persist(app);
             let _ = app.sync_tray_snapshot();
             if active_profile_touched {
@@ -2158,6 +2285,7 @@ fn apply_profile_import(app: &mut App, pending: PendingProfileImport, overwrite_
         }
         Err(error) => {
             app.pending_profile_import = None;
+            app.pending_profile_import_shake_started_at = None;
             app.set_rules_feedback(error, true);
         }
     }
@@ -2166,7 +2294,7 @@ fn apply_profile_import(app: &mut App, pending: PendingProfileImport, overwrite_
 fn default_profile_export_path(app: &App, profile_name: &str) -> String {
     let file_name = format!(
         "nanite-clip-profile-{}.toml",
-        slugify_profile_name(profile_name)
+        slugify_transfer_name(profile_name)
     );
     app.config
         .recorder
@@ -2180,11 +2308,65 @@ fn default_profile_import_path(app: &App) -> String {
     app.config.recorder.save_directory.display().to_string()
 }
 
-fn slugify_profile_name(profile_name: &str) -> String {
+fn apply_rule_import(app: &mut App, pending: PendingRuleImport, overwrite_existing: bool) {
+    let selected_rule_touched = selected_rule(app)
+        .map(|rule| {
+            pending
+                .bundle
+                .rules
+                .iter()
+                .any(|imported_rule| imported_rule.id == rule.id)
+        })
+        .unwrap_or(false);
+
+    match pending
+        .bundle
+        .apply(&mut app.config.rule_definitions, overwrite_existing)
+    {
+        Ok(outcome) => {
+            app.pending_rule_import = None;
+            app.pending_rule_import_shake_started_at = None;
+            persist(app);
+
+            if selected_rule_touched {
+                ensure_selection(app);
+            }
+
+            let source_name = Path::new(&pending.source_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(pending.source_path.as_str());
+            let summary_text = outcome.summary();
+            let summary = summary_text.trim_end_matches('.');
+            app.push_success_toast("Rules", format!("{summary}. Source: {source_name}."), true);
+        }
+        Err(error) => {
+            app.pending_rule_import = None;
+            app.pending_rule_import_shake_started_at = None;
+            app.set_rules_feedback(error, true);
+        }
+    }
+}
+
+fn default_rule_export_path(app: &App, rule_name: &str) -> String {
+    let file_name = format!("nanite-clip-rule-{}.toml", slugify_transfer_name(rule_name));
+    app.config
+        .recorder
+        .save_directory
+        .join(file_name)
+        .display()
+        .to_string()
+}
+
+fn default_rule_import_path(app: &App) -> String {
+    app.config.recorder.save_directory.display().to_string()
+}
+
+fn slugify_transfer_name(name: &str) -> String {
     let mut slug = String::new();
     let mut last_was_separator = false;
 
-    for ch in profile_name.chars() {
+    for ch in name.chars() {
         let normalized = if ch.is_ascii_alphanumeric() {
             Some(ch.to_ascii_lowercase())
         } else if matches!(ch, ' ' | '-' | '_') {
@@ -2214,7 +2396,10 @@ fn slugify_profile_name(profile_name: &str) -> String {
     }
 }
 
-fn profile_import_overwrite_dialog<'a>(pending: &'a PendingProfileImport) -> Element<'a, Message> {
+fn profile_import_overwrite_dialog<'a>(
+    app: &'a App,
+    pending: &'a PendingProfileImport,
+) -> Element<'a, Message> {
     let conflict_count = pending.conflicts.profile_ids.len() + pending.conflicts.rule_ids.len();
     let source_name = Path::new(&pending.source_path)
         .file_name()
@@ -2238,6 +2423,15 @@ fn profile_import_overwrite_dialog<'a>(pending: &'a PendingProfileImport) -> Ele
     ]
     .spacing(12)
     .width(Length::Fill);
+
+    if import_decision_shake_offset(app.pending_profile_import_shake_started_at) != 0.0 {
+        body = body.push(
+            banner("Choose Overwrite & Import or Cancel.")
+                .error()
+                .description("Backdrop clicks will not close this confirmation.")
+                .build(),
+        );
+    }
 
     if !pending.conflicts.profile_ids.is_empty() {
         body = body.push(conflict_section(
@@ -2268,6 +2462,64 @@ fn profile_import_overwrite_dialog<'a>(pending: &'a PendingProfileImport) -> Ele
     container(body).width(Length::Fill).into()
 }
 
+fn rule_import_overwrite_dialog<'a>(
+    app: &'a App,
+    pending: &'a PendingRuleImport,
+) -> Element<'a, Message> {
+    let conflict_count = pending.conflicts.rule_ids.len();
+    let source_name = Path::new(&pending.source_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(pending.source_path.as_str());
+
+    let mut body = column![
+        text("Overwrite existing rules?").size(24),
+        text(format!(
+            "Importing {} rule(s) from {source_name}.",
+            pending.bundle.rules.len()
+        ))
+        .size(14),
+        banner(format!("{conflict_count} existing rule(s) already use the same id."))
+            .warning()
+            .description(
+                "Continuing will replace the matching rules. Overwritten rules immediately affect any profiles that already enable them.",
+            )
+            .build(),
+    ]
+    .spacing(12)
+    .width(Length::Fill);
+
+    if import_decision_shake_offset(app.pending_rule_import_shake_started_at) != 0.0 {
+        body = body.push(
+            banner("Choose Overwrite & Import or Cancel.")
+                .error()
+                .description("Backdrop clicks will not close this confirmation.")
+                .build(),
+        );
+    }
+
+    if !pending.conflicts.rule_ids.is_empty() {
+        body = body.push(conflict_section(
+            "Conflicting Rules",
+            &pending.conflicts.rule_ids,
+        ));
+    }
+
+    body = body.push(
+        row![
+            iced::widget::Space::new().width(Length::Fill),
+            styled_button("Cancel", ButtonTone::Secondary)
+                .on_press(Message::CancelRuleImportOverwrite),
+            styled_button("Overwrite & Import", ButtonTone::Danger)
+                .on_press(Message::ConfirmRuleImportOverwrite),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+    );
+
+    container(body).width(Length::Fill).into()
+}
+
 fn conflict_section<'a>(title: &'a str, ids: &'a [String]) -> Element<'a, Message> {
     column![
         text(title).size(16),
@@ -2288,6 +2540,27 @@ fn conflict_preview(ids: &[String]) -> String {
         preview.push(format!("and {} more", ids.len() - MAX_PREVIEW_IDS));
     }
     preview.join(", ")
+}
+
+fn import_decision_shake_offset(shake_started_at: Option<std::time::Instant>) -> f32 {
+    const SHAKE_DURATION_SECS: f32 = 0.75;
+    const SHAKE_STEP_SECS: f32 = 0.09;
+    const SHAKE_SEQUENCE: [f32; 8] = [18.0, -16.0, 12.0, -10.0, 7.0, -5.0, 3.0, 0.0];
+
+    let Some(started_at) = shake_started_at else {
+        return 0.0;
+    };
+
+    let elapsed = started_at.elapsed().as_secs_f32();
+    if elapsed >= SHAKE_DURATION_SECS {
+        return 0.0;
+    }
+
+    let index = (elapsed / SHAKE_STEP_SECS) as usize;
+    SHAKE_SEQUENCE
+        .get(index)
+        .copied()
+        .unwrap_or_else(|| *SHAKE_SEQUENCE.last().unwrap_or(&0.0))
 }
 
 pub(in crate::app) fn persist(app: &mut App) {
@@ -4890,6 +5163,26 @@ impl std::fmt::Display for WeaponFilterChoice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn import_decision_shake_offset_returns_zero_without_shake_state() {
+        assert_eq!(import_decision_shake_offset(None), 0.0);
+    }
+
+    #[test]
+    fn import_decision_shake_offset_expires_after_animation_window() {
+        let started_at = Instant::now() - Duration::from_secs(1);
+
+        assert_eq!(import_decision_shake_offset(Some(started_at)), 0.0);
+    }
+
+    #[test]
+    fn import_decision_shake_offset_starts_with_visible_nudge() {
+        let started_at = Instant::now();
+
+        assert!(import_decision_shake_offset(Some(started_at)).abs() >= 18.0);
+    }
 
     #[test]
     fn vehicle_lookup_options_collapse_same_name_variants() {

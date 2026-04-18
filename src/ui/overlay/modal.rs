@@ -29,12 +29,26 @@ pub fn modal<'a, Message>(
 where
     Message: Clone + 'a,
 {
+    modal_with_backdrop_action(base, content, on_dismiss, 0.0)
+}
+
+/// Wrap `base` with a centered modal card hosting `content`, optionally
+/// turning backdrop clicks into a message without dismissing the modal.
+pub fn modal_with_backdrop_action<'a, Message>(
+    base: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, Message>>,
+    on_backdrop_press: Option<Message>,
+    horizontal_offset: f32,
+) -> Element<'a, Message>
+where
+    Message: Clone + 'a,
+{
     let backdrop_container: Container<'a, Message> = container(iced::widget::Space::new())
         .width(Length::Fill)
         .height(Length::Fill)
         .style(backdrop_style);
 
-    let backdrop: Element<'a, Message> = if let Some(msg) = on_dismiss {
+    let backdrop: Element<'a, Message> = if let Some(msg) = on_backdrop_press {
         let area: MouseArea<'a, Message> = mouse_area(backdrop_container).on_press(msg);
         area.into()
     } else {
@@ -56,7 +70,12 @@ where
         .height(Length::Fill)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
-        .padding(theme::SPACE.xl);
+        .padding(Padding {
+            top: theme::SPACE.xl,
+            bottom: theme::SPACE.xl,
+            left: (theme::SPACE.xl + horizontal_offset.max(0.0)).max(0.0),
+            right: (theme::SPACE.xl + (-horizontal_offset).max(0.0)).max(0.0),
+        });
 
     let centered_el: Element<'a, Message> = centered.into();
     let layered: Stack<'a, Message> = stack![base.into(), backdrop, centered_el];

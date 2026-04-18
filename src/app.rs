@@ -34,7 +34,9 @@ use crate::post_process::{
     TrimSpec,
 };
 use crate::process;
-use crate::profile_transfer::{ProfileTransferBundle, ProfileTransferConflicts};
+use crate::profile_transfer::{
+    ProfileTransferBundle, ProfileTransferConflicts, RuleTransferBundle, RuleTransferConflicts,
+};
 use crate::recorder::{Recorder, SavePollResult, VideoResolution};
 use crate::rules::engine::RuleEngine;
 use crate::rules::switching::choose_runtime_rule;
@@ -118,6 +120,9 @@ pub struct App {
     rules_feedback: Option<String>,
     rules_feedback_expires_at: Option<Instant>,
     pending_profile_import: Option<PendingProfileImport>,
+    pending_profile_import_shake_started_at: Option<Instant>,
+    pending_rule_import: Option<PendingRuleImport>,
+    pending_rule_import_shake_started_at: Option<Instant>,
     resolving_characters: BTreeSet<String>,
     resolving_lookups: BTreeSet<(LookupKind, i64)>,
     selected_rule_id: Option<String>,
@@ -260,6 +265,13 @@ pub(crate) struct PendingProfileImport {
     pub source_path: String,
     pub bundle: ProfileTransferBundle,
     pub conflicts: ProfileTransferConflicts,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingRuleImport {
+    pub source_path: String,
+    pub bundle: RuleTransferBundle,
+    pub conflicts: RuleTransferConflicts,
 }
 
 type RecorderStartResult =
@@ -669,6 +681,9 @@ impl App {
             rules_feedback: initial_rules_feedback.clone(),
             rules_feedback_expires_at: None,
             pending_profile_import: None,
+            pending_profile_import_shake_started_at: None,
+            pending_rule_import: None,
+            pending_rule_import_shake_started_at: None,
             resolving_characters: BTreeSet::new(),
             resolving_lookups: BTreeSet::new(),
             selected_rule_id: None,
@@ -4537,6 +4552,15 @@ impl App {
         self.push_toast(ToastTone::Info, title, message, auto_dismiss);
     }
 
+    pub(in crate::app) fn push_success_toast(
+        &mut self,
+        title: &str,
+        message: impl Into<String>,
+        auto_dismiss: bool,
+    ) {
+        self.push_toast(ToastTone::Success, title, message.into(), auto_dismiss);
+    }
+
     fn push_toast(&mut self, tone: ToastTone, title: &str, message: String, auto_dismiss: bool) {
         self.toasts.push_with(
             tone,
@@ -5282,6 +5306,9 @@ mod tests {
             rules_feedback: None,
             rules_feedback_expires_at: None,
             pending_profile_import: None,
+            pending_profile_import_shake_started_at: None,
+            pending_rule_import: None,
+            pending_rule_import_shake_started_at: None,
             resolving_characters: BTreeSet::new(),
             resolving_lookups: BTreeSet::new(),
             selected_rule_id: None,

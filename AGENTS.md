@@ -20,6 +20,7 @@ Use the nightly toolchain from `rust-toolchain.toml`.
 - `cargo fmt`: apply standard Rust formatting before committing.
 - `cargo fmt --check`: verify formatting in CI or before opening a PR.
 - `cargo clippy --all-targets --all-features`: catch lint issues before review.
+- Hard requirement before every commit: `cargo fmt`, `cargo test`, and `cargo clippy --all-targets --all-features` must all pass.
 
 The app also expects the local path dependency `../auraxis-rs/auraxis` and the runtime binary `gpu-screen-recorder` to be available.
 
@@ -30,7 +31,7 @@ Follow default Rust style: 4-space indentation, `snake_case` for functions/modul
 Add unit tests beside the code they exercise. Existing tests live in `src/rules/engine.rs` under `#[cfg(test)]`; follow that pattern for new engine or parser logic. Name tests for the behavior they prove, for example `sequence_gap_exceeded_resets`. Run `cargo test` before every PR and add regression coverage for rule evaluation, config parsing, or process control changes.
 
 ## Commit & Pull Request Guidelines
-Use Conventional Commits for all future commits, for example `fix: handle census stream logout` or `feat: add OBS replay buffer status banner`. Keep subjects concise and imperative after the type prefix. Keep PRs focused, describe user-visible behavior changes, note required local setup or external binaries, and include screenshots for UI changes.
+Use Conventional Commits for all future commits, for example `fix: handle census stream logout` or `feat: add OBS replay buffer status banner`. Keep subjects concise and imperative after the type prefix. Before creating any commit, run `cargo fmt`, `cargo test`, and `cargo clippy --all-targets --all-features`, and do not commit unless all three succeed. Keep PRs focused, describe user-visible behavior changes, note required local setup or external binaries, and include screenshots for UI changes.
 
 ## Configuration & Runtime Notes
 User config is written to the platform config directory via `directories::ProjectDirs` as `config.toml`. Avoid hardcoding secrets or machine-specific paths; prefer defaults that degrade cleanly when Census credentials or recorder dependencies are missing.
