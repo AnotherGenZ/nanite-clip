@@ -30,7 +30,7 @@ Follow default Rust style: 4-space indentation, `snake_case` for functions/modul
 Add unit tests beside the code they exercise. Existing tests live in `src/rules/engine.rs` under `#[cfg(test)]`; follow that pattern for new engine or parser logic. Name tests for the behavior they prove, for example `sequence_gap_exceeded_resets`. Run `cargo test` before every PR and add regression coverage for rule evaluation, config parsing, or process control changes.
 
 ## Commit & Pull Request Guidelines
-This repository currently has no commit history, so no house style is established yet. Use short imperative commit subjects, for example `Add logout handling to census stream`. Keep PRs focused, describe user-visible behavior changes, note required local setup or external binaries, and include screenshots for UI changes.
+Use Conventional Commits for all future commits, for example `fix: handle census stream logout` or `feat: add OBS replay buffer status banner`. Keep subjects concise and imperative after the type prefix. Keep PRs focused, describe user-visible behavior changes, note required local setup or external binaries, and include screenshots for UI changes.
 
 ## Configuration & Runtime Notes
 User config is written to the platform config directory via `directories::ProjectDirs` as `config.toml`. Avoid hardcoding secrets or machine-specific paths; prefer defaults that degrade cleanly when Census credentials or recorder dependencies are missing.

@@ -446,7 +446,7 @@ fn build_execution_plan(
         for (leg_index, entry) in unmuted.iter().enumerate() {
             legs.push(format!(
                 "[0:a:{}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume={}dB[a{}]",
-                entry.probed.index, entry.config.gain_db, leg_index
+                entry.audio_stream_index, entry.config.gain_db, leg_index
             ));
         }
         let inputs = (0..unmuted.len())
@@ -701,6 +701,7 @@ fn audio_source_kind_name(config: &AudioSourceConfig) -> String {
 }
 
 struct MatchedLayout<'a> {
+    audio_stream_index: usize,
     config: &'a AudioSourceConfig,
     probed: &'a ProbedAudioStream,
 }
@@ -712,17 +713,23 @@ fn match_layout<'a>(
     if layout.len() == probed.len() {
         layout
             .iter()
-            .zip(probed)
-            .map(|(config, probed)| MatchedLayout { config, probed })
+            .zip(probed.iter().enumerate())
+            .map(|(config, (audio_stream_index, probed))| MatchedLayout {
+                audio_stream_index,
+                config,
+                probed,
+            })
             .collect()
     } else {
         probed
             .iter()
             .enumerate()
             .filter_map(|(index, probed)| {
-                layout
-                    .get(index)
-                    .map(|config| MatchedLayout { config, probed })
+                layout.get(index).map(|config| MatchedLayout {
+                    audio_stream_index: index,
+                    config,
+                    probed,
+                })
             })
             .collect()
     }
@@ -884,5 +891,33 @@ mod tests {
         let plan = build_execution_plan(&request, &probed).unwrap();
         assert_eq!(plan.plan.premix_stream_index, Some(0));
         assert_eq!(plan.output_tracks[0].role, "mixed");
+    }
+
+    #[test]
+    fn build_plan_uses_audio_stream_positions_not_absolute_stream_indexes() {
+        let request = sample_request();
+        let probed = vec![
+            ProbedAudioStream {
+                index: 1,
+                codec: "opus".into(),
+                channels: 2,
+                sample_rate: 48_000,
+                title: Some("app:PlanetSide 2".into()),
+            },
+            ProbedAudioStream {
+                index: 2,
+                codec: "opus".into(),
+                channels: 2,
+                sample_rate: 48_000,
+                title: Some("app:TeamSpeak".into()),
+            },
+        ];
+
+        let plan = build_execution_plan(&request, &probed).unwrap();
+        let filter_graph = plan.filter_graph.expect("expected premix filter graph");
+
+        assert!(filter_graph.contains("[0:a:0]"));
+        assert!(filter_graph.contains("[0:a:1]"));
+        assert!(!filter_graph.contains("[0:a:2]"));
     }
 }
