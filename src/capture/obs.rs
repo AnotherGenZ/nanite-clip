@@ -1,6 +1,7 @@
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{borrow::Cow, path::Path};
 
 use iced::futures::StreamExt;
 use obws::Client;
@@ -66,6 +67,7 @@ const OBS_SIMPLE_OUTPUT_CATEGORY: &str = "SimpleOutput";
 const OBS_SIMPLE_OUTPUT_FILE_PATH: &str = "FilePath";
 const OBS_SIMPLE_OUTPUT_VBITRATE: &str = "VBitrate";
 const OBS_SIMPLE_OUTPUT_ABITRATE: &str = "ABitrate";
+const OBS_REPLAY_BUFFER_ENABLE_GUIDANCE: &str = "OBS replay buffer is still disabled after NaniteClip tried to configure it. Open OBS Settings -> Output -> Replay Buffer, enable it for the active profile once, apply the change, then restart monitoring.";
 
 #[derive(Debug, Clone)]
 pub struct ObsBackend {
@@ -93,7 +95,7 @@ pub async fn test_connection(config: ObsBackendConfig) -> Result<String, String>
         Ok(true) => "running",
         Ok(false) => match config.management_mode {
             ObsManagementMode::ManagedRecording | ObsManagementMode::FullManagement => {
-                "configured (NaniteClip will start it when monitoring begins)"
+                "configured but not running (NaniteClip will try to start it when monitoring begins)"
             }
             ObsManagementMode::BringYourOwn => {
                 "configured but not running (start it in OBS before monitoring)"
@@ -101,7 +103,7 @@ pub async fn test_connection(config: ObsBackendConfig) -> Result<String, String>
         },
         Err(error) if is_replay_buffer_not_configured(&error) => match config.management_mode {
             ObsManagementMode::ManagedRecording | ObsManagementMode::FullManagement => {
-                "not enabled (NaniteClip will configure it when monitoring begins)"
+                "not enabled yet (NaniteClip will try to configure it when monitoring begins)"
             }
             ObsManagementMode::BringYourOwn => {
                 "not enabled in OBS (turn it on in Settings → Output → Replay Buffer, or switch to Managed Recording)"
@@ -745,6 +747,36 @@ async fn initialize_managed_recording(
         Some(snapshot) => snapshot,
         None => capture_managed_profile_snapshot(client, keys).await?,
     };
+    let desired_file_path = request
+        .recorder
+        .save_directory
+        .to_string_lossy()
+        .to_string();
+    let desired_rec_format = map_container(request.recorder.gsr().container.as_str())?;
+    let desired_rec_rb = "true".to_string();
+    let desired_rec_rb_time = request.recorder.replay_buffer_secs.to_string();
+    let desired_rec_rb_size =
+        compute_replay_buffer_size_mb(client, request.recorder.replay_buffer_secs)
+            .await
+            .to_string();
+
+    if managed_profile_matches_request(
+        &snapshot,
+        &desired_file_path,
+        &desired_rec_format,
+        &desired_rec_rb,
+        &desired_rec_rb_time,
+        &desired_rec_rb_size,
+    ) {
+        tracing::info!(
+            save_directory = %desired_file_path,
+            rec_format = %desired_rec_format,
+            replay_buffer_secs = request.recorder.replay_buffer_secs,
+            replay_buffer_size_mb = %desired_rec_rb_size,
+            "OBS replay buffer is already active with the desired managed settings; reusing existing replay buffer"
+        );
+        return Ok(snapshot);
+    }
 
     let initialize_result = async {
         let was_active = match client.replay_buffer().status().await {
@@ -767,40 +799,35 @@ async fn initialize_managed_recording(
             client,
             OBS_SIMPLE_OUTPUT_CATEGORY,
             OBS_SIMPLE_OUTPUT_FILE_PATH,
-            request.recorder.save_directory.to_string_lossy().as_ref(),
+            &desired_file_path,
         )
         .await?;
         write_profile_parameter(
             client,
             OBS_SIMPLE_OUTPUT_CATEGORY,
             keys.simple_output_rec_format,
-            &map_container(request.recorder.gsr().container.as_str())?,
+            &desired_rec_format,
         )
         .await?;
         write_profile_parameter(
             client,
             OBS_SIMPLE_OUTPUT_CATEGORY,
             keys.simple_output_rec_rb,
-            "true",
+            &desired_rec_rb,
         )
         .await?;
         write_profile_parameter(
             client,
             OBS_SIMPLE_OUTPUT_CATEGORY,
             keys.simple_output_rec_rb_time,
-            &request.recorder.replay_buffer_secs.to_string(),
+            &desired_rec_rb_time,
         )
         .await?;
-
-        let buffer_size_mb =
-            compute_replay_buffer_size_mb(client, request.recorder.replay_buffer_secs)
-                .await
-                .to_string();
         write_profile_parameter(
             client,
             OBS_SIMPLE_OUTPUT_CATEGORY,
             keys.simple_output_rec_rb_size,
-            &buffer_size_mb,
+            &desired_rec_rb_size,
         )
         .await?;
 
@@ -820,6 +847,81 @@ async fn initialize_managed_recording(
             }
             Err(error)
         }
+    }
+}
+
+fn managed_profile_matches_request(
+    snapshot: &ManagedProfileSnapshot,
+    desired_file_path: &str,
+    desired_rec_format: &str,
+    desired_rec_rb: &str,
+    desired_rec_rb_time: &str,
+    desired_rec_rb_size: &str,
+) -> bool {
+    snapshot.was_active
+        && snapshot.file_path.as_deref().is_some_and(|value| {
+            normalized_profile_path(value) == normalized_profile_path(desired_file_path)
+        })
+        && snapshot.rec_format.as_deref().is_some_and(|value| {
+            normalized_profile_text(value) == normalized_profile_text(desired_rec_format)
+        })
+        && snapshot
+            .rec_rb
+            .as_deref()
+            .and_then(parse_obs_bool)
+            .zip(parse_obs_bool(desired_rec_rb))
+            .is_some_and(|(current, desired)| current == desired)
+        && snapshot
+            .rec_rb_time
+            .as_deref()
+            .and_then(parse_obs_u64)
+            .zip(parse_obs_u64(desired_rec_rb_time))
+            .is_some_and(|(current, desired)| current == desired)
+        && snapshot
+            .rec_rb_size
+            .as_deref()
+            .and_then(parse_obs_u64)
+            .zip(parse_obs_u64(desired_rec_rb_size))
+            .is_some_and(|(current, desired)| current == desired)
+}
+
+fn normalized_profile_text(value: &str) -> Cow<'_, str> {
+    Cow::Owned(value.trim().to_ascii_lowercase())
+}
+
+fn parse_obs_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_obs_u64(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
+}
+
+fn normalized_profile_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let normalized = Path::new(trimmed)
+        .components()
+        .as_path()
+        .to_string_lossy()
+        .replace('/', "\\");
+    let normalized = normalized.trim_end_matches(['\\', '/']).to_string();
+
+    #[cfg(target_os = "windows")]
+    {
+        normalized.to_ascii_lowercase()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        normalized
     }
 }
 
@@ -941,6 +1043,9 @@ async fn restore_managed_profile_snapshot(
 async fn start_replay_buffer_with_verification(client: &Client) -> Result<(), CaptureError> {
     match client.replay_buffer().start().await {
         Ok(()) => wait_for_replay_buffer_active(client).await,
+        Err(error) if is_replay_buffer_not_configured(&error) => Err(CaptureError::SpawnFailed(
+            OBS_REPLAY_BUFFER_ENABLE_GUIDANCE.into(),
+        )),
         Err(error) if is_output_running(&error) => {
             let status = client.replay_buffer().status().await.map_err(|status_err| {
                 CaptureError::SpawnFailed(format!(
@@ -1062,7 +1167,7 @@ async fn wait_for_replay_buffer_state(
                 return Ok(());
             }
             Err(error) if is_replay_buffer_not_configured(&error) => {
-                return Err("OBS replay buffer is not configured.".into());
+                return Err(OBS_REPLAY_BUFFER_ENABLE_GUIDANCE.into());
             }
             Err(error) => {
                 return Err(format!("OBS GetReplayBufferStatus failed: {error}"));
@@ -1257,7 +1362,8 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ObsParameterKeys, backoff_for_attempt, ensure_supported_obs_version, map_container,
+        ManagedProfileSnapshot, ObsParameterKeys, backoff_for_attempt,
+        ensure_supported_obs_version, managed_profile_matches_request, map_container,
         parse_websocket_url,
     };
     use obws::responses::general::Version as ObsVersionInfo;
@@ -1346,5 +1452,58 @@ mod tests {
         version.obs_web_socket_version = Version::new(6, 0, 0);
 
         assert!(ensure_supported_obs_version(&version).is_err());
+    }
+
+    #[test]
+    fn managed_profile_match_requires_active_snapshot_with_expected_values() {
+        let snapshot = ManagedProfileSnapshot {
+            file_path: Some("C:\\Clips\\".into()),
+            rec_format: Some("MKV".into()),
+            rec_rb: Some("1".into()),
+            rec_rb_time: Some("030".into()),
+            rec_rb_size: Some("0512".into()),
+            was_active: true,
+        };
+
+        assert!(managed_profile_matches_request(
+            &snapshot, "C:/Clips", "mkv", "true", "30", "512",
+        ));
+    }
+
+    #[test]
+    fn managed_profile_match_rejects_mismatched_or_inactive_snapshots() {
+        let inactive_snapshot = ManagedProfileSnapshot {
+            file_path: Some("C:\\Clips".into()),
+            rec_format: Some("mkv".into()),
+            rec_rb: Some("true".into()),
+            rec_rb_time: Some("30".into()),
+            rec_rb_size: Some("512".into()),
+            was_active: false,
+        };
+        assert!(!managed_profile_matches_request(
+            &inactive_snapshot,
+            "C:\\Clips",
+            "mkv",
+            "true",
+            "30",
+            "512",
+        ));
+
+        let mismatched_snapshot = ManagedProfileSnapshot {
+            file_path: Some("C:\\Other".into()),
+            rec_format: Some("mp4".into()),
+            rec_rb: Some("false".into()),
+            rec_rb_time: Some("15".into()),
+            rec_rb_size: Some("256".into()),
+            was_active: true,
+        };
+        assert!(!managed_profile_matches_request(
+            &mismatched_snapshot,
+            "C:\\Clips",
+            "mkv",
+            "true",
+            "30",
+            "512",
+        ));
     }
 }

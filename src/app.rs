@@ -474,6 +474,7 @@ pub enum Message {
     Rules(tabs::rules::Message),
 
     Settings(tabs::settings::Message),
+    LaunchAtLoginSynced(Result<(), String>),
 
     RuntimePoll,
     Tick,
@@ -900,6 +901,18 @@ impl App {
                 Task::none()
             }
 
+            Message::LaunchAtLoginSynced(result) => {
+                if let Err(error) = result {
+                    self.set_settings_feedback(
+                        format!(
+                            "Settings were saved, but launch-at-login could not be updated: {error}"
+                        ),
+                        false,
+                    );
+                }
+                Task::none()
+            }
+
             Message::StartMonitoring => {
                 self.state = AppState::WaitingForGame;
                 self.rule_engine.reset();
@@ -989,9 +1002,17 @@ impl App {
                 }
 
                 let hotkey_events = self.hotkeys.drain_events();
+                if !hotkey_events.is_empty() {
+                    tracing::debug!(
+                        event_count = hotkey_events.len(),
+                        ?hotkey_events,
+                        "runtime poll received manual clip hotkey events"
+                    );
+                }
                 for event in hotkey_events {
                     match event {
                         HotkeyEvent::Activated => {
+                            tracing::debug!("queueing manual clip save from hotkey activation");
                             tasks.push(Task::done(Message::RequestManualClipSave));
                         }
                     }
@@ -2092,7 +2113,28 @@ impl App {
                 }
             }
             Err(error) => {
-                tracing::error!("Failed to start recorder: {error}");
+                let error_text = error.to_string();
+                tracing::error!("Failed to start recorder: {error_text}");
+
+                if self.recorder.backend_id() == "obs" {
+                    let status = capture::ObsConnectionStatus::Failed {
+                        reason: error_text.clone(),
+                    };
+                    let changed = self.obs_connection_status.as_ref() != Some(&status);
+                    self.obs_connection_status = Some(status);
+                    self.obs_restart_requires_manual_restart = true;
+                    if changed {
+                        self.set_status_feedback(
+                            format!(
+                                "OBS failed to start monitoring: {error_text}. Fix OBS and restart monitoring."
+                            ),
+                            false,
+                        );
+                    }
+                    return self.sync_tray_snapshot();
+                }
+
+                self.set_status_feedback(format!("Failed to start recorder: {error_text}"), false);
                 Task::none()
             }
         }
@@ -2514,6 +2556,18 @@ impl App {
 
     pub(in crate::app) fn notifications_enabled(&self) -> bool {
         self.config.recorder.clip_saved_notifications
+    }
+
+    pub(in crate::app) fn sync_launch_at_login_task(&self) -> Task<Message> {
+        let config = self.config.launch_at_login.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || crate::autostart::sync_launch_at_login(&config))
+                    .await
+                    .map_err(|error| format!("failed to join launch-at-login task: {error}"))?
+            },
+            Message::LaunchAtLoginSynced,
+        )
     }
 
     pub(in crate::app) fn notify_active_profile_activated(&mut self) {
@@ -4626,9 +4680,27 @@ impl App {
         self.hotkey_config_generation += 1;
         #[cfg(not(target_os = "windows"))]
         let generation = self.hotkey_config_generation;
+        let previous_binding_label = self.hotkeys.binding_label().map(str::to_string);
         let config = self.config.manual_clip.clone();
         let display_server = process::detect_display_server();
         let desktop_environment = process::detect_desktop_environment();
+        tracing::debug!(
+            generation = self.hotkey_config_generation,
+            enabled = config.enabled,
+            hotkey = %config.hotkey,
+            duration_secs = config.duration_secs,
+            ?display_server,
+            ?desktop_environment,
+            "starting manual clip hotkey configuration"
+        );
+        if let Some(previous_binding_label) = previous_binding_label {
+            tracing::debug!(
+                generation = self.hotkey_config_generation,
+                previous_binding_label,
+                "dropping existing manual clip hotkey before reconfiguration"
+            );
+        }
+        self.hotkeys = HotkeyManager::disabled();
 
         #[cfg(target_os = "windows")]
         {
@@ -4654,6 +4726,12 @@ impl App {
             Ok(hotkeys) => {
                 let binding_label = hotkeys.binding_label().map(str::to_string);
                 let configuration_note = hotkeys.configuration_note().map(str::to_string);
+                tracing::debug!(
+                    enabled = self.config.manual_clip.enabled,
+                    binding_label = ?binding_label,
+                    configuration_note = ?configuration_note,
+                    "manual clip hotkey configuration completed"
+                );
                 self.hotkeys = hotkeys;
                 if self.config.manual_clip.enabled {
                     if let Some(binding_label) = binding_label {
@@ -4667,6 +4745,7 @@ impl App {
                 }
             }
             Err(error) => {
+                tracing::warn!(enabled = self.config.manual_clip.enabled, %error, "manual clip hotkey configuration failed");
                 self.set_settings_feedback(error, false);
                 self.hotkeys = HotkeyManager::disabled();
             }
@@ -4781,15 +4860,28 @@ impl App {
 
     fn request_manual_clip_save(&mut self) -> Task<Message> {
         if !self.config.manual_clip.enabled {
+            tracing::debug!("ignoring manual clip save request because manual clip is disabled");
             return Task::none();
         }
         if !self.recorder.is_running() {
+            tracing::debug!(
+                state = ?self.state,
+                save_in_progress = self.recorder.save_in_progress(),
+                active_clip_capture = self.active_clip_capture.is_some(),
+                "rejecting manual clip save request because recorder is not running"
+            );
             self.set_clip_error(
                 "Manual clip save is unavailable because the recorder is not running.",
             );
             return Task::none();
         }
         if self.active_clip_capture.is_some() || self.recorder.save_in_progress() {
+            tracing::debug!(
+                state = ?self.state,
+                save_in_progress = self.recorder.save_in_progress(),
+                active_clip_capture = self.active_clip_capture.is_some(),
+                "rejecting manual clip save request because another save is already in progress"
+            );
             self.set_clip_error(
                 "Manual clip save ignored because another save is already in progress.",
             );
@@ -4806,6 +4898,17 @@ impl App {
             trigger_at + chrono::Duration::seconds(i64::from(self.config.recorder.save_delay_secs));
         let clip_start_at = clip_end_at
             - chrono::Duration::seconds(i64::from(self.config.manual_clip.duration_secs));
+        tracing::debug!(
+            state = ?self.state,
+            character_id,
+            world_id,
+            trigger_at = %trigger_at,
+            clip_start_at = %clip_start_at,
+            clip_end_at = %clip_end_at,
+            duration_secs = self.config.manual_clip.duration_secs,
+            save_delay_secs = self.config.recorder.save_delay_secs,
+            "accepting manual clip save request"
+        );
 
         let request = ClipSaveRequest {
             origin: ClipOrigin::Manual,

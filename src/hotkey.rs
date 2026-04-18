@@ -1,4 +1,8 @@
 use std::str::FromStr;
+#[cfg(target_os = "windows")]
+use std::sync::{Mutex, OnceLock, mpsc};
+#[cfg(target_os = "windows")]
+use std::thread::JoinHandle;
 
 #[cfg(target_os = "linux")]
 use ashpd::desktop::global_shortcuts::{
@@ -10,8 +14,9 @@ use ashpd::desktop::{CreateSessionOptions, Session};
 #[cfg(target_os = "linux")]
 use ashpd::zbus::{Connection as DBusConnection, Proxy as DBusProxy};
 use global_hotkey::hotkey::HotKey;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use global_hotkey::hotkey::{Code as HotKeyCode, Modifiers as HotKeyModifiers};
+#[cfg(not(target_os = "windows"))]
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 #[cfg(target_os = "linux")]
 use iced::futures::StreamExt;
@@ -23,6 +28,37 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 #[cfg(target_os = "linux")]
 use tokio::time::{Duration, sleep};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{
+    ERROR_HOTKEY_ALREADY_REGISTERED, GetLastError, LPARAM, LRESULT, WPARAM,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+    RegisterHotKey, UnregisterHotKey, VIRTUAL_KEY, VK_0, VK_1, VK_2, VK_3, VK_4, VK_5, VK_6, VK_7,
+    VK_8, VK_9, VK_A, VK_ADD, VK_B, VK_BACK, VK_C, VK_CAPITAL, VK_CONTROL, VK_D, VK_DECIMAL,
+    VK_DELETE, VK_DIVIDE, VK_DOWN, VK_E, VK_END, VK_ESCAPE, VK_F, VK_F1, VK_F2, VK_F3, VK_F4,
+    VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12, VK_F13, VK_F14, VK_F15, VK_F16,
+    VK_F17, VK_F18, VK_F19, VK_F20, VK_F21, VK_F22, VK_F23, VK_F24, VK_G, VK_H, VK_HOME, VK_I,
+    VK_INSERT, VK_J, VK_K, VK_L, VK_LEFT, VK_LWIN, VK_M, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE,
+    VK_MEDIA_PREV_TRACK, VK_MEDIA_STOP, VK_MENU, VK_MULTIPLY, VK_N, VK_NEXT, VK_NUMLOCK,
+    VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7,
+    VK_NUMPAD8, VK_NUMPAD9, VK_O, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6,
+    VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_P, VK_PAUSE, VK_PLAY,
+    VK_PRIOR, VK_Q, VK_R, VK_RETURN, VK_RIGHT, VK_RWIN, VK_S, VK_SCROLL, VK_SHIFT, VK_SNAPSHOT,
+    VK_SPACE, VK_SUBTRACT, VK_T, VK_TAB, VK_U, VK_UP, VK_V, VK_VOLUME_DOWN, VK_VOLUME_MUTE,
+    VK_VOLUME_UP, VK_W, VK_X, VK_Y, VK_Z,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
+    PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+    WH_KEYBOARD_LL, WM_APP, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+};
 
 use crate::config::ManualClipConfig;
 #[cfg(target_os = "linux")]
@@ -130,9 +166,16 @@ impl std::fmt::Debug for HotkeyManager {
 
 enum HotkeyBackend {
     Disabled,
+    #[cfg(not(target_os = "windows"))]
     GlobalHotkey {
         _manager: GlobalHotKeyManager,
         hotkey: HotKey,
+    },
+    #[cfg(target_os = "windows")]
+    Windows {
+        receiver: mpsc::Receiver<HotkeyEvent>,
+        shutdown_thread_id: u32,
+        worker: Option<JoinHandle<()>>,
     },
     #[cfg(target_os = "linux")]
     KdePlatformService {
@@ -156,6 +199,42 @@ pub enum BindingCapture {
     Captured(String),
     Unsupported,
     Ignored,
+}
+
+#[cfg(target_os = "windows")]
+const WINDOWS_HOTKEY_SHUTDOWN_MESSAGE: u32 = WM_APP + 1;
+#[cfg(target_os = "windows")]
+static WINDOWS_LOW_LEVEL_HOOK_STATE: OnceLock<Mutex<Option<WindowsLowLevelHookState>>> =
+    OnceLock::new();
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowsHookSpec {
+    scan_code: u32,
+    extended: bool,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsHotkeyRegistration {
+    RegisterHotKey { virtual_key: VIRTUAL_KEY },
+    LowLevelKeyboardHook { spec: WindowsHookSpec },
+}
+
+#[cfg(target_os = "windows")]
+enum WindowsWorkerRegistration {
+    RegisterHotKey,
+    LowLevelKeyboardHook { hook: HHOOK },
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsLowLevelHookState {
+    sender: mpsc::Sender<HotkeyEvent>,
+    hotkey_id: u32,
+    binding: String,
+    modifiers: HotKeyModifiers,
+    spec: WindowsHookSpec,
+    active: bool,
 }
 
 impl HotkeyManager {
@@ -227,8 +306,9 @@ impl HotkeyManager {
     }
 
     pub fn drain_events(&mut self) -> Vec<HotkeyEvent> {
-        match &mut self.backend {
+        let events = match &mut self.backend {
             HotkeyBackend::Disabled => Vec::new(),
+            #[cfg(not(target_os = "windows"))]
             HotkeyBackend::GlobalHotkey { hotkey, .. } => {
                 let receiver = GlobalHotKeyEvent::receiver();
                 receiver
@@ -239,6 +319,8 @@ impl HotkeyManager {
                     })
                     .collect()
             }
+            #[cfg(target_os = "windows")]
+            HotkeyBackend::Windows { receiver, .. } => receiver.try_iter().collect(),
             #[cfg(target_os = "linux")]
             HotkeyBackend::KdePlatformService { service } => service
                 .drain_events()
@@ -249,24 +331,200 @@ impl HotkeyManager {
                 .collect(),
             #[cfg(target_os = "linux")]
             HotkeyBackend::Wayland { receiver, .. } => receiver.try_recv().into_iter().collect(),
+        };
+
+        if !events.is_empty() {
+            tracing::debug!(
+                event_count = events.len(),
+                ?events,
+                "drained manual clip hotkey events"
+            );
         }
+
+        events
     }
 
     fn configure_global_hotkey(config: &ManualClipConfig) -> Result<Self, String> {
+        tracing::debug!(
+            enabled = config.enabled,
+            hotkey = %config.hotkey,
+            duration_secs = config.duration_secs,
+            "configuring manual clip hotkey"
+        );
         let hotkey = parse_hotkey(config.hotkey.as_str())?;
-        let manager = GlobalHotKeyManager::new().map_err(|error| error.to_string())?;
-        manager
-            .register(hotkey)
-            .map_err(|error| format!("failed to register manual clip hotkey: {error}"))?;
 
-        Ok(Self {
-            backend: HotkeyBackend::GlobalHotkey {
-                _manager: manager,
-                hotkey,
-            },
-            binding_label: Some(hotkey.to_string()),
-            configuration_note: None,
-        })
+        #[cfg(target_os = "windows")]
+        {
+            Self::configure_windows_hotkey(hotkey)
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let manager = GlobalHotKeyManager::new().map_err(|error| error.to_string())?;
+            manager
+                .register(hotkey)
+                .map_err(|error| format!("failed to register manual clip hotkey: {error}"))?;
+
+            Ok(Self {
+                backend: HotkeyBackend::GlobalHotkey {
+                    _manager: manager,
+                    hotkey,
+                },
+                binding_label: Some(hotkey.to_string()),
+                configuration_note: None,
+            })
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn configure_windows_hotkey(hotkey: HotKey) -> Result<Self, String> {
+        let registration = windows_hotkey_registration(hotkey)?;
+        let backend = match registration {
+            WindowsHotkeyRegistration::RegisterHotKey { .. } => "register_hotkey",
+            WindowsHotkeyRegistration::LowLevelKeyboardHook { .. } => "low_level_keyboard_hook",
+        };
+        tracing::debug!(
+            binding = %hotkey,
+            hotkey_id = hotkey.id(),
+            backend,
+            "starting Windows manual clip hotkey worker"
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("manual-clip-hotkey".into())
+            .spawn(move || {
+                let mut message = MSG::default();
+                // SAFETY: Touching the queue once ensures PostThreadMessage can address this
+                // worker thread before it blocks inside GetMessageW.
+                let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
+                let thread_id = unsafe { GetCurrentThreadId() };
+                tracing::debug!(
+                    binding = %hotkey,
+                    hotkey_id = hotkey.id(),
+                    backend,
+                    thread_id,
+                    "manual clip hotkey worker ready"
+                );
+
+                let result = match registration {
+                    WindowsHotkeyRegistration::RegisterHotKey { virtual_key } => {
+                        register_windows_hotkey(hotkey, virtual_key)
+                            .map(|_| WindowsWorkerRegistration::RegisterHotKey)
+                    }
+                    WindowsHotkeyRegistration::LowLevelKeyboardHook { spec } => {
+                        register_windows_low_level_keyboard_hook(
+                            hotkey,
+                            spec,
+                            event_tx.clone(),
+                        )
+                        .map(|hook| WindowsWorkerRegistration::LowLevelKeyboardHook { hook })
+                    }
+                };
+                let ready_result = result
+                    .as_ref()
+                    .map(|_| thread_id)
+                    .map_err(|error| error.clone());
+                if ready_tx.send(ready_result).is_err() {
+                    if let Ok(registration) = result {
+                        let _ = unregister_windows_registration(hotkey, registration);
+                    }
+                    return;
+                }
+                let Ok(worker_registration) = result else {
+                    return;
+                };
+
+                loop {
+                    let status = unsafe { GetMessageW(&mut message, None, 0, 0) };
+                    if status.0 == -1 {
+                        tracing::warn!(
+                            binding = %hotkey,
+                            hotkey_id = hotkey.id(),
+                            thread_id,
+                            "manual clip hotkey worker failed to receive a Windows message"
+                        );
+                        break;
+                    }
+                    if !status.as_bool() {
+                        tracing::debug!(binding = %hotkey, hotkey_id = hotkey.id(), thread_id, "manual clip hotkey worker received quit message");
+                        break;
+                    }
+
+                    match message.message {
+                        WM_HOTKEY if message.wParam == WPARAM(hotkey.id() as usize) => {
+                            tracing::debug!(
+                                binding = %hotkey,
+                                hotkey_id = hotkey.id(),
+                                backend,
+                                thread_id,
+                                "manual clip hotkey received WM_HOTKEY"
+                            );
+                            let _ = event_tx.send(HotkeyEvent::Activated);
+                        }
+                        WINDOWS_HOTKEY_SHUTDOWN_MESSAGE => {
+                            tracing::debug!(
+                                binding = %hotkey,
+                                hotkey_id = hotkey.id(),
+                                backend,
+                                thread_id,
+                                "manual clip hotkey worker received shutdown message"
+                            );
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Err(error) = unregister_windows_registration(hotkey, worker_registration) {
+                    tracing::warn!("failed to unregister manual clip hotkey: {error}");
+                }
+            })
+            .map_err(|error| format!("failed to spawn manual clip hotkey worker: {error}"))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(thread_id)) => {
+                tracing::debug!(
+                    binding = %hotkey,
+                    hotkey_id = hotkey.id(),
+                    backend,
+                    thread_id,
+                    "manual clip hotkey worker registered successfully"
+                );
+                Ok(Self {
+                    backend: HotkeyBackend::Windows {
+                        receiver: event_rx,
+                        shutdown_thread_id: thread_id,
+                        worker: Some(worker),
+                    },
+                    binding_label: Some(hotkey.to_string()),
+                    configuration_note: None,
+                })
+            }
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                tracing::warn!(
+                    binding = %hotkey,
+                    hotkey_id = hotkey.id(),
+                    backend,
+                    %error,
+                    "manual clip hotkey worker failed to register"
+                );
+                Err(error)
+            }
+            Err(error) => {
+                let _ = worker.join();
+                let error = format!("failed to initialize the manual clip hotkey worker: {error}");
+                tracing::warn!(
+                    binding = %hotkey,
+                    hotkey_id = hotkey.id(),
+                    backend,
+                    %error,
+                    "manual clip hotkey worker failed to initialize"
+                );
+                Err(error)
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -439,6 +697,28 @@ impl HotkeyManager {
 impl Drop for HotkeyManager {
     fn drop(&mut self) {
         match &mut self.backend {
+            #[cfg(target_os = "windows")]
+            HotkeyBackend::Windows {
+                shutdown_thread_id,
+                worker,
+                ..
+            } => {
+                tracing::debug!(
+                    thread_id = *shutdown_thread_id,
+                    "shutting down manual clip hotkey worker"
+                );
+                let _ = unsafe {
+                    PostThreadMessageW(
+                        *shutdown_thread_id,
+                        WINDOWS_HOTKEY_SHUTDOWN_MESSAGE,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                };
+                if let Some(worker) = worker.take() {
+                    let _ = worker.join();
+                }
+            }
             #[cfg(target_os = "linux")]
             HotkeyBackend::KdePlatformService { .. } => {}
             #[cfg(target_os = "linux")]
@@ -448,7 +728,10 @@ impl Drop for HotkeyManager {
                 }
                 task.abort();
             }
+            #[cfg(not(target_os = "windows"))]
             HotkeyBackend::Disabled | HotkeyBackend::GlobalHotkey { .. } => {}
+            #[cfg(target_os = "windows")]
+            HotkeyBackend::Disabled => {}
         }
     }
 }
@@ -1014,6 +1297,396 @@ fn parse_hotkey(binding: &str) -> Result<HotKey, String> {
     HotKey::from_str(binding.trim()).map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "windows")]
+fn windows_hotkey_registration(hotkey: HotKey) -> Result<WindowsHotkeyRegistration, String> {
+    if let Some(virtual_key) = windows_virtual_key(hotkey.key) {
+        return Ok(WindowsHotkeyRegistration::RegisterHotKey { virtual_key });
+    }
+
+    if let Some(spec) = windows_hook_spec(hotkey.key) {
+        return Ok(WindowsHotkeyRegistration::LowLevelKeyboardHook { spec });
+    }
+
+    Err(format!(
+        "failed to register manual clip hotkey: unsupported key {}",
+        hotkey.key
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_hotkey(hotkey: HotKey, virtual_key: VIRTUAL_KEY) -> Result<(), String> {
+    let modifiers = windows_hotkey_modifiers(hotkey);
+
+    // SAFETY: This is called on the dedicated hotkey worker thread after its message queue
+    // has been created, and uses a thread-associated registration with a stable hotkey id.
+    tracing::debug!(
+        binding = %hotkey,
+        hotkey_id = hotkey.id(),
+        modifiers = modifiers.0,
+        virtual_key = virtual_key.0,
+        "registering Windows manual clip hotkey"
+    );
+    match unsafe {
+        RegisterHotKey(
+            None,
+            hotkey.id() as i32,
+            modifiers,
+            u32::from(virtual_key.0),
+        )
+    } {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let message = if unsafe { GetLastError() } == ERROR_HOTKEY_ALREADY_REGISTERED {
+                format!(
+                    "failed to register manual clip hotkey: `{hotkey}` is already registered by another application"
+                )
+            } else {
+                format!("failed to register manual clip hotkey: {error}")
+            };
+            tracing::warn!(
+                binding = %hotkey,
+                hotkey_id = hotkey.id(),
+                modifiers = modifiers.0,
+                virtual_key = virtual_key.0,
+                error = %message,
+                "registering Windows manual clip hotkey failed"
+            );
+            Err(message)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn unregister_windows_hotkey(hotkey: HotKey) -> Result<(), String> {
+    // SAFETY: The hotkey was registered by the current worker thread using this id.
+    unsafe { UnregisterHotKey(None, hotkey.id() as i32) }
+        .map_err(|error| format!("failed to unregister manual clip hotkey: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_low_level_keyboard_hook(
+    hotkey: HotKey,
+    spec: WindowsHookSpec,
+    sender: mpsc::Sender<HotkeyEvent>,
+) -> Result<HHOOK, String> {
+    tracing::debug!(
+        binding = %hotkey,
+        hotkey_id = hotkey.id(),
+        scan_code = spec.scan_code,
+        extended = spec.extended,
+        "installing Windows manual clip low-level keyboard hook"
+    );
+
+    {
+        let mut state = windows_low_level_hook_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *state = Some(WindowsLowLevelHookState {
+            sender,
+            hotkey_id: hotkey.id(),
+            binding: hotkey.to_string(),
+            modifiers: hotkey.mods,
+            spec,
+            active: false,
+        });
+    }
+
+    let module = unsafe { GetModuleHandleW(None) }
+        .map_err(|error| format!("failed to resolve the NaniteClip module handle: {error}"))?;
+    match unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(windows_low_level_keyboard_proc),
+            Some(module.into()),
+            0,
+        )
+    } {
+        Ok(hook) => Ok(hook),
+        Err(error) => {
+            clear_windows_low_level_hook_state(hotkey.id());
+            Err(format!(
+                "failed to install the manual clip low-level keyboard hook: {error}"
+            ))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn unregister_windows_low_level_keyboard_hook(hotkey: HotKey, hook: HHOOK) -> Result<(), String> {
+    clear_windows_low_level_hook_state(hotkey.id());
+    unsafe { UnhookWindowsHookEx(hook) }.map_err(|error| {
+        format!("failed to uninstall the manual clip low-level keyboard hook: {error}")
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn unregister_windows_registration(
+    hotkey: HotKey,
+    registration: WindowsWorkerRegistration,
+) -> Result<(), String> {
+    match registration {
+        WindowsWorkerRegistration::RegisterHotKey => unregister_windows_hotkey(hotkey),
+        WindowsWorkerRegistration::LowLevelKeyboardHook { hook } => {
+            unregister_windows_low_level_keyboard_hook(hotkey, hook)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hotkey_modifiers(hotkey: HotKey) -> HOT_KEY_MODIFIERS {
+    let mut modifiers = MOD_NOREPEAT;
+    if hotkey.mods.shift() {
+        modifiers |= MOD_SHIFT;
+    }
+    if hotkey.mods.contains(HotKeyModifiers::SUPER) || hotkey.mods.meta() {
+        modifiers |= MOD_WIN;
+    }
+    if hotkey.mods.alt() {
+        modifiers |= MOD_ALT;
+    }
+    if hotkey.mods.ctrl() {
+        modifiers |= MOD_CONTROL;
+    }
+    modifiers
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hook_spec(key: HotKeyCode) -> Option<WindowsHookSpec> {
+    Some(match key {
+        HotKeyCode::NumpadEnter => WindowsHookSpec {
+            scan_code: 0x1c,
+            extended: true,
+        },
+        HotKeyCode::NumpadEqual => WindowsHookSpec {
+            scan_code: 0x59,
+            extended: false,
+        },
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_low_level_hook_state() -> &'static Mutex<Option<WindowsLowLevelHookState>> {
+    WINDOWS_LOW_LEVEL_HOOK_STATE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn clear_windows_low_level_hook_state(hotkey_id: u32) {
+    let mut state = windows_low_level_hook_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state
+        .as_ref()
+        .is_some_and(|state| state.hotkey_id == hotkey_id)
+    {
+        *state = None;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hotkey_requires_win(modifiers: HotKeyModifiers) -> bool {
+    modifiers.contains(HotKeyModifiers::SUPER) || modifiers.meta()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_key_is_down(key: VIRTUAL_KEY) -> bool {
+    (unsafe { GetAsyncKeyState(i32::from(key.0)) }) < 0
+}
+
+#[cfg(target_os = "windows")]
+fn windows_hotkey_modifiers_match(modifiers: HotKeyModifiers) -> bool {
+    let shift_down = windows_key_is_down(VK_SHIFT);
+    let control_down = windows_key_is_down(VK_CONTROL);
+    let alt_down = windows_key_is_down(VK_MENU);
+    let win_down = windows_key_is_down(VK_LWIN) || windows_key_is_down(VK_RWIN);
+
+    shift_down == modifiers.shift()
+        && control_down == modifiers.ctrl()
+        && alt_down == modifiers.alt()
+        && win_down == windows_hotkey_requires_win(modifiers)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_low_level_event_matches_spec(event: &KBDLLHOOKSTRUCT, spec: WindowsHookSpec) -> bool {
+    event.scanCode == spec.scan_code && event.flags.contains(LLKHF_EXTENDED) == spec.extended
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn windows_low_level_keyboard_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code != HC_ACTION as i32 {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+
+    let message = wparam.0 as u32;
+    let is_keydown = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
+    let is_keyup = matches!(message, WM_KEYUP | WM_SYSKEYUP);
+    if !is_keydown && !is_keyup {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+
+    let event = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    let mut state = windows_low_level_hook_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(state) = state.as_mut() else {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    };
+    if !windows_low_level_event_matches_spec(event, state.spec) {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+
+    if is_keyup {
+        state.active = false;
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+
+    if windows_hotkey_modifiers_match(state.modifiers) {
+        if !state.active {
+            state.active = true;
+            tracing::debug!(
+                binding = %state.binding,
+                hotkey_id = state.hotkey_id,
+                scan_code = event.scanCode,
+                extended = event.flags.contains(LLKHF_EXTENDED),
+                "manual clip hotkey received low-level keyboard activation"
+            );
+            let _ = state.sender.send(HotkeyEvent::Activated);
+        }
+    } else {
+        state.active = false;
+    }
+
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_virtual_key(key: HotKeyCode) -> Option<VIRTUAL_KEY> {
+    Some(match key {
+        HotKeyCode::KeyA => VK_A,
+        HotKeyCode::KeyB => VK_B,
+        HotKeyCode::KeyC => VK_C,
+        HotKeyCode::KeyD => VK_D,
+        HotKeyCode::KeyE => VK_E,
+        HotKeyCode::KeyF => VK_F,
+        HotKeyCode::KeyG => VK_G,
+        HotKeyCode::KeyH => VK_H,
+        HotKeyCode::KeyI => VK_I,
+        HotKeyCode::KeyJ => VK_J,
+        HotKeyCode::KeyK => VK_K,
+        HotKeyCode::KeyL => VK_L,
+        HotKeyCode::KeyM => VK_M,
+        HotKeyCode::KeyN => VK_N,
+        HotKeyCode::KeyO => VK_O,
+        HotKeyCode::KeyP => VK_P,
+        HotKeyCode::KeyQ => VK_Q,
+        HotKeyCode::KeyR => VK_R,
+        HotKeyCode::KeyS => VK_S,
+        HotKeyCode::KeyT => VK_T,
+        HotKeyCode::KeyU => VK_U,
+        HotKeyCode::KeyV => VK_V,
+        HotKeyCode::KeyW => VK_W,
+        HotKeyCode::KeyX => VK_X,
+        HotKeyCode::KeyY => VK_Y,
+        HotKeyCode::KeyZ => VK_Z,
+        HotKeyCode::Digit0 => VK_0,
+        HotKeyCode::Digit1 => VK_1,
+        HotKeyCode::Digit2 => VK_2,
+        HotKeyCode::Digit3 => VK_3,
+        HotKeyCode::Digit4 => VK_4,
+        HotKeyCode::Digit5 => VK_5,
+        HotKeyCode::Digit6 => VK_6,
+        HotKeyCode::Digit7 => VK_7,
+        HotKeyCode::Digit8 => VK_8,
+        HotKeyCode::Digit9 => VK_9,
+        HotKeyCode::Equal => VK_OEM_PLUS,
+        HotKeyCode::Comma => VK_OEM_COMMA,
+        HotKeyCode::Minus => VK_OEM_MINUS,
+        HotKeyCode::Period => VK_OEM_PERIOD,
+        HotKeyCode::Semicolon => VK_OEM_1,
+        HotKeyCode::Slash => VK_OEM_2,
+        HotKeyCode::Backquote => VK_OEM_3,
+        HotKeyCode::BracketLeft => VK_OEM_4,
+        HotKeyCode::Backslash => VK_OEM_5,
+        HotKeyCode::BracketRight => VK_OEM_6,
+        HotKeyCode::Quote => VK_OEM_7,
+        HotKeyCode::Backspace => VK_BACK,
+        HotKeyCode::Tab => VK_TAB,
+        HotKeyCode::Space => VK_SPACE,
+        HotKeyCode::Enter => VK_RETURN,
+        HotKeyCode::CapsLock => VK_CAPITAL,
+        HotKeyCode::Escape => VK_ESCAPE,
+        HotKeyCode::PageUp => VK_PRIOR,
+        HotKeyCode::PageDown => VK_NEXT,
+        HotKeyCode::End => VK_END,
+        HotKeyCode::Home => VK_HOME,
+        HotKeyCode::ArrowLeft => VK_LEFT,
+        HotKeyCode::ArrowUp => VK_UP,
+        HotKeyCode::ArrowRight => VK_RIGHT,
+        HotKeyCode::ArrowDown => VK_DOWN,
+        HotKeyCode::PrintScreen => VK_SNAPSHOT,
+        HotKeyCode::Insert => VK_INSERT,
+        HotKeyCode::Delete => VK_DELETE,
+        HotKeyCode::F1 => VK_F1,
+        HotKeyCode::F2 => VK_F2,
+        HotKeyCode::F3 => VK_F3,
+        HotKeyCode::F4 => VK_F4,
+        HotKeyCode::F5 => VK_F5,
+        HotKeyCode::F6 => VK_F6,
+        HotKeyCode::F7 => VK_F7,
+        HotKeyCode::F8 => VK_F8,
+        HotKeyCode::F9 => VK_F9,
+        HotKeyCode::F10 => VK_F10,
+        HotKeyCode::F11 => VK_F11,
+        HotKeyCode::F12 => VK_F12,
+        HotKeyCode::F13 => VK_F13,
+        HotKeyCode::F14 => VK_F14,
+        HotKeyCode::F15 => VK_F15,
+        HotKeyCode::F16 => VK_F16,
+        HotKeyCode::F17 => VK_F17,
+        HotKeyCode::F18 => VK_F18,
+        HotKeyCode::F19 => VK_F19,
+        HotKeyCode::F20 => VK_F20,
+        HotKeyCode::F21 => VK_F21,
+        HotKeyCode::F22 => VK_F22,
+        HotKeyCode::F23 => VK_F23,
+        HotKeyCode::F24 => VK_F24,
+        HotKeyCode::NumLock => VK_NUMLOCK,
+        HotKeyCode::Numpad0 => VK_NUMPAD0,
+        HotKeyCode::Numpad1 => VK_NUMPAD1,
+        HotKeyCode::Numpad2 => VK_NUMPAD2,
+        HotKeyCode::Numpad3 => VK_NUMPAD3,
+        HotKeyCode::Numpad4 => VK_NUMPAD4,
+        HotKeyCode::Numpad5 => VK_NUMPAD5,
+        HotKeyCode::Numpad6 => VK_NUMPAD6,
+        HotKeyCode::Numpad7 => VK_NUMPAD7,
+        HotKeyCode::Numpad8 => VK_NUMPAD8,
+        HotKeyCode::Numpad9 => VK_NUMPAD9,
+        HotKeyCode::NumpadAdd => VK_ADD,
+        HotKeyCode::NumpadDecimal => VK_DECIMAL,
+        HotKeyCode::NumpadDivide => VK_DIVIDE,
+        HotKeyCode::NumpadEnter => return None,
+        HotKeyCode::NumpadEqual => return None,
+        HotKeyCode::NumpadMultiply => VK_MULTIPLY,
+        HotKeyCode::NumpadSubtract => VK_SUBTRACT,
+        HotKeyCode::ScrollLock => VK_SCROLL,
+        HotKeyCode::AudioVolumeDown => VK_VOLUME_DOWN,
+        HotKeyCode::AudioVolumeUp => VK_VOLUME_UP,
+        HotKeyCode::AudioVolumeMute => VK_VOLUME_MUTE,
+        HotKeyCode::MediaPlay => VK_PLAY,
+        HotKeyCode::MediaPause => VK_PAUSE,
+        HotKeyCode::MediaPlayPause => VK_MEDIA_PLAY_PAUSE,
+        HotKeyCode::MediaStop => VK_MEDIA_STOP,
+        HotKeyCode::MediaTrackNext => VK_MEDIA_NEXT_TRACK,
+        HotKeyCode::MediaTrackPrevious => VK_MEDIA_PREV_TRACK,
+        HotKeyCode::Pause => VK_PAUSE,
+        _ => return None,
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn portal_preferred_trigger(binding: &str) -> Option<String> {
     let mut output = Vec::new();
@@ -1167,6 +1840,70 @@ mod tests {
     fn parse_hotkey_accepts_manual_clip_default() {
         let hotkey = parse_hotkey("Ctrl+Shift+F8").unwrap();
         assert_eq!(hotkey.to_string(), "shift+control+F8");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_virtual_key_accepts_manual_clip_default() {
+        let hotkey = parse_hotkey("Ctrl+Shift+F8").unwrap();
+        assert_eq!(windows_virtual_key(hotkey.key), Some(VK_F8));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_hotkey_modifiers_include_control_shift_and_norepeat() {
+        let hotkey = parse_hotkey("Ctrl+Shift+F8").unwrap();
+        let modifiers = windows_hotkey_modifiers(hotkey);
+        assert!(modifiers.contains(MOD_CONTROL));
+        assert!(modifiers.contains(MOD_SHIFT));
+        assert!(modifiers.contains(MOD_NOREPEAT));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_virtual_key_rejects_numpad_enter() {
+        let hotkey = parse_hotkey("NumEnter").unwrap();
+        assert_eq!(windows_virtual_key(hotkey.key), None);
+        assert_eq!(
+            windows_hook_spec(hotkey.key),
+            Some(WindowsHookSpec {
+                scan_code: 0x1c,
+                extended: true
+            })
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_hook_spec_supports_numpad_equal() {
+        let hotkey = parse_hotkey("NumEqual").unwrap();
+        assert_eq!(windows_virtual_key(hotkey.key), None);
+        assert_eq!(
+            windows_hook_spec(hotkey.key),
+            Some(WindowsHookSpec {
+                scan_code: 0x59,
+                extended: false
+            })
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn capture_binding_accepts_numpad_enter_on_windows() {
+        let event = keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(Named::Enter),
+            modified_key: keyboard::Key::Named(Named::Enter),
+            physical_key: Physical::Code(IcedKeyCode::NumpadEnter),
+            location: keyboard::Location::Numpad,
+            modifiers: keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        };
+
+        assert_eq!(
+            capture_binding(&event),
+            BindingCapture::Captured("NumEnter".into())
+        );
     }
 
     #[cfg(target_os = "linux")]

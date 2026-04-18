@@ -822,16 +822,12 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
 
             match app.config.save() {
                 Ok(()) => {
-                    match crate::autostart::sync_launch_at_login(&app.config.launch_at_login) {
-                        Ok(()) => app.set_settings_feedback("Settings saved.", false),
-                        Err(error) => app.set_settings_feedback(
-                            format!(
-                                "Settings saved, but launch-at-login could not be updated: {error}"
-                            ),
-                            false,
-                        ),
-                    }
-                    iced::Task::batch([app.configure_hotkeys(), app.sync_tray_snapshot()])
+                    app.set_settings_feedback("Settings saved.", false);
+                    iced::Task::batch([
+                        app.configure_hotkeys(),
+                        app.sync_tray_snapshot(),
+                        app.sync_launch_at_login_task(),
+                    ])
                 }
                 Err(error) => {
                     app.set_settings_feedback(format!("Failed to save settings: {error}"), false);

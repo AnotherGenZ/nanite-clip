@@ -11,7 +11,7 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of NaniteClip is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <Icon Id="ProductIcon" SourceFile="assets\NaniteClips.png" />
+    <Icon Id="ProductIcon" SourceFile="$(var.CargoTargetBinDir)\nanite-clip.exe" />
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -35,7 +35,11 @@
               Name="NaniteClip"
               Description="PlanetSide 2 desktop companion for automatic and manual clip capture"
               Target="[INSTALLFOLDER]nanite-clip.exe"
-              WorkingDirectory="INSTALLFOLDER" />
+              WorkingDirectory="INSTALLFOLDER"
+              Icon="ProductIcon"
+              IconIndex="0">
+              <ShortcutProperty Key="System.AppUserModel.ID" Value="AnotherGenZ.NaniteClip" />
+            </Shortcut>
             <RemoveFolder Id="RemoveProgramMenuDir" On="uninstall" />
             <RegistryValue
               Root="HKCU"

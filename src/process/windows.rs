@@ -1,8 +1,14 @@
 use std::mem::size_of;
 
+use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsWindowVisible,
+};
+use windows::core::BOOL;
 
 use super::{
     BackendHints, CaptureSourcePlan, CaptureTarget, CaptureTargetError, GameProcessWatcher,
@@ -37,16 +43,100 @@ impl GameProcessWatcher for WindowsToolhelpWatcher {
 
 pub fn find_ps2_pid() -> Option<u32> {
     iter_processes()
-        .ok()?
-        .into_iter()
-        .find(|process| exe_name_matches_ps2(process.exe_name.as_str()))
-        .map(|process| process.pid)
+        .ok()
+        .and_then(|processes| {
+            processes
+                .into_iter()
+                .find(|process| exe_name_matches_ps2(process.exe_name.as_str()))
+                .map(|process| process.pid)
+        })
+        .or_else(find_ps2_window_pid)
+}
+
+fn find_ps2_window_pid() -> Option<u32> {
+    let mut pid = 0u32;
+
+    // SAFETY: The callback stores the first matching PID into `pid` and stops
+    // enumeration. The pointer stays valid for the duration of EnumWindows.
+    let _ = unsafe {
+        EnumWindows(
+            Some(enum_ps2_windows),
+            LPARAM((&mut pid as *mut u32).cast::<()>() as isize),
+        )
+    };
+
+    (pid != 0).then_some(pid)
+}
+
+unsafe extern "system" fn enum_ps2_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return true.into();
+    }
+
+    let title_matches =
+        read_window_title(hwnd).is_some_and(|title| string_matches_ps2_window(title.as_str()));
+    let class_matches = read_window_class(hwnd)
+        .is_some_and(|class_name| string_matches_ps2_window(class_name.as_str()));
+    if !(title_matches || class_matches) {
+        return true.into();
+    }
+
+    let mut pid = 0u32;
+    let _ = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return true.into();
+    }
+
+    let slot = lparam.0 as *mut u32;
+    if slot.is_null() {
+        return true.into();
+    }
+
+    // SAFETY: `slot` points at the `pid` local owned by find_ps2_window_pid.
+    unsafe {
+        *slot = pid;
+    }
+    false.into()
+}
+
+fn read_window_title(hwnd: HWND) -> Option<String> {
+    let length = unsafe { GetWindowTextLengthW(hwnd) };
+    if length <= 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; length as usize + 1];
+    // SAFETY: The buffer is writable and sized for the reported window text.
+    let copied = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+    if copied <= 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buffer[..copied as usize]))
+}
+
+fn read_window_class(hwnd: HWND) -> Option<String> {
+    let mut buffer = vec![0u16; 256];
+    // SAFETY: The buffer is writable and large enough for a Win32 class name.
+    let copied = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    if copied <= 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buffer[..copied as usize]))
+}
+
+fn string_matches_ps2_window(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.contains("planetside 2")
+        || normalized.contains("planetside2")
+        || normalized.contains("planetside2_x64")
 }
 
 pub fn is_process_running(pid: u32) -> bool {
     iter_processes()
         .map(|processes| processes.into_iter().any(|process| process.pid == pid))
-        .unwrap_or(false)
+        .unwrap_or_else(|_| find_ps2_window_pid().is_some_and(|window_pid| window_pid == pid))
 }
 
 pub fn resolve_capture_source(configured_source: &str) -> CaptureSourcePlan {
@@ -145,7 +235,9 @@ fn uses_backend_owned_capture(configured_source: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureTarget, exe_name_matches_ps2, resolve_capture_source};
+    use super::{
+        CaptureTarget, exe_name_matches_ps2, resolve_capture_source, string_matches_ps2_window,
+    };
 
     #[test]
     fn matches_known_ps2_exe_names() {
@@ -158,6 +250,14 @@ mod tests {
     fn rejects_other_executables() {
         assert!(!exe_name_matches_ps2("notepad.exe"));
         assert!(!exe_name_matches_ps2("PlanetSide.exe"));
+    }
+
+    #[test]
+    fn recognizes_expected_window_titles() {
+        assert!(string_matches_ps2_window("PlanetSide 2"));
+        assert!(string_matches_ps2_window("PlanetSide2_x64.exe"));
+        assert!(string_matches_ps2_window("PlanetSide2"));
+        assert!(!string_matches_ps2_window("OBS 31.1.0"));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
 use crate::config::{LaunchAtLoginConfig, LaunchAtLoginProvider};
@@ -13,6 +15,8 @@ const APPLICATION_ICON_NAME: &str = "nanite-clip";
 const WINDOWS_RUN_KEY_PATH: &str = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(target_os = "windows")]
 const WINDOWS_RUN_VALUE_NAME: &str = "nanite-clip";
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AutostartCommand {
@@ -331,16 +335,22 @@ fn windows_startup_dir() -> Result<PathBuf, String> {
 
 #[cfg(target_os = "windows")]
 fn run_windows_powershell(script: &str) -> Result<(), String> {
-    let output = std::process::Command::new("powershell")
+    let mut command = std::process::Command::new("powershell");
+    command
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
+            "-WindowStyle",
+            "Hidden",
             "-STA",
             "-Command",
         ])
         .arg(script)
+        .creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
         .output()
         .map_err(|error| format!("failed to start PowerShell: {error}"))?;
 

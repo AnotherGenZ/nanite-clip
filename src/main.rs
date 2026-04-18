@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod app;
 mod app_icon;
 mod autostart;
@@ -37,12 +42,28 @@ fn daemon_view(app: &App, _window: window::Id) -> Element<'_, app::Message> {
 }
 
 fn main() -> iced::Result {
+    #[cfg(target_os = "windows")]
+    if let Err(error) = notifications::configure_windows_notifications() {
+        eprintln!("NaniteClip warning: {error}");
+    }
+
+    #[cfg(debug_assertions)]
+    let default_log_filter = "nanite_clip=debug";
+    #[cfg(not(debug_assertions))]
+    let default_log_filter = "nanite_clip=info";
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "nanite_clip=info".parse().unwrap()),
+                .unwrap_or_else(|_| default_log_filter.parse().unwrap()),
         )
         .init();
+
+    tracing::info!(
+        debug_build = cfg!(debug_assertions),
+        default_log_filter,
+        "starting NaniteClip"
+    );
 
     iced::daemon(App::new, App::update, daemon_view)
         .title(|app: &App, _window| app.title())

@@ -6,10 +6,15 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/NaniteClips-512.png");
     println!("cargo:rerun-if-changed=native/platform_service/CMakeLists.txt");
     println!("cargo:rerun-if-changed=native/platform_service/main.cpp");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLASMA_HELPER_BUILD");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLATFORM_SERVICE_BUILD");
+
+    if let Err(error) = embed_windows_resources() {
+        println!("cargo:warning={error}");
+    }
 
     let platform_service_path = match build_platform_service() {
         Ok(path) => path,
@@ -20,6 +25,64 @@ fn main() {
     };
 
     println!("cargo:rustc-env=NANITE_CLIP_PLATFORM_SERVICE_PATH={platform_service_path}");
+}
+
+fn embed_windows_resources() -> Result<(), String> {
+    if env::var_os("CARGO_CFG_TARGET_OS") != Some(OsString::from("windows")) {
+        return Ok(());
+    }
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|error| error.to_string())?);
+    let icon_path = out_dir.join("nanite-clip.ico");
+    let rc_path = out_dir.join("nanite-clip.rc");
+    let res_path = out_dir.join("nanite-clip.res");
+
+    write_windows_icon(&icon_path)?;
+    fs::write(
+        &rc_path,
+        format!(
+            "IDI_APP_ICON ICON \"{}\"\r\n",
+            windows_resource_literal(&icon_path)
+        ),
+    )
+    .map_err(|error| format!("failed to write `{}`: {error}", rc_path.display()))?;
+
+    let output = Command::new("rc.exe")
+        .arg("/nologo")
+        .arg(format!("/fo{}", res_path.display()))
+        .arg(&rc_path)
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to compile Windows resources with rc.exe: {error}. \
+                 Install the Visual Studio C++ build tools so release builds can embed the app icon."
+            )
+        })?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut details = String::new();
+        if !stdout.trim().is_empty() {
+            details.push_str("\nstdout:\n");
+            details.push_str(stdout.trim());
+        }
+        if !stderr.trim().is_empty() {
+            details.push_str("\nstderr:\n");
+            details.push_str(stderr.trim());
+        }
+        return Err(format!(
+            "rc.exe failed while compiling `{}` (exit status: {}){details}",
+            rc_path.display(),
+            output.status
+        ));
+    }
+
+    println!(
+        "cargo:rustc-link-arg-bin=nanite-clip={}",
+        res_path.display()
+    );
+
+    Ok(())
 }
 
 fn build_platform_service() -> Result<String, String> {
@@ -115,4 +178,19 @@ fn env_flag_enabled(name: &str) -> bool {
         env::var(name).ok().as_deref().map(str::trim),
         Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
     )
+}
+
+fn write_windows_icon(path: &Path) -> Result<(), String> {
+    let image = image::open("assets/NaniteClips-512.png")
+        .map_err(|error| format!("failed to load Windows app icon asset: {error}"))?;
+    let icon = image.resize_exact(256, 256, image::imageops::FilterType::Lanczos3);
+    icon.save_with_format(path, image::ImageFormat::Ico)
+        .map_err(|error| format!("failed to write Windows icon `{}`: {error}", path.display()))
+}
+
+fn windows_resource_literal(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }

@@ -95,6 +95,7 @@ the active capture backend to save the relevant segment.
 1. Download and run the MSI installer (nanite-clip-<version>-x86_64.msi).
 2. Optional portable fallback: download nanite-clip.exe and run it from a folder you keep around for updates.
 3. Install OBS Studio 28+ and enable obs-websocket, then choose the OBS backend in Settings.
+4. For release validation, use docs/PLAT-01-windows-smoke-test.md before publishing a Windows build.
 
 ## Installation (from source)
 

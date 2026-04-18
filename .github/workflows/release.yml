@@ -114,13 +114,19 @@ jobs:
           if (-not $msi) {
             throw "MSI artifact not found in target/wix"
           }
-          Copy-Item $msi.FullName "target/wix/nanite-clip-$env:RELEASE_REF_NAME-x86_64.msi" -Force
+          $normalized = [System.IO.Path]::GetFullPath("target/wix/nanite-clip-$env:RELEASE_REF_NAME-x86_64.msi")
+          if ([System.IO.Path]::GetFullPath($msi.FullName) -ne $normalized) {
+            Move-Item $msi.FullName $normalized -Force
+          }
+          Get-ChildItem -Path "target/wix" -Filter "*.msi" |
+            Where-Object { [System.IO.Path]::GetFullPath($_.FullName) -ne $normalized } |
+            Remove-Item -Force
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-msi
-          path: target/wix/nanite-clip-*.msi
+          path: target/wix/nanite-clip-${{ env.RELEASE_REF_NAME }}-x86_64.msi
 
   deb:
     name: Build Debian package
@@ -420,7 +426,7 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             nanite-clip-windows-x64/nanite-clip.exe
-            windows-msi/*.msi
+            windows-msi/nanite-clip-${{ env.RELEASE_REF_NAME }}-x86_64.msi
             linux-deb-package/*.deb
             linux-rpm-package/*.rpm
             pacman-package/*.pkg.tar.zst
