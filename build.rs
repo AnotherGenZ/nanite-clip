@@ -13,6 +13,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLATFORM_SERVICE_BUILD");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_UPDATE_PUBLIC_KEY");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_UPDATE_PUBLIC_KEYS");
+    println!("cargo:rerun-if-env-changed=PATH");
+    println!("cargo:rerun-if-env-changed=CMAKE");
+    println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR");
+    println!("cargo:rerun-if-env-changed=CMAKE_MAKE_PROGRAM");
 
     let update_public_key = env::var("NANITE_CLIP_UPDATE_PUBLIC_KEY").unwrap_or_default();
     let update_public_keys = env::var("NANITE_CLIP_UPDATE_PUBLIC_KEYS").unwrap_or_default();
@@ -127,19 +131,19 @@ fn build_platform_service() -> Result<String, String> {
         )
     })?;
 
-    run_cmake(
-        Command::new("cmake")
-            .arg("-S")
-            .arg(source_dir)
-            .arg("-B")
-            .arg(&build_dir)
-            .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
-            .arg("-DCMAKE_BUILD_TYPE=RelWithDebInfo"),
-        "configure the platform service",
-    )?;
+    let mut configure = new_cmake_command();
+    configure
+        .arg("-S")
+        .arg(source_dir)
+        .arg("-B")
+        .arg(&build_dir)
+        .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
+        .arg("-DCMAKE_BUILD_TYPE=RelWithDebInfo");
+    prefer_ninja_generator(&mut configure);
+    run_cmake(&mut configure, "configure the platform service")?;
 
     run_cmake(
-        Command::new("cmake")
+        new_cmake_command()
             .arg("--build")
             .arg(&build_dir)
             .arg("--target")
@@ -159,9 +163,12 @@ fn build_platform_service() -> Result<String, String> {
 }
 
 fn run_cmake(command: &mut Command, description: &str) -> Result<(), String> {
-    let output = command
-        .output()
-        .map_err(|error| format!("failed to {description}: could not start `cmake`: {error}"))?;
+    let output = command.output().map_err(|error| {
+        format!(
+            "failed to {description}: could not start `{}`: {error}",
+            cmake_program().to_string_lossy()
+        )
+    })?;
     if output.status.success() {
         return Ok(());
     }
@@ -182,6 +189,59 @@ fn run_cmake(command: &mut Command, description: &str) -> Result<(), String> {
         "failed to {description} (exit status: {}){details}",
         output.status
     ))
+}
+
+fn prefer_ninja_generator(command: &mut Command) {
+    if env::var_os("CMAKE_GENERATOR").is_some() {
+        return;
+    }
+
+    if cmake_make_program_looks_like_ninja() {
+        command.arg("-G").arg("Ninja");
+        return;
+    }
+
+    let Some(ninja_path) = find_in_path(&["ninja", "ninja-build"]) else {
+        return;
+    };
+
+    command.arg("-G").arg("Ninja");
+    if env::var_os("CMAKE_MAKE_PROGRAM").is_none() {
+        command.arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja_path.display()));
+    }
+}
+
+fn new_cmake_command() -> Command {
+    Command::new(cmake_program())
+}
+
+fn cmake_program() -> OsString {
+    env::var_os("CMAKE").unwrap_or_else(|| OsString::from("cmake"))
+}
+
+fn cmake_make_program_looks_like_ninja() -> bool {
+    let Some(make_program) = env::var_os("CMAKE_MAKE_PROGRAM") else {
+        return false;
+    };
+    Path::new(&make_program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase().starts_with("ninja"))
+        .unwrap_or(false)
+}
+
+fn find_in_path(candidates: &[&str]) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    for directory in env::split_paths(&path) {
+        for candidate in candidates {
+            let full_path = directory.join(candidate);
+            if full_path.is_file() {
+                return Some(full_path);
+            }
+        }
+    }
+
+    None
 }
 
 fn env_flag_enabled(name: &str) -> bool {
