@@ -64,16 +64,61 @@ enum TrayBackend {
     #[cfg(target_os = "windows")]
     CrossPlatform { tray: tray_icon::TrayIcon },
     #[cfg(not(target_os = "windows"))]
-    CrossPlatform {
-        command_tx: mpsc::Sender<CrossPlatformTrayCommand>,
-        worker: Option<thread::JoinHandle<()>>,
-    },
+    CrossPlatform { handle: CrossPlatformTrayHandle },
 }
 
 #[cfg(not(target_os = "windows"))]
 enum CrossPlatformTrayCommand {
     Update(TraySnapshot),
     Shutdown,
+}
+
+#[cfg(not(target_os = "windows"))]
+struct CrossPlatformTrayHandle {
+    command_tx: mpsc::Sender<CrossPlatformTrayCommand>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(not(target_os = "windows"))]
+impl CrossPlatformTrayHandle {
+    fn spawn(snapshot: TraySnapshot, event_tx: mpsc::Sender<TrayEvent>) -> Result<Self, String> {
+        let (command_tx, command_rx) = mpsc::channel();
+        let (startup_tx, startup_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_cross_platform_tray(snapshot, command_rx, event_tx, startup_tx);
+        });
+
+        match startup_rx.recv() {
+            Ok(Ok(())) => Ok(Self {
+                command_tx,
+                worker: Some(worker),
+            }),
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                Err(error)
+            }
+            Err(error) => {
+                let _ = worker.join();
+                Err(format!("failed to receive tray startup status: {error}"))
+            }
+        }
+    }
+
+    fn update_snapshot(&self, snapshot: TraySnapshot) {
+        let _ = self
+            .command_tx
+            .send(CrossPlatformTrayCommand::Update(snapshot));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl Drop for CrossPlatformTrayHandle {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(CrossPlatformTrayCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -111,29 +156,10 @@ impl TrayController {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let (command_tx, command_rx) = mpsc::channel();
-            let (startup_tx, startup_rx) = mpsc::channel();
-            let worker = thread::spawn(move || {
-                run_cross_platform_tray(snapshot, command_rx, event_tx, startup_tx);
-            });
-
-            match startup_rx.recv() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    let _ = worker.join();
-                    return Err(error);
-                }
-                Err(error) => {
-                    let _ = worker.join();
-                    return Err(format!("failed to receive tray startup status: {error}"));
-                }
-            }
+            let handle = CrossPlatformTrayHandle::spawn(snapshot, event_tx)?;
 
             Ok(Self {
-                backend: TrayBackend::CrossPlatform {
-                    command_tx,
-                    worker: Some(worker),
-                },
+                backend: TrayBackend::CrossPlatform { handle },
                 event_rx,
             })
         }
@@ -152,8 +178,8 @@ impl TrayController {
                 }
             }
             #[cfg(not(target_os = "windows"))]
-            TrayBackend::CrossPlatform { command_tx, .. } => {
-                let _ = command_tx.send(CrossPlatformTrayCommand::Update(snapshot));
+            TrayBackend::CrossPlatform { handle } => {
+                handle.update_snapshot(snapshot);
             }
         }
     }
@@ -212,12 +238,7 @@ impl Drop for TrayController {
             #[cfg(target_os = "windows")]
             TrayBackend::CrossPlatform { .. } => {}
             #[cfg(not(target_os = "windows"))]
-            TrayBackend::CrossPlatform { command_tx, worker } => {
-                let _ = command_tx.send(CrossPlatformTrayCommand::Shutdown);
-                if let Some(worker) = worker.take() {
-                    let _ = worker.join();
-                }
-            }
+            TrayBackend::CrossPlatform { .. } => {}
         }
     }
 }

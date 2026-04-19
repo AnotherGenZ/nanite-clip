@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use chrono::Utc;
 
 use crate::background_jobs::BackgroundJobContext;
+use crate::command_runner;
 use crate::db::{ClipAudioTrackRecord, PostProcessStatus};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,7 +72,8 @@ fn create_concat_montage_blocking(
     }
     ctx.progress(3, 4, "Launching ffmpeg concat job.")?;
 
-    let status = Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-y")
         .arg("-f")
         .arg("concat")
@@ -81,8 +83,8 @@ fn create_concat_montage_blocking(
         .arg(&list_path)
         .arg("-c")
         .arg("copy")
-        .arg(&output_path)
-        .status()
+        .arg(&output_path);
+    let status = command_runner::status(&mut command)
         .map_err(|error| format!("failed to start ffmpeg: {error}"))?;
 
     let _ = std::fs::remove_file(&list_path);
@@ -343,9 +345,8 @@ fn remux_normalized_clip(
         command.arg("-c:a").arg("copy");
     }
 
-    let output_result = command
-        .arg(output)
-        .output()
+    command.arg(output);
+    let output_result = command_runner::output(&mut command)
         .map_err(|error| format!("failed to start ffmpeg montage normalization: {error}"))?;
     if !output_result.status.success() {
         return Err(format!(
@@ -359,7 +360,8 @@ fn remux_normalized_clip(
 }
 
 fn probe_media_signature(path: &Path) -> Result<String, String> {
-    let output = Command::new("ffprobe")
+    let mut command = Command::new("ffprobe");
+    command
         .arg("-v")
         .arg("error")
         .arg("-show_entries")
@@ -368,8 +370,8 @@ fn probe_media_signature(path: &Path) -> Result<String, String> {
         .arg("default=noprint_wrappers=1")
         .arg(path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+        .stderr(Stdio::piped());
+    let output = command_runner::output(&mut command)
         .map_err(|error| format!("failed to run ffprobe for {}: {error}", path.display()))?;
 
     if !output.status.success() {
@@ -384,7 +386,8 @@ fn probe_media_signature(path: &Path) -> Result<String, String> {
 }
 
 fn probe_audio_streams(path: &Path) -> Result<Vec<AudioStreamSignature>, String> {
-    let output = Command::new("ffprobe")
+    let mut command = Command::new("ffprobe");
+    command
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -395,8 +398,8 @@ fn probe_audio_streams(path: &Path) -> Result<Vec<AudioStreamSignature>, String>
         .arg("csv=p=0")
         .arg(path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+        .stderr(Stdio::piped());
+    let output = command_runner::output(&mut command)
         .map_err(|error| format!("failed to run ffprobe for {}: {error}", path.display()))?;
 
     if !output.status.success() {

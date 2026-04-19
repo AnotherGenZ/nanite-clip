@@ -1,3 +1,5 @@
+mod options;
+
 use std::path::PathBuf;
 
 use chrono::Utc;
@@ -9,11 +11,14 @@ use super::super::shared::{
     ButtonTone, field_label, settings_pick_list_field, settings_stepper_field, settings_text_field,
     settings_text_field_with_button, styled_button, with_tooltip,
 };
-use super::super::{App, AudioSourceDraft, Message as AppMessage, audio_source_drafts_from_config};
+use super::super::{
+    App, AudioSourceDraft, Message as AppMessage, UpdateMessage, audio_source_drafts_from_config,
+};
 use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
+use crate::command_runner;
 use crate::config::{
-    AudioSourceConfig, ManualClipConfig, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
-    legacy_audio_source_kind_from_value,
+    AudioSourceConfig, CaptureBackend, ManualClipConfig, ObsManagementMode, UpdateChannel,
+    YouTubePrivacyStatus, legacy_audio_source_kind_from_value,
 };
 use crate::secure_store::SecretKey;
 use crate::ui::app::{
@@ -31,6 +36,7 @@ use crate::ui::overlay::banner::banner;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::primitives::switch::switch as toggle_switch;
 use crate::update::{AvailableRelease, UpdateInstallBehavior, UpdatePhase, UpdatePrimaryAction};
+use options::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AvailableAudioSourceOption {
@@ -147,75 +153,72 @@ pub enum Message {
 pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppMessage> {
     match message {
         Message::SetSubView(sub_view) => {
-            app.settings_sub_view = sub_view;
+            app.settings.sub_view = sub_view;
             iced::Task::none()
         }
         Message::ServiceIdChanged(value) => {
-            app.settings_service_id = value;
+            app.settings.service_id = value;
             iced::Task::none()
         }
         Message::CaptureBackendSelected(backend) => {
-            app.settings_capture_backend = backend
-                .config_value()
-                .expect("capture backend presets always have a config value")
-                .to_string();
-            app.settings_audio_discovery_error = None;
+            app.settings.capture_backend = backend.into_config_backend();
+            app.settings.audio_discovery_error = None;
             iced::Task::none()
         }
         Message::LaunchAtLoginToggled(value) => {
-            app.settings_launch_at_login = value;
+            app.settings.launch_at_login = value;
             iced::Task::none()
         }
         Message::AutoStartMonitoringToggled(value) => {
-            app.settings_auto_start_monitoring = value;
+            app.settings.auto_start_monitoring = value;
             iced::Task::none()
         }
         Message::StartMinimizedToggled(value) => {
-            app.settings_start_minimized = value;
+            app.settings.start_minimized = value;
             iced::Task::none()
         }
         Message::MinimizeToTrayToggled(value) => {
-            app.settings_minimize_to_tray = value;
+            app.settings.minimize_to_tray = value;
             iced::Task::none()
         }
         Message::UpdateAutoCheckToggled(value) => {
-            app.settings_update_auto_check = value;
+            app.settings.update_auto_check = value;
             iced::Task::none()
         }
         Message::UpdateChannelSelected(value) => {
-            app.settings_update_channel = value;
-            app.settings_selected_rollback_release = None;
-            app.update_state.rollback_candidates.clear();
-            iced::Task::done(AppMessage::RefreshRollbackCatalog)
+            app.settings.update_channel = value;
+            app.settings.selected_rollback_release = None;
+            app.updates.state.rollback_candidates.clear();
+            iced::Task::done(AppMessage::updates(UpdateMessage::RefreshRollbackCatalog))
         }
         Message::UpdateInstallBehaviorSelected(value) => {
-            app.settings_update_install_behavior = value;
+            app.settings.update_install_behavior = value;
             iced::Task::none()
         }
         Message::UpdatePrimaryActionSelected(value) => {
-            app.settings_selected_update_action = value;
+            app.settings.selected_update_action = value;
             iced::Task::none()
         }
         Message::RollbackReleaseSelected(value) => {
-            app.settings_selected_rollback_release = Some(*value);
+            app.settings.selected_rollback_release = Some(*value);
             iced::Task::none()
         }
         Message::CaptureSourceChanged(value) => {
-            app.settings_capture_source = value;
+            app.settings.capture_source = value;
             iced::Task::none()
         }
         Message::CaptureSourcePresetSelected(preset) => {
-            app.settings_capture_source =
-                apply_preset_string_selection(app.settings_capture_source.as_str(), preset);
+            app.settings.capture_source =
+                apply_preset_string_selection(app.settings.capture_source.as_str(), preset);
             iced::Task::none()
         }
         Message::SaveDirChanged(value) => {
-            app.settings_save_dir = value;
+            app.settings.save_dir = value;
             app.clear_settings_feedback();
             iced::Task::none()
         }
         Message::PickSaveDirectory => {
-            let current_dir = app.settings_save_dir.clone();
+            let current_dir = app.settings.save_dir.clone();
             iced::Task::perform(async move { pick_directory(current_dir).await }, |result| {
                 AppMessage::Settings(Message::SaveDirectoryPicked(result))
             })
@@ -223,7 +226,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::SaveDirectoryPicked(result) => {
             match result {
                 Ok(Some(path)) => {
-                    app.settings_save_dir = path;
+                    app.settings.save_dir = path;
                     app.clear_settings_feedback();
                 }
                 Ok(None) => {}
@@ -236,7 +239,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::FramerateStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_framerate,
+                &mut app.settings.framerate,
                 delta,
                 5,
                 30,
@@ -246,17 +249,17 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::CodecChanged(value) => {
-            app.settings_codec = value;
+            app.settings.codec = value;
             iced::Task::none()
         }
         Message::CodecPresetSelected(preset) => {
-            app.settings_codec = apply_preset_string_selection(app.settings_codec.as_str(), preset);
+            app.settings.codec = apply_preset_string_selection(app.settings.codec.as_str(), preset);
             iced::Task::none()
         }
         Message::QualityStepped(delta) => {
-            let current_quality = parse_or_default(&app.settings_quality, 40_000);
+            let current_quality = parse_or_default(&app.settings.quality, 40_000);
             step_numeric_setting(
-                &mut app.settings_quality,
+                &mut app.settings.quality,
                 delta,
                 1_000,
                 1_000,
@@ -266,27 +269,31 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::ContainerChanged(value) => {
-            app.settings_container = value;
+            app.settings.container = value;
             iced::Task::none()
         }
         Message::ContainerPresetSelected(preset) => {
-            app.settings_container =
-                apply_preset_string_selection(app.settings_container.as_str(), preset);
+            app.settings.container =
+                apply_preset_string_selection(app.settings.container.as_str(), preset);
             iced::Task::none()
         }
         Message::ObsWebsocketUrlChanged(value) => {
-            app.settings_obs_websocket_url = value;
+            app.settings.obs_websocket_url = value;
             iced::Task::none()
         }
         Message::ObsPasswordChanged(value) => {
-            app.settings_obs_password_input = value;
+            app.settings.obs_password_input = value;
             iced::Task::none()
         }
         Message::ClearObsPassword => {
-            match app.secure_store.delete(SecretKey::ObsWebsocketPassword) {
+            match app
+                .platform
+                .secure_store()
+                .delete(SecretKey::ObsWebsocketPassword)
+            {
                 Ok(()) => {
-                    app.settings_obs_password_present = false;
-                    app.settings_obs_password_input.clear();
+                    app.settings.obs_password_present = false;
+                    app.settings.obs_password_input.clear();
                     app.config.recorder.obs_mut().websocket_password = None;
                     app.clear_settings_feedback();
                 }
@@ -295,15 +302,15 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::ObsManagementModeSelected(mode) => {
-            app.settings_obs_management_mode = mode;
+            app.settings.obs_management_mode = mode;
             iced::Task::none()
         }
         Message::ObsTestConnection => {
             let mut config = app.config.recorder.obs().clone();
-            config.websocket_url = app.settings_obs_websocket_url.clone();
-            if !app.settings_obs_password_input.trim().is_empty() {
+            config.websocket_url = app.settings.obs_websocket_url.clone();
+            if !app.settings.obs_password_input.trim().is_empty() {
                 config.websocket_password =
-                    Some(app.settings_obs_password_input.trim().to_string());
+                    Some(app.settings.obs_password_input.trim().to_string());
             }
             iced::Task::perform(crate::capture::obs::test_connection(config), |result| {
                 AppMessage::Settings(Message::ObsConnectionTested(result))
@@ -318,7 +325,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::BufferSecsStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_buffer_secs,
+                &mut app.settings.buffer_secs,
                 delta,
                 10,
                 30,
@@ -329,7 +336,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::SaveDelayStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_save_delay_secs,
+                &mut app.settings.save_delay_secs,
                 delta,
                 1,
                 0,
@@ -339,31 +346,31 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::ClipSavedNotificationsToggled(value) => {
-            app.settings_clip_saved_notifications = value;
+            app.settings.clip_saved_notifications = value;
             iced::Task::none()
         }
         Message::ClipNamingTemplateChanged(value) => {
-            app.settings_clip_naming_template = value;
+            app.settings.clip_naming_template = value;
             iced::Task::none()
         }
         Message::ManualClipEnabledToggled(value) => {
-            app.settings_manual_clip_enabled = value;
+            app.settings.manual_clip_enabled = value;
             iced::Task::none()
         }
         Message::BeginHotkeyCapture => {
-            app.settings_hotkey_capture_active = true;
+            app.settings.hotkey_capture_active = true;
             app.clear_settings_feedback();
             iced::Task::none()
         }
         Message::CancelHotkeyCapture => {
-            app.settings_hotkey_capture_active = false;
+            app.settings.hotkey_capture_active = false;
             iced::Task::none()
         }
         Message::HotkeyCaptureEvent(event) => {
             match crate::hotkey::capture_binding(&event) {
                 crate::hotkey::BindingCapture::Captured(binding) => {
-                    app.settings_manual_clip_hotkey = binding;
-                    app.settings_hotkey_capture_active = false;
+                    app.settings.manual_clip_hotkey = binding;
+                    app.settings.hotkey_capture_active = false;
                     app.clear_settings_feedback();
                 }
                 crate::hotkey::BindingCapture::Unsupported => {
@@ -378,7 +385,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::ManualClipDurationStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_manual_clip_duration_secs,
+                &mut app.settings.manual_clip_duration_secs,
                 delta,
                 5,
                 5,
@@ -388,16 +395,16 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::StorageTieringEnabledToggled(value) => {
-            app.settings_storage_tiering_enabled = value;
+            app.settings.storage_tiering_enabled = value;
             iced::Task::none()
         }
         Message::StorageTierDirectoryChanged(value) => {
-            app.settings_storage_tier_directory = value;
+            app.settings.storage_tier_directory = value;
             app.clear_settings_feedback();
             iced::Task::none()
         }
         Message::PickStorageTierDirectory => {
-            let current_dir = app.settings_storage_tier_directory.clone();
+            let current_dir = app.settings.storage_tier_directory.clone();
             iced::Task::perform(async move { pick_directory(current_dir).await }, |result| {
                 AppMessage::Settings(Message::StorageTierDirectoryPicked(result))
             })
@@ -405,7 +412,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::StorageTierDirectoryPicked(result) => {
             match result {
                 Ok(Some(path)) => {
-                    app.settings_storage_tier_directory = path;
+                    app.settings.storage_tier_directory = path;
                     app.clear_settings_feedback();
                 }
                 Ok(None) => {}
@@ -418,7 +425,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::StorageMinAgeDaysStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_storage_min_age_days,
+                &mut app.settings.storage_min_age_days,
                 delta,
                 1,
                 1,
@@ -429,7 +436,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::StorageMaxScoreStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_storage_max_score,
+                &mut app.settings.storage_max_score,
                 delta,
                 5,
                 1,
@@ -440,30 +447,34 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::RunStorageTieringSweep => iced::Task::done(AppMessage::RunStorageTieringSweep),
         Message::CopypartyEnabledToggled(value) => {
-            app.settings_copyparty_enabled = value;
+            app.settings.copyparty_enabled = value;
             iced::Task::none()
         }
         Message::CopypartyUploadUrlChanged(value) => {
-            app.settings_copyparty_upload_url = value;
+            app.settings.copyparty_upload_url = value;
             iced::Task::none()
         }
         Message::CopypartyPublicBaseUrlChanged(value) => {
-            app.settings_copyparty_public_base_url = value;
+            app.settings.copyparty_public_base_url = value;
             iced::Task::none()
         }
         Message::CopypartyUsernameChanged(value) => {
-            app.settings_copyparty_username = value;
+            app.settings.copyparty_username = value;
             iced::Task::none()
         }
         Message::CopypartyPasswordChanged(value) => {
-            app.settings_copyparty_password_input = value;
+            app.settings.copyparty_password_input = value;
             iced::Task::none()
         }
         Message::ClearCopypartyPassword => {
-            match app.secure_store.delete(SecretKey::CopypartyPassword) {
+            match app
+                .platform
+                .secure_store()
+                .delete(SecretKey::CopypartyPassword)
+            {
                 Ok(()) => {
-                    app.settings_copyparty_password_present = false;
-                    app.settings_copyparty_password_input.clear();
+                    app.settings.copyparty_password_present = false;
+                    app.settings.copyparty_password_input.clear();
                     app.set_settings_feedback("Cleared the stored Copyparty password.", false);
                 }
                 Err(error) => app.set_settings_feedback(error, false),
@@ -471,30 +482,36 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::YouTubeEnabledToggled(value) => {
-            app.settings_youtube_enabled = value;
+            app.settings.youtube_enabled = value;
             iced::Task::none()
         }
         Message::YouTubeClientIdChanged(value) => {
-            app.settings_youtube_client_id = value;
+            app.settings.youtube_client_id = value;
             iced::Task::none()
         }
         Message::YouTubeClientSecretChanged(value) => {
-            app.settings_youtube_client_secret_input = value;
+            app.settings.youtube_client_secret_input = value;
             iced::Task::none()
         }
         Message::YouTubePrivacyStatusSelected(value) => {
-            app.settings_youtube_privacy_status = value;
+            app.settings.youtube_privacy_status = value;
             iced::Task::none()
         }
         Message::ConnectYouTube => app.start_youtube_oauth(),
         Message::DisconnectYouTube => {
-            let refresh_result = app.secure_store.delete(SecretKey::YoutubeRefreshToken);
-            let secret_result = app.secure_store.delete(SecretKey::YoutubeClientSecret);
+            let refresh_result = app
+                .platform
+                .secure_store()
+                .delete(SecretKey::YoutubeRefreshToken);
+            let secret_result = app
+                .platform
+                .secure_store()
+                .delete(SecretKey::YoutubeClientSecret);
             match (refresh_result, secret_result) {
                 (Ok(()), Ok(())) => {
-                    app.settings_youtube_refresh_token_present = false;
-                    app.settings_youtube_client_secret_present = false;
-                    app.settings_youtube_client_secret_input.clear();
+                    app.settings.youtube_refresh_token_present = false;
+                    app.settings.youtube_client_secret_present = false;
+                    app.settings.youtube_client_secret_input.clear();
                     app.set_settings_feedback("Disconnected the stored YouTube account.", false);
                 }
                 (Err(error), _) | (_, Err(error)) => app.set_settings_feedback(error, false),
@@ -502,12 +519,12 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::DiscordWebhookEnabledToggled(value) => {
-            app.settings_discord_enabled = value;
+            app.settings.discord_enabled = value;
             iced::Task::none()
         }
         Message::DiscordMinScoreStepped(delta) => {
             step_numeric_setting(
-                &mut app.settings_discord_min_score,
+                &mut app.settings.discord_min_score,
                 delta,
                 5,
                 1,
@@ -517,18 +534,22 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::DiscordIncludeThumbnailToggled(value) => {
-            app.settings_discord_include_thumbnail = value;
+            app.settings.discord_include_thumbnail = value;
             iced::Task::none()
         }
         Message::DiscordWebhookUrlChanged(value) => {
-            app.settings_discord_webhook_input = value;
+            app.settings.discord_webhook_input = value;
             iced::Task::none()
         }
         Message::ClearDiscordWebhook => {
-            match app.secure_store.delete(SecretKey::DiscordWebhookUrl) {
+            match app
+                .platform
+                .secure_store()
+                .delete(SecretKey::DiscordWebhookUrl)
+            {
                 Ok(()) => {
-                    app.settings_discord_webhook_present = false;
-                    app.settings_discord_webhook_input.clear();
+                    app.settings.discord_webhook_present = false;
+                    app.settings.discord_webhook_input.clear();
                     app.set_settings_feedback("Cleared the stored Discord webhook URL.", false);
                 }
                 Err(error) => app.set_settings_feedback(error, false),
@@ -537,9 +558,9 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::AddAudioSource(kind) => {
             let selected = match kind {
-                DiscoveredAudioKind::Device => app.settings_selected_device_audio_source.clone(),
+                DiscoveredAudioKind::Device => app.settings.selected_device_audio_source.clone(),
                 DiscoveredAudioKind::Application => {
-                    app.settings_selected_application_audio_source.clone()
+                    app.settings.selected_application_audio_source.clone()
                 }
             };
             let Some(selected) = selected else {
@@ -547,7 +568,8 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             };
 
             let discovered = app
-                .settings_discovered_audio_sources
+                .settings
+                .discovered_audio_sources
                 .iter()
                 .find(|source| {
                     source.kind == kind
@@ -564,7 +586,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                     available: true,
                 });
 
-            match apply_discovered_audio_source(&mut app.settings_audio_sources, &discovered) {
+            match apply_discovered_audio_source(&mut app.settings.audio_sources, &discovered) {
                 ApplyDiscoveredAudioSource::Added => {
                     app.set_settings_feedback(
                         format!("Added audio source `{}`.", selected.source),
@@ -592,54 +614,54 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::RemoveAudioSource(index) => {
-            if app.settings_audio_sources.len() > 1 {
-                app.settings_audio_sources.remove(index);
-            } else if let Some(audio_source) = app.settings_audio_sources.get_mut(0) {
+            if app.settings.audio_sources.len() > 1 {
+                app.settings.audio_sources.remove(index);
+            } else if let Some(audio_source) = app.settings.audio_sources.get_mut(0) {
                 *audio_source = AudioSourceDraft::default();
             }
             sync_selected_audio_sources(app);
             iced::Task::none()
         }
         Message::MoveAudioSourceUp(index) => {
-            if index > 0 && index < app.settings_audio_sources.len() {
-                app.settings_audio_sources.swap(index, index - 1);
+            if index > 0 && index < app.settings.audio_sources.len() {
+                app.settings.audio_sources.swap(index, index - 1);
             }
             iced::Task::none()
         }
         Message::MoveAudioSourceDown(index) => {
-            if index + 1 < app.settings_audio_sources.len() {
-                app.settings_audio_sources.swap(index, index + 1);
+            if index + 1 < app.settings.audio_sources.len() {
+                app.settings.audio_sources.swap(index, index + 1);
             }
             iced::Task::none()
         }
         Message::AudioSourceLabelChanged(index, value) => {
-            if let Some(audio_source) = app.settings_audio_sources.get_mut(index) {
+            if let Some(audio_source) = app.settings.audio_sources.get_mut(index) {
                 audio_source.label = value;
             }
             iced::Task::none()
         }
         Message::AudioSourceValueChanged(index, value) => {
-            if let Some(audio_source) = app.settings_audio_sources.get_mut(index) {
+            if let Some(audio_source) = app.settings.audio_sources.get_mut(index) {
                 audio_source.source = value;
             }
             sync_selected_audio_sources(app);
             iced::Task::none()
         }
         Message::AudioSourceGainStepped(index, delta) => {
-            if let Some(audio_source) = app.settings_audio_sources.get_mut(index) {
+            if let Some(audio_source) = app.settings.audio_sources.get_mut(index) {
                 audio_source.gain_db =
                     (audio_source.gain_db + (delta as f32 * 0.5)).clamp(-60.0, 12.0);
             }
             iced::Task::none()
         }
         Message::AudioSourceMutedInPremixToggled(index, value) => {
-            if let Some(audio_source) = app.settings_audio_sources.get_mut(index) {
+            if let Some(audio_source) = app.settings.audio_sources.get_mut(index) {
                 audio_source.muted_in_premix = value;
             }
             iced::Task::none()
         }
         Message::AudioSourceIncludedInPremixToggled(index, value) => {
-            if let Some(audio_source) = app.settings_audio_sources.get_mut(index) {
+            if let Some(audio_source) = app.settings.audio_sources.get_mut(index) {
                 audio_source.included_in_premix = value;
             }
             iced::Task::none()
@@ -647,25 +669,25 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::SelectAvailableAudioSource(kind, option) => {
             match kind {
                 DiscoveredAudioKind::Device => {
-                    app.settings_selected_device_audio_source = Some(option);
+                    app.settings.selected_device_audio_source = Some(option);
                 }
                 DiscoveredAudioKind::Application => {
-                    app.settings_selected_application_audio_source = Some(option);
+                    app.settings.selected_application_audio_source = Some(option);
                 }
             }
             iced::Task::none()
         }
         Message::AudioSourcesDiscovered(result) => {
-            app.settings_audio_discovery_running = false;
+            app.settings.audio_discovery_running = false;
 
             match result {
                 Ok((discovered, warning)) => {
-                    app.settings_discovered_audio_sources = discovered;
-                    app.settings_audio_discovery_error = warning;
+                    app.settings.discovered_audio_sources = discovered;
+                    app.settings.audio_discovery_error = warning;
                     sync_selected_audio_sources(app);
                 }
                 Err(error) => {
-                    app.settings_audio_discovery_error = Some(error);
+                    app.settings.audio_discovery_error = Some(error);
                 }
             }
 
@@ -674,7 +696,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::BackupDatabase => run_database_action(
             app,
             "database backup",
-            backup_destination(app.settings_save_dir.as_str(), "sqlite3"),
+            backup_destination(app.settings.save_dir.as_str(), "sqlite3"),
             |store, destination| async move {
                 store
                     .backup_to(&destination)
@@ -686,7 +708,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::ExportJson => run_database_action(
             app,
             "JSON export",
-            backup_destination(app.settings_save_dir.as_str(), "json"),
+            backup_destination(app.settings.save_dir.as_str(), "json"),
             |store, destination| async move {
                 store
                     .export_json_to(&destination)
@@ -698,7 +720,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::ExportCsv => run_database_action(
             app,
             "CSV export",
-            backup_destination(app.settings_save_dir.as_str(), "csv"),
+            backup_destination(app.settings.save_dir.as_str(), "csv"),
             |store, destination| async move {
                 store
                     .export_csv_to(&destination)
@@ -714,100 +736,114 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }
             iced::Task::none()
         }
-        Message::CheckForUpdates => iced::Task::done(AppMessage::CheckForUpdates { manual: true }),
-        Message::RefreshRollbackCatalog => iced::Task::done(AppMessage::RefreshRollbackCatalog),
-        Message::RunSelectedUpdateAction => iced::Task::done(AppMessage::RunSelectedUpdateAction),
-        Message::DownloadSelectedRollbackVersion => {
-            iced::Task::done(AppMessage::DownloadSelectedRollbackVersion)
+        Message::CheckForUpdates => {
+            iced::Task::done(AppMessage::updates(UpdateMessage::CheckForUpdates {
+                manual: true,
+            }))
         }
-        Message::RollbackToPreviousInstalledVersion => {
-            iced::Task::done(AppMessage::RollbackToPreviousInstalledVersion)
+        Message::RefreshRollbackCatalog => {
+            iced::Task::done(AppMessage::updates(UpdateMessage::RefreshRollbackCatalog))
         }
-        Message::ViewUpdateDetails => iced::Task::done(AppMessage::ShowUpdateDetails),
+        Message::RunSelectedUpdateAction => {
+            iced::Task::done(AppMessage::updates(UpdateMessage::RunSelectedUpdateAction))
+        }
+        Message::DownloadSelectedRollbackVersion => iced::Task::done(AppMessage::updates(
+            UpdateMessage::DownloadSelectedRollbackVersion,
+        )),
+        Message::RollbackToPreviousInstalledVersion => iced::Task::done(AppMessage::updates(
+            UpdateMessage::RollbackToPreviousInstalledVersion,
+        )),
+        Message::ViewUpdateDetails => {
+            iced::Task::done(AppMessage::updates(UpdateMessage::ShowUpdateDetails))
+        }
         Message::RevertDraft => {
             apply_settings_draft_from_config(app);
             iced::Task::batch([
                 refresh_audio_sources(app),
-                iced::Task::done(AppMessage::RefreshRollbackCatalog),
+                iced::Task::done(AppMessage::updates(UpdateMessage::RefreshRollbackCatalog)),
             ])
         }
         Message::Save => {
-            app.settings_hotkey_capture_active = false;
+            app.settings.hotkey_capture_active = false;
             let manual_clip_settings_changed = manual_clip_settings_dirty(app);
             if let Err(error) =
-                crate::clip_naming::validate_template(app.settings_clip_naming_template.as_str())
+                crate::clip_naming::validate_template(app.settings.clip_naming_template.as_str())
             {
                 app.set_settings_feedback(error, false);
                 return iced::Task::none();
             }
 
-            app.config.service_id = app.settings_service_id.clone();
-            app.config.launch_at_login.enabled = app.settings_launch_at_login;
-            app.config.auto_start_monitoring = app.settings_auto_start_monitoring;
-            app.config.start_minimized = app.settings_start_minimized;
-            app.config.minimize_to_tray = app.settings_minimize_to_tray;
-            app.config.updates.auto_check = app.settings_update_auto_check;
-            app.config.updates.channel = app.settings_update_channel;
-            app.config.updates.install_behavior = app.settings_update_install_behavior;
+            app.config.service_id = app.settings.service_id.clone();
+            app.config.launch_at_login.enabled = app.settings.launch_at_login;
+            app.config.auto_start_monitoring = app.settings.auto_start_monitoring;
+            app.config.start_minimized = app.settings.start_minimized;
+            app.config.minimize_to_tray = app.settings.minimize_to_tray;
+            app.config.updates.auto_check = app.settings.update_auto_check;
+            app.config.updates.channel = app.settings.update_channel;
+            app.config.updates.install_behavior = app.settings.update_install_behavior;
             app.config.clip_naming_template = non_empty_or_default(
-                app.settings_clip_naming_template.as_str(),
+                app.settings.clip_naming_template.as_str(),
                 "{timestamp}_{source}_{character}_{rule}_{score}",
             );
-            app.config.manual_clip.enabled = app.settings_manual_clip_enabled;
+            app.config.manual_clip.enabled = app.settings.manual_clip_enabled;
             app.config.manual_clip.hotkey =
-                non_empty_or_default(app.settings_manual_clip_hotkey.as_str(), "Ctrl+Shift+F8");
+                non_empty_or_default(app.settings.manual_clip_hotkey.as_str(), "Ctrl+Shift+F8");
             app.config.manual_clip.duration_secs = app
-                .settings_manual_clip_duration_secs
+                .settings
+                .manual_clip_duration_secs
                 .parse()
                 .unwrap_or(app.config.manual_clip.duration_secs);
             app.config.manual_clip.normalize();
-            app.settings_manual_clip_hotkey = app.config.manual_clip.hotkey.clone();
-            app.settings_manual_clip_duration_secs =
+            app.settings.manual_clip_hotkey = app.config.manual_clip.hotkey.clone();
+            app.settings.manual_clip_duration_secs =
                 app.config.manual_clip.duration_secs.to_string();
-            app.config.storage_tiering.enabled = app.settings_storage_tiering_enabled;
+            app.config.storage_tiering.enabled = app.settings.storage_tiering_enabled;
             app.config.storage_tiering.tier_directory =
-                PathBuf::from(app.settings_storage_tier_directory.trim());
+                PathBuf::from(app.settings.storage_tier_directory.trim());
             app.config.storage_tiering.min_age_days = app
-                .settings_storage_min_age_days
+                .settings
+                .storage_min_age_days
                 .parse()
                 .unwrap_or(app.config.storage_tiering.min_age_days);
             app.config.storage_tiering.max_score = app
-                .settings_storage_max_score
+                .settings
+                .storage_max_score
                 .parse()
                 .unwrap_or(app.config.storage_tiering.max_score);
-            app.config.uploads.copyparty.enabled = app.settings_copyparty_enabled;
-            app.config.uploads.copyparty.upload_url = app.settings_copyparty_upload_url.clone();
+            app.config.uploads.copyparty.enabled = app.settings.copyparty_enabled;
+            app.config.uploads.copyparty.upload_url = app.settings.copyparty_upload_url.clone();
             app.config.uploads.copyparty.public_base_url =
-                app.settings_copyparty_public_base_url.clone();
-            app.config.uploads.copyparty.username = app.settings_copyparty_username.clone();
-            app.config.uploads.youtube.enabled = app.settings_youtube_enabled;
-            app.config.uploads.youtube.client_id = app.settings_youtube_client_id.clone();
-            app.config.uploads.youtube.privacy_status = app.settings_youtube_privacy_status;
-            app.config.discord_webhook.enabled = app.settings_discord_enabled;
+                app.settings.copyparty_public_base_url.clone();
+            app.config.uploads.copyparty.username = app.settings.copyparty_username.clone();
+            app.config.uploads.youtube.enabled = app.settings.youtube_enabled;
+            app.config.uploads.youtube.client_id = app.settings.youtube_client_id.clone();
+            app.config.uploads.youtube.privacy_status = app.settings.youtube_privacy_status;
+            app.config.discord_webhook.enabled = app.settings.discord_enabled;
             app.config.discord_webhook.min_score = app
-                .settings_discord_min_score
+                .settings
+                .discord_min_score
                 .parse()
                 .unwrap_or(app.config.discord_webhook.min_score);
-            app.config.discord_webhook.include_thumbnail = app.settings_discord_include_thumbnail;
+            app.config.discord_webhook.include_thumbnail = app.settings.discord_include_thumbnail;
 
-            app.config.capture.backend =
-                non_empty_or_default(app.settings_capture_backend.as_str(), "gsr");
+            app.config.capture.backend = app.settings.capture_backend;
             app.config.recorder.gsr_mut().capture_source =
-                non_empty_or_default(app.settings_capture_source.as_str(), "planetside2");
+                non_empty_or_default(app.settings.capture_source.as_str(), "planetside2");
             app.config.recorder.obs_mut().websocket_url = non_empty_or_default(
-                app.settings_obs_websocket_url.as_str(),
+                app.settings.obs_websocket_url.as_str(),
                 "ws://127.0.0.1:4455",
             );
-            app.config.recorder.obs_mut().management_mode = app.settings_obs_management_mode;
-            app.config.recorder.save_directory = app.settings_save_dir.clone().into();
+            app.config.recorder.obs_mut().management_mode = app.settings.obs_management_mode;
+            app.config.recorder.save_directory = app.settings.save_dir.clone().into();
             let default_framerate = app.config.recorder.gsr().framerate;
             app.config.recorder.gsr_mut().framerate =
-                app.settings_framerate.parse().unwrap_or(default_framerate);
+                app.settings.framerate.parse().unwrap_or(default_framerate);
             app.config.recorder.gsr_mut().codec =
-                non_empty_or_default(app.settings_codec.as_str(), "h264");
-            app.config.recorder.gsr_mut().quality = app.settings_quality.clone();
+                non_empty_or_default(app.settings.codec.as_str(), "h264");
+            app.config.recorder.gsr_mut().quality = app.settings.quality.clone();
             app.config.recorder.audio_sources = app
-                .settings_audio_sources
+                .settings
+                .audio_sources
                 .iter()
                 .filter_map(|audio_source| {
                     let source = audio_source.source.trim();
@@ -826,29 +862,31 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 })
                 .collect();
             app.config.recorder.gsr_mut().container =
-                non_empty_or_default(app.settings_container.as_str(), "mkv");
+                non_empty_or_default(app.settings.container.as_str(), "mkv");
             app.config.recorder.replay_buffer_secs = app
-                .settings_buffer_secs
+                .settings
+                .buffer_secs
                 .parse()
                 .unwrap_or(app.config.recorder.replay_buffer_secs);
             app.config.recorder.save_delay_secs = app
-                .settings_save_delay_secs
+                .settings
+                .save_delay_secs
                 .parse()
                 .unwrap_or(app.config.recorder.save_delay_secs);
-            app.config.recorder.clip_saved_notifications = app.settings_clip_saved_notifications;
+            app.config.recorder.clip_saved_notifications = app.settings.clip_saved_notifications;
 
-            if !app.settings_obs_password_input.trim().is_empty() {
-                if let Err(error) = app.secure_store.set(
+            if !app.settings.obs_password_input.trim().is_empty() {
+                if let Err(error) = app.platform.secure_store().set(
                     SecretKey::ObsWebsocketPassword,
-                    app.settings_obs_password_input.trim(),
+                    app.settings.obs_password_input.trim(),
                 ) {
                     app.set_settings_feedback(error, false);
                     return iced::Task::none();
                 }
-                app.settings_obs_password_present = true;
+                app.settings.obs_password_present = true;
                 app.config.recorder.obs_mut().websocket_password =
-                    Some(app.settings_obs_password_input.trim().to_string());
-                app.settings_obs_password_input.clear();
+                    Some(app.settings.obs_password_input.trim().to_string());
+                app.settings.obs_password_input.clear();
             }
 
             app.config.normalize();
@@ -858,40 +896,40 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             app.recorder
                 .update_config(app.config.capture.clone(), app.config.recorder.clone());
 
-            if !app.settings_copyparty_password_input.trim().is_empty() {
-                if let Err(error) = app.secure_store.set(
+            if !app.settings.copyparty_password_input.trim().is_empty() {
+                if let Err(error) = app.platform.secure_store().set(
                     SecretKey::CopypartyPassword,
-                    app.settings_copyparty_password_input.trim(),
+                    app.settings.copyparty_password_input.trim(),
                 ) {
                     app.set_settings_feedback(error, false);
                     return iced::Task::none();
                 }
-                app.settings_copyparty_password_present = true;
-                app.settings_copyparty_password_input.clear();
+                app.settings.copyparty_password_present = true;
+                app.settings.copyparty_password_input.clear();
             }
 
-            if !app.settings_youtube_client_secret_input.trim().is_empty() {
-                if let Err(error) = app.secure_store.set(
+            if !app.settings.youtube_client_secret_input.trim().is_empty() {
+                if let Err(error) = app.platform.secure_store().set(
                     SecretKey::YoutubeClientSecret,
-                    app.settings_youtube_client_secret_input.trim(),
+                    app.settings.youtube_client_secret_input.trim(),
                 ) {
                     app.set_settings_feedback(error, false);
                     return iced::Task::none();
                 }
-                app.settings_youtube_client_secret_present = true;
-                app.settings_youtube_client_secret_input.clear();
+                app.settings.youtube_client_secret_present = true;
+                app.settings.youtube_client_secret_input.clear();
             }
 
-            if !app.settings_discord_webhook_input.trim().is_empty() {
-                if let Err(error) = app.secure_store.set(
+            if !app.settings.discord_webhook_input.trim().is_empty() {
+                if let Err(error) = app.platform.secure_store().set(
                     SecretKey::DiscordWebhookUrl,
-                    app.settings_discord_webhook_input.trim(),
+                    app.settings.discord_webhook_input.trim(),
                 ) {
                     app.set_settings_feedback(error, false);
                     return iced::Task::none();
                 }
-                app.settings_discord_webhook_present = true;
-                app.settings_discord_webhook_input.clear();
+                app.settings.discord_webhook_present = true;
+                app.settings.discord_webhook_input.clear();
             }
 
             match app.config.save() {
@@ -914,20 +952,20 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
 
 pub(in crate::app) fn refresh_audio_sources(app: &mut App) -> iced::Task<AppMessage> {
     if obs_audio_is_backend_owned(app) {
-        app.settings_audio_discovery_running = false;
-        app.settings_audio_discovery_error = None;
-        app.settings_discovered_audio_sources.clear();
-        app.settings_selected_device_audio_source = None;
-        app.settings_selected_application_audio_source = None;
+        app.settings.audio_discovery_running = false;
+        app.settings.audio_discovery_error = None;
+        app.settings.discovered_audio_sources.clear();
+        app.settings.selected_device_audio_source = None;
+        app.settings.selected_application_audio_source = None;
         return iced::Task::none();
     }
 
-    if app.settings_audio_discovery_running {
+    if app.settings.audio_discovery_running {
         return iced::Task::none();
     }
 
-    app.settings_audio_discovery_running = true;
-    app.settings_audio_discovery_error = None;
+    app.settings.audio_discovery_running = true;
+    app.settings.audio_discovery_error = None;
     let backend = app.recorder.backend_handle();
     iced::Task::perform(
         async move {
@@ -955,7 +993,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
 
     let status_bar = toolbar()
         .push(settings_status_badge(
-            format!("Secure Store: {}", app.settings_secure_store_backend_label),
+            format!("Secure Store: {}", app.settings.secure_store_backend_label),
             BadgeTone::Outline,
         ))
         .push(settings_status_badge(
@@ -967,43 +1005,43 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             BadgeTone::Info,
         ))
         .push(settings_status_badge(
-            if app.settings_clip_saved_notifications {
+            if app.settings.clip_saved_notifications {
                 "Toasts On"
             } else {
                 "Toasts Off"
             },
-            if app.settings_clip_saved_notifications {
+            if app.settings.clip_saved_notifications {
                 BadgeTone::Success
             } else {
                 BadgeTone::Neutral
             },
         ))
         .push(settings_status_badge(
-            if app.settings_youtube_refresh_token_present {
+            if app.settings.youtube_refresh_token_present {
                 "YouTube Connected"
             } else {
                 "YouTube Disconnected"
             },
-            if app.settings_youtube_refresh_token_present {
+            if app.settings.youtube_refresh_token_present {
                 BadgeTone::Success
             } else {
                 BadgeTone::Neutral
             },
         ))
         .push(settings_status_badge(
-            if app.settings_discord_webhook_present {
+            if app.settings.discord_webhook_present {
                 "Discord Ready"
             } else {
                 "Discord Unconfigured"
             },
-            if app.settings_discord_webhook_present {
+            if app.settings.discord_webhook_present {
                 BadgeTone::Success
             } else {
                 BadgeTone::Neutral
             },
         ))
         .push(settings_status_badge(
-            format!("Updates: {}", app.settings_update_channel),
+            format!("Updates: {}", app.settings.update_channel),
             BadgeTone::Primary,
         ))
         .build();
@@ -1054,12 +1092,12 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn settings_sidebar(app: &App) -> Element<'_, Message> {
-    let active = app.settings_sub_view;
+    let active = app.settings.sub_view;
     let delivery_badge = {
-        let enabled = usize::from(app.settings_storage_tiering_enabled)
-            + usize::from(app.settings_copyparty_enabled)
-            + usize::from(app.settings_youtube_enabled)
-            + usize::from(app.settings_discord_enabled);
+        let enabled = usize::from(app.settings.storage_tiering_enabled)
+            + usize::from(app.settings.copyparty_enabled)
+            + usize::from(app.settings.youtube_enabled)
+            + usize::from(app.settings.discord_enabled);
         format!("{enabled} on")
     };
     let capture_badge = if selected_capture_backend(app) == CaptureBackendPreset::Obs {
@@ -1082,7 +1120,7 @@ fn settings_sidebar(app: &App) -> Element<'_, Message> {
             SidebarItem::new(SettingsSubView::CaptureAudio, "Capture & Audio").badge(capture_badge),
         )
         .push(SidebarItem::new(SettingsSubView::Clips, "Clips").badge(
-            if app.settings_manual_clip_enabled {
+            if app.settings.manual_clip_enabled {
                 "Hotkey on"
             } else {
                 "Manual only"
@@ -1091,7 +1129,7 @@ fn settings_sidebar(app: &App) -> Element<'_, Message> {
         .push(SidebarItem::new(SettingsSubView::Delivery, "Delivery").badge(delivery_badge))
         .push(
             SidebarItem::new(SettingsSubView::System, "System")
-                .badge(format!("Updates: {}", app.settings_update_channel)),
+                .badge(format!("Updates: {}", app.settings.update_channel)),
         )
         .build()
         .into()
@@ -1099,7 +1137,7 @@ fn settings_sidebar(app: &App) -> Element<'_, Message> {
 
 fn settings_detail_pane(app: &App) -> Element<'_, Message> {
     let bottom_padding = if settings_dirty(app) { 108.0 } else { 0.0 };
-    let body = match app.settings_sub_view {
+    let body = match app.settings.sub_view {
         SettingsSubView::General => column![settings_overview_cards(app), runtime_panel(app)],
         SettingsSubView::CaptureAudio => {
             let mut body = column![capture_panel(app)].spacing(16);
@@ -1160,7 +1198,7 @@ fn settings_draft_bar(_app: &App) -> Element<'_, Message> {
 }
 
 fn settings_feedback_banner(app: &App) -> Option<Element<'_, Message>> {
-    app.settings_feedback.as_ref().map(|feedback| {
+    app.settings.feedback.as_ref().map(|feedback| {
         banner("Settings status")
             .info()
             .description(feedback.clone())
@@ -1170,56 +1208,56 @@ fn settings_feedback_banner(app: &App) -> Option<Element<'_, Message>> {
 }
 
 fn settings_dirty(app: &App) -> bool {
-    app.settings_launch_at_login != app.config.launch_at_login.enabled
-        || app.settings_auto_start_monitoring != app.config.auto_start_monitoring
-        || app.settings_start_minimized != app.config.start_minimized
-        || app.settings_minimize_to_tray != app.config.minimize_to_tray
-        || app.settings_update_auto_check != app.config.updates.auto_check
-        || app.settings_update_channel != app.config.updates.channel
-        || app.settings_update_install_behavior != app.config.updates.install_behavior
-        || app.settings_service_id != app.config.service_id
-        || app.settings_capture_backend != app.config.capture.backend
-        || app.settings_capture_source != app.config.recorder.gsr().capture_source
-        || app.settings_save_dir != app.config.recorder.save_directory.to_string_lossy()
-        || app.settings_framerate != app.config.recorder.gsr().framerate.to_string()
-        || app.settings_codec != app.config.recorder.gsr().codec
-        || app.settings_quality != app.config.recorder.gsr().quality
-        || app.settings_audio_sources
+    app.settings.launch_at_login != app.config.launch_at_login.enabled
+        || app.settings.auto_start_monitoring != app.config.auto_start_monitoring
+        || app.settings.start_minimized != app.config.start_minimized
+        || app.settings.minimize_to_tray != app.config.minimize_to_tray
+        || app.settings.update_auto_check != app.config.updates.auto_check
+        || app.settings.update_channel != app.config.updates.channel
+        || app.settings.update_install_behavior != app.config.updates.install_behavior
+        || app.settings.service_id != app.config.service_id
+        || app.settings.capture_backend != app.config.capture.backend
+        || app.settings.capture_source != app.config.recorder.gsr().capture_source
+        || app.settings.save_dir != app.config.recorder.save_directory.to_string_lossy()
+        || app.settings.framerate != app.config.recorder.gsr().framerate.to_string()
+        || app.settings.codec != app.config.recorder.gsr().codec
+        || app.settings.quality != app.config.recorder.gsr().quality
+        || app.settings.audio_sources
             != audio_source_drafts_from_config(&app.config.recorder.audio_sources)
-        || app.settings_container != app.config.recorder.gsr().container
-        || app.settings_obs_websocket_url != app.config.recorder.obs().websocket_url
-        || app.settings_obs_management_mode != app.config.recorder.obs().management_mode
-        || !app.settings_obs_password_input.trim().is_empty()
-        || app.settings_buffer_secs != app.config.recorder.replay_buffer_secs.to_string()
-        || app.settings_save_delay_secs != app.config.recorder.save_delay_secs.to_string()
-        || app.settings_clip_saved_notifications != app.config.recorder.clip_saved_notifications
-        || app.settings_clip_naming_template != app.config.clip_naming_template
+        || app.settings.container != app.config.recorder.gsr().container
+        || app.settings.obs_websocket_url != app.config.recorder.obs().websocket_url
+        || app.settings.obs_management_mode != app.config.recorder.obs().management_mode
+        || !app.settings.obs_password_input.trim().is_empty()
+        || app.settings.buffer_secs != app.config.recorder.replay_buffer_secs.to_string()
+        || app.settings.save_delay_secs != app.config.recorder.save_delay_secs.to_string()
+        || app.settings.clip_saved_notifications != app.config.recorder.clip_saved_notifications
+        || app.settings.clip_naming_template != app.config.clip_naming_template
         || manual_clip_settings_dirty(app)
-        || app.settings_storage_tiering_enabled != app.config.storage_tiering.enabled
-        || app.settings_storage_tier_directory
+        || app.settings.storage_tiering_enabled != app.config.storage_tiering.enabled
+        || app.settings.storage_tier_directory
             != app.config.storage_tiering.tier_directory.to_string_lossy()
-        || app.settings_storage_min_age_days != app.config.storage_tiering.min_age_days.to_string()
-        || app.settings_storage_max_score != app.config.storage_tiering.max_score.to_string()
-        || app.settings_copyparty_enabled != app.config.uploads.copyparty.enabled
-        || app.settings_copyparty_upload_url != app.config.uploads.copyparty.upload_url
-        || app.settings_copyparty_public_base_url != app.config.uploads.copyparty.public_base_url
-        || app.settings_copyparty_username != app.config.uploads.copyparty.username
-        || !app.settings_copyparty_password_input.trim().is_empty()
-        || app.settings_youtube_enabled != app.config.uploads.youtube.enabled
-        || app.settings_youtube_client_id != app.config.uploads.youtube.client_id
-        || !app.settings_youtube_client_secret_input.trim().is_empty()
-        || app.settings_youtube_privacy_status != app.config.uploads.youtube.privacy_status
-        || app.settings_discord_enabled != app.config.discord_webhook.enabled
-        || app.settings_discord_min_score != app.config.discord_webhook.min_score.to_string()
-        || app.settings_discord_include_thumbnail != app.config.discord_webhook.include_thumbnail
-        || !app.settings_discord_webhook_input.trim().is_empty()
+        || app.settings.storage_min_age_days != app.config.storage_tiering.min_age_days.to_string()
+        || app.settings.storage_max_score != app.config.storage_tiering.max_score.to_string()
+        || app.settings.copyparty_enabled != app.config.uploads.copyparty.enabled
+        || app.settings.copyparty_upload_url != app.config.uploads.copyparty.upload_url
+        || app.settings.copyparty_public_base_url != app.config.uploads.copyparty.public_base_url
+        || app.settings.copyparty_username != app.config.uploads.copyparty.username
+        || !app.settings.copyparty_password_input.trim().is_empty()
+        || app.settings.youtube_enabled != app.config.uploads.youtube.enabled
+        || app.settings.youtube_client_id != app.config.uploads.youtube.client_id
+        || !app.settings.youtube_client_secret_input.trim().is_empty()
+        || app.settings.youtube_privacy_status != app.config.uploads.youtube.privacy_status
+        || app.settings.discord_enabled != app.config.discord_webhook.enabled
+        || app.settings.discord_min_score != app.config.discord_webhook.min_score.to_string()
+        || app.settings.discord_include_thumbnail != app.config.discord_webhook.include_thumbnail
+        || !app.settings.discord_webhook_input.trim().is_empty()
 }
 
 fn manual_clip_settings_dirty(app: &App) -> bool {
     manual_clip_settings_dirty_values(
-        app.settings_manual_clip_enabled,
-        app.settings_manual_clip_hotkey.as_str(),
-        app.settings_manual_clip_duration_secs.as_str(),
+        app.settings.manual_clip_enabled,
+        app.settings.manual_clip_hotkey.as_str(),
+        app.settings.manual_clip_duration_secs.as_str(),
         &app.config.manual_clip,
     )
 }
@@ -1236,68 +1274,68 @@ fn manual_clip_settings_dirty_values(
 }
 
 fn apply_settings_draft_from_config(app: &mut App) {
-    app.settings_launch_at_login = app.config.launch_at_login.enabled;
-    app.settings_auto_start_monitoring = app.config.auto_start_monitoring;
-    app.settings_start_minimized = app.config.start_minimized;
-    app.settings_minimize_to_tray = app.config.minimize_to_tray;
-    app.settings_update_auto_check = app.config.updates.auto_check;
-    app.settings_update_channel = app.config.updates.channel;
-    app.settings_update_install_behavior = app.config.updates.install_behavior;
-    app.settings_selected_update_action = UpdatePrimaryAction::DownloadUpdate;
-    app.settings_selected_rollback_release = None;
-    app.settings_service_id = app.config.service_id.clone();
-    app.settings_capture_backend = app.config.capture.backend.clone();
-    app.settings_capture_source = app.config.recorder.gsr().capture_source.clone();
-    app.settings_save_dir = app.config.recorder.save_directory.to_string_lossy().into();
-    app.settings_framerate = app.config.recorder.gsr().framerate.to_string();
-    app.settings_codec = app.config.recorder.gsr().codec.clone();
-    app.settings_quality = app.config.recorder.gsr().quality.clone();
-    app.settings_audio_sources =
+    app.settings.launch_at_login = app.config.launch_at_login.enabled;
+    app.settings.auto_start_monitoring = app.config.auto_start_monitoring;
+    app.settings.start_minimized = app.config.start_minimized;
+    app.settings.minimize_to_tray = app.config.minimize_to_tray;
+    app.settings.update_auto_check = app.config.updates.auto_check;
+    app.settings.update_channel = app.config.updates.channel;
+    app.settings.update_install_behavior = app.config.updates.install_behavior;
+    app.settings.selected_update_action = UpdatePrimaryAction::DownloadUpdate;
+    app.settings.selected_rollback_release = None;
+    app.settings.service_id = app.config.service_id.clone();
+    app.settings.capture_backend = app.config.capture.backend;
+    app.settings.capture_source = app.config.recorder.gsr().capture_source.clone();
+    app.settings.save_dir = app.config.recorder.save_directory.to_string_lossy().into();
+    app.settings.framerate = app.config.recorder.gsr().framerate.to_string();
+    app.settings.codec = app.config.recorder.gsr().codec.clone();
+    app.settings.quality = app.config.recorder.gsr().quality.clone();
+    app.settings.audio_sources =
         audio_source_drafts_from_config(&app.config.recorder.audio_sources);
-    app.settings_selected_device_audio_source = None;
-    app.settings_selected_application_audio_source = None;
-    app.settings_audio_discovery_error = None;
-    app.settings_container = app.config.recorder.gsr().container.clone();
-    app.settings_obs_websocket_url = app.config.recorder.obs().websocket_url.clone();
-    app.settings_obs_password_input.clear();
-    app.settings_obs_management_mode = app.config.recorder.obs().management_mode;
-    app.settings_buffer_secs = app.config.recorder.replay_buffer_secs.to_string();
-    app.settings_save_delay_secs = app.config.recorder.save_delay_secs.to_string();
-    app.settings_clip_saved_notifications = app.config.recorder.clip_saved_notifications;
-    app.settings_clip_naming_template = app.config.clip_naming_template.clone();
-    app.settings_manual_clip_enabled = app.config.manual_clip.enabled;
-    app.settings_manual_clip_hotkey = app.config.manual_clip.hotkey.clone();
-    app.settings_hotkey_capture_active = false;
-    app.settings_manual_clip_duration_secs = app.config.manual_clip.duration_secs.to_string();
-    app.settings_storage_tiering_enabled = app.config.storage_tiering.enabled;
-    app.settings_storage_tier_directory = app
+    app.settings.selected_device_audio_source = None;
+    app.settings.selected_application_audio_source = None;
+    app.settings.audio_discovery_error = None;
+    app.settings.container = app.config.recorder.gsr().container.clone();
+    app.settings.obs_websocket_url = app.config.recorder.obs().websocket_url.clone();
+    app.settings.obs_password_input.clear();
+    app.settings.obs_management_mode = app.config.recorder.obs().management_mode;
+    app.settings.buffer_secs = app.config.recorder.replay_buffer_secs.to_string();
+    app.settings.save_delay_secs = app.config.recorder.save_delay_secs.to_string();
+    app.settings.clip_saved_notifications = app.config.recorder.clip_saved_notifications;
+    app.settings.clip_naming_template = app.config.clip_naming_template.clone();
+    app.settings.manual_clip_enabled = app.config.manual_clip.enabled;
+    app.settings.manual_clip_hotkey = app.config.manual_clip.hotkey.clone();
+    app.settings.hotkey_capture_active = false;
+    app.settings.manual_clip_duration_secs = app.config.manual_clip.duration_secs.to_string();
+    app.settings.storage_tiering_enabled = app.config.storage_tiering.enabled;
+    app.settings.storage_tier_directory = app
         .config
         .storage_tiering
         .tier_directory
         .to_string_lossy()
         .into();
-    app.settings_storage_min_age_days = app.config.storage_tiering.min_age_days.to_string();
-    app.settings_storage_max_score = app.config.storage_tiering.max_score.to_string();
-    app.settings_copyparty_enabled = app.config.uploads.copyparty.enabled;
-    app.settings_copyparty_upload_url = app.config.uploads.copyparty.upload_url.clone();
-    app.settings_copyparty_public_base_url = app.config.uploads.copyparty.public_base_url.clone();
-    app.settings_copyparty_username = app.config.uploads.copyparty.username.clone();
-    app.settings_copyparty_password_input.clear();
-    app.settings_youtube_enabled = app.config.uploads.youtube.enabled;
-    app.settings_youtube_client_id = app.config.uploads.youtube.client_id.clone();
-    app.settings_youtube_client_secret_input.clear();
-    app.settings_youtube_oauth_in_flight = false;
-    app.settings_youtube_privacy_status = app.config.uploads.youtube.privacy_status;
-    app.settings_discord_enabled = app.config.discord_webhook.enabled;
-    app.settings_discord_min_score = app.config.discord_webhook.min_score.to_string();
-    app.settings_discord_include_thumbnail = app.config.discord_webhook.include_thumbnail;
-    app.settings_discord_webhook_input.clear();
+    app.settings.storage_min_age_days = app.config.storage_tiering.min_age_days.to_string();
+    app.settings.storage_max_score = app.config.storage_tiering.max_score.to_string();
+    app.settings.copyparty_enabled = app.config.uploads.copyparty.enabled;
+    app.settings.copyparty_upload_url = app.config.uploads.copyparty.upload_url.clone();
+    app.settings.copyparty_public_base_url = app.config.uploads.copyparty.public_base_url.clone();
+    app.settings.copyparty_username = app.config.uploads.copyparty.username.clone();
+    app.settings.copyparty_password_input.clear();
+    app.settings.youtube_enabled = app.config.uploads.youtube.enabled;
+    app.settings.youtube_client_id = app.config.uploads.youtube.client_id.clone();
+    app.settings.youtube_client_secret_input.clear();
+    app.settings.youtube_oauth_in_flight = false;
+    app.settings.youtube_privacy_status = app.config.uploads.youtube.privacy_status;
+    app.settings.discord_enabled = app.config.discord_webhook.enabled;
+    app.settings.discord_min_score = app.config.discord_webhook.min_score.to_string();
+    app.settings.discord_include_thumbnail = app.config.discord_webhook.include_thumbnail;
+    app.settings.discord_webhook_input.clear();
     sync_selected_audio_sources(app);
     app.set_settings_feedback_silent("Reverted unsaved settings changes.", true);
 }
 
 fn settings_overview_cards(app: &App) -> Element<'_, Message> {
-    let startup_summary = if app.settings_auto_start_monitoring {
+    let startup_summary = if app.settings.auto_start_monitoring {
         "Starts monitoring automatically."
     } else {
         "Launches idle until you start monitoring."
@@ -1305,7 +1343,7 @@ fn settings_overview_cards(app: &App) -> Element<'_, Message> {
     let capture_summary = if selected_capture_backend(app) == CaptureBackendPreset::Obs {
         format!(
             "OBS · {} · {}s buffer",
-            app.settings_obs_management_mode,
+            app.settings.obs_management_mode,
             current_buffer_secs(app),
         )
     } else {
@@ -1313,14 +1351,14 @@ fn settings_overview_cards(app: &App) -> Element<'_, Message> {
             "{} fps · {}s buffer · {}",
             current_framerate(app),
             current_buffer_secs(app),
-            ContainerPreset::from_value(app.settings_container.as_str())
+            ContainerPreset::from_value(app.settings.container.as_str())
         )
     };
     let delivery_summary = format!(
         "{} delivery integrations enabled",
-        usize::from(app.settings_copyparty_enabled)
-            + usize::from(app.settings_youtube_enabled)
-            + usize::from(app.settings_discord_enabled)
+        usize::from(app.settings.copyparty_enabled)
+            + usize::from(app.settings.youtube_enabled)
+            + usize::from(app.settings.discord_enabled)
     );
 
     row![
@@ -1329,19 +1367,19 @@ fn settings_overview_cards(app: &App) -> Element<'_, Message> {
             startup_summary,
             vec![
                 settings_status_badge(
-                    if app.settings_launch_at_login {
+                    if app.settings.launch_at_login {
                         "Launch at login"
                     } else {
                         "Manual launch"
                     },
-                    if app.settings_launch_at_login {
+                    if app.settings.launch_at_login {
                         BadgeTone::Success
                     } else {
                         BadgeTone::Neutral
                     },
                 ),
                 settings_status_badge(
-                    if app.settings_start_minimized {
+                    if app.settings.start_minimized {
                         "Starts minimized"
                     } else {
                         "Foreground start"
@@ -1360,9 +1398,9 @@ fn settings_overview_cards(app: &App) -> Element<'_, Message> {
                 ),
                 settings_status_badge(
                     if selected_capture_backend(app) == CaptureBackendPreset::Obs {
-                        obs_management_mode_label(app.settings_obs_management_mode).to_string()
+                        obs_management_mode_label(app.settings.obs_management_mode).to_string()
                     } else {
-                        CodecPreset::from_value(app.settings_codec.as_str()).to_string()
+                        CodecPreset::from_value(app.settings.codec.as_str()).to_string()
                     },
                     BadgeTone::Outline,
                 ),
@@ -1373,24 +1411,24 @@ fn settings_overview_cards(app: &App) -> Element<'_, Message> {
             delivery_summary,
             vec![
                 settings_status_badge(
-                    if app.settings_storage_tiering_enabled {
+                    if app.settings.storage_tiering_enabled {
                         "Tiering enabled"
                     } else {
                         "Tiering off"
                     },
-                    if app.settings_storage_tiering_enabled {
+                    if app.settings.storage_tiering_enabled {
                         BadgeTone::Warning
                     } else {
                         BadgeTone::Neutral
                     },
                 ),
                 settings_status_badge(
-                    if app.settings_youtube_refresh_token_present {
+                    if app.settings.youtube_refresh_token_present {
                         "OAuth ready"
                     } else {
                         "OAuth missing"
                     },
-                    if app.settings_youtube_refresh_token_present {
+                    if app.settings.youtube_refresh_token_present {
                         BadgeTone::Success
                     } else {
                         BadgeTone::Neutral
@@ -1429,25 +1467,25 @@ fn runtime_panel(app: &App) -> Element<'_, Message> {
                 settings_toggle_row(
                     "Launch at Login",
                     "Launch the app at login using the platform backend.",
-                    app.settings_launch_at_login,
+                    app.settings.launch_at_login,
                     Message::LaunchAtLoginToggled,
                 ),
                 settings_toggle_row(
                     "Auto-Start Monitoring",
                     "Start monitoring immediately after launch.",
-                    app.settings_auto_start_monitoring,
+                    app.settings.auto_start_monitoring,
                     Message::AutoStartMonitoringToggled,
                 ),
                 settings_toggle_row(
                     "Start Minimized",
                     "Start in the background instead of the main window.",
-                    app.settings_start_minimized,
+                    app.settings.start_minimized,
                     Message::StartMinimizedToggled,
                 ),
                 settings_toggle_row(
                     "Minimize to Tray",
                     "Closing the window keeps the app in the tray.",
-                    app.settings_minimize_to_tray,
+                    app.settings.minimize_to_tray,
                     Message::MinimizeToTrayToggled,
                 ),
             ],
@@ -1458,7 +1496,7 @@ fn runtime_panel(app: &App) -> Element<'_, Message> {
             vec![settings_text_field(
                 "Census Service ID",
                 "Daybreak Census service ID for API and realtime events.",
-                &app.settings_service_id,
+                &app.settings.service_id,
                 Message::ServiceIdChanged,
             )],
         ))
@@ -1520,7 +1558,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
             "How gpu-screen-recorder captures the game window.",
             &CaptureSourcePreset::ALL[..],
             Some(CaptureSourcePreset::from_value(
-                app.settings_capture_source.as_str(),
+                app.settings.capture_source.as_str(),
             )),
             Message::CaptureSourcePresetSelected,
         ),
@@ -1530,7 +1568,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
         settings_text_field_with_button(
             "Save Directory",
             "Directory where saved clips are written.",
-            &app.settings_save_dir,
+            &app.settings.save_dir,
             Message::SaveDirChanged,
             with_tooltip(
                 styled_button("Browse", ButtonTone::Secondary)
@@ -1550,7 +1588,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
             "Codec",
             "Select the video codec used by gpu-screen-recorder.",
             &CodecPreset::ALL[..],
-            Some(CodecPreset::from_value(app.settings_codec.as_str())),
+            Some(CodecPreset::from_value(app.settings.codec.as_str())),
             Message::CodecPresetSelected,
         ),
         settings_stepper_field(
@@ -1564,7 +1602,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
             "Container Format",
             "Choose the output container format for saved clips.",
             &ContainerPreset::ALL[..],
-            Some(ContainerPreset::from_value(app.settings_container.as_str())),
+            Some(ContainerPreset::from_value(app.settings.container.as_str())),
             Message::ContainerPresetSelected,
         ),
         settings_stepper_field(
@@ -1583,31 +1621,31 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
         ),
     ];
 
-    if CaptureSourcePreset::from_value(app.settings_capture_source.as_str())
+    if CaptureSourcePreset::from_value(app.settings.capture_source.as_str())
         == CaptureSourcePreset::Custom
     {
         video_rows.push(settings_text_field(
             "Custom Capture Source",
             "Manual source string passed to gpu-screen-recorder.",
-            &app.settings_capture_source,
+            &app.settings.capture_source,
             Message::CaptureSourceChanged,
         ));
     }
 
-    if CodecPreset::from_value(app.settings_codec.as_str()) == CodecPreset::Custom {
+    if CodecPreset::from_value(app.settings.codec.as_str()) == CodecPreset::Custom {
         video_rows.push(settings_text_field(
             "Custom Codec",
             "Manual codec name passed to gpu-screen-recorder.",
-            &app.settings_codec,
+            &app.settings.codec,
             Message::CodecChanged,
         ));
     }
 
-    if ContainerPreset::from_value(app.settings_container.as_str()) == ContainerPreset::Custom {
+    if ContainerPreset::from_value(app.settings.container.as_str()) == ContainerPreset::Custom {
         video_rows.push(settings_text_field(
             "Custom Container",
             "Manual container format passed to gpu-screen-recorder.",
-            &app.settings_container,
+            &app.settings.container,
             Message::ContainerChanged,
         ));
     }
@@ -1624,27 +1662,27 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
         settings_text_field(
             "OBS WebSocket URL",
             "obs-websocket endpoint, usually ws://127.0.0.1:4455.",
-            &app.settings_obs_websocket_url,
+            &app.settings.obs_websocket_url,
             Message::ObsWebsocketUrlChanged,
         ),
         settings_text_field(
-            if app.settings_obs_password_present {
+            if app.settings.obs_password_present {
                 "OBS Password (stored)"
             } else {
                 "OBS Password"
             },
             "Paste to replace the stored OBS websocket password. Leave blank to keep the current credential.",
-            &app.settings_obs_password_input,
+            &app.settings.obs_password_input,
             Message::ObsPasswordChanged,
         ),
         row![
             settings_status_badge(
-                if app.settings_obs_password_present {
+                if app.settings.obs_password_present {
                     "Password stored"
                 } else {
                     "No password stored"
                 },
-                if app.settings_obs_password_present {
+                if app.settings.obs_password_present {
                     BadgeTone::Success
                 } else {
                     BadgeTone::Neutral
@@ -1670,7 +1708,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
             "Management Mode",
             "Bring Your Own only triggers saves; Managed Recording also pushes output settings to the active OBS profile.",
             &OBS_MANAGEMENT_MODES[..],
-            Some(app.settings_obs_management_mode),
+            Some(app.settings.obs_management_mode),
             Message::ObsManagementModeSelected,
         ),
         settings_stepper_field(
@@ -1682,7 +1720,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
         ),
     ];
 
-    match app.settings_obs_management_mode {
+    match app.settings.obs_management_mode {
         ObsManagementMode::BringYourOwn => {
             rows.push(
                 banner("OBS owns the scene and replay-buffer setup")
@@ -1697,7 +1735,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
                 settings_text_field_with_button(
                     "Save Directory",
                     "OBS will record saved clips into this directory.",
-                    &app.settings_save_dir,
+                    &app.settings.save_dir,
                     Message::SaveDirChanged,
                     with_tooltip(
                         styled_button("Browse", ButtonTone::Secondary)
@@ -1710,7 +1748,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
                     "Container Format",
                     "OBS-managed recording supports mkv, mp4, mov, flv, and ts.",
                     &ObsContainerPreset::ALL[..],
-                    Some(ObsContainerPreset::from_value(app.settings_container.as_str())),
+                    Some(ObsContainerPreset::from_value(app.settings.container.as_str())),
                     |preset| Message::ContainerChanged(preset.config_value().to_string()),
                 ),
                 settings_stepper_field(
@@ -1750,31 +1788,33 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     let available_application_sources =
         available_audio_source_options(app, DiscoveredAudioKind::Application);
     let selected_device_source = app
-        .settings_selected_device_audio_source
+        .settings
+        .selected_device_audio_source
         .as_ref()
         .filter(|selected| available_device_sources.contains(*selected))
         .cloned();
     let selected_application_source = app
-        .settings_selected_application_audio_source
+        .settings
+        .selected_application_audio_source
         .as_ref()
         .filter(|selected| available_application_sources.contains(*selected))
         .cloned();
     let can_add_selected_device_source = selected_device_source.is_some();
     let can_add_selected_application_source = selected_application_source.is_some();
-    let device_source_placeholder = if app.settings_audio_discovery_running {
+    let device_source_placeholder = if app.settings.audio_discovery_running {
         "Loading available audio sources..."
     } else if !available_device_sources.is_empty() {
         "Choose a detected audio device"
-    } else if app.settings_discovered_audio_sources.is_empty() {
+    } else if app.settings.discovered_audio_sources.is_empty() {
         "No audio sources discovered yet"
     } else {
         "All detected device sources are already configured"
     };
-    let application_source_placeholder = if app.settings_audio_discovery_running {
+    let application_source_placeholder = if app.settings.audio_discovery_running {
         "Loading detected application streams..."
     } else if !available_application_sources.is_empty() {
         "Choose a detected application stream"
-    } else if app.settings_discovered_audio_sources.is_empty() {
+    } else if app.settings.discovered_audio_sources.is_empty() {
         "No audio sources discovered yet"
     } else {
         "No unconfigured application streams are available"
@@ -1841,14 +1881,14 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     .align_y(iced::Alignment::Center)
     .into();
 
-    let configured_tracks: Element<'_, Message> = if app.settings_audio_sources.is_empty() {
+    let configured_tracks: Element<'_, Message> = if app.settings.audio_sources.is_empty() {
         empty_state("No audio tracks configured.")
             .description("Add a discovered source above to build a track layout.")
             .build()
             .into()
     } else {
         let mut tracks = column![].spacing(12);
-        for (index, audio_source) in app.settings_audio_sources.iter().enumerate() {
+        for (index, audio_source) in app.settings.audio_sources.iter().enumerate() {
             tracks = tracks.push(audio_source_row(index, audio_source));
         }
         tracks.into()
@@ -1861,7 +1901,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
         .push(device_discovery_row)
         .push(application_discovery_row);
 
-    if let Some(error) = &app.settings_audio_discovery_error {
+    if let Some(error) = &app.settings.audio_discovery_error {
         discovery_section = discovery_section.push(
             banner("Audio source discovery failed")
                 .error()
@@ -1891,13 +1931,13 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
                 settings_toggle_row(
                     "Overlay Notifications",
                     "Toast clip saves, character confirmation, and profile changes.",
-                    app.settings_clip_saved_notifications,
+                    app.settings.clip_saved_notifications,
                     Message::ClipSavedNotificationsToggled,
                 ),
                 settings_text_field(
                     "Clip Naming Template",
                     "Placeholders: {timestamp} {source} {character} {rule} {profile} {server} {continent} {base} {score} {duration}.",
-                    &app.settings_clip_naming_template,
+                    &app.settings.clip_naming_template,
                     Message::ClipNamingTemplateChanged,
                 ),
                 clip_naming_preview_card(app),
@@ -1910,7 +1950,7 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
                 settings_toggle_row(
                     "Manual Clip Hotkey",
                     "Save a manual clip while the recorder is running.",
-                    app.settings_manual_clip_enabled,
+                    app.settings.manual_clip_enabled,
                     Message::ManualClipEnabledToggled,
                 ),
                 hotkey_capture_field(app),
@@ -1933,31 +1973,31 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
         .push(settings_toggle_row(
             "Enable YouTube Uploads",
             "Allow per-clip YouTube uploads from the Clips tab.",
-            app.settings_youtube_enabled,
+            app.settings.youtube_enabled,
             Message::YouTubeEnabledToggled,
         ));
 
-    if app.settings_youtube_enabled {
+    if app.settings.youtube_enabled {
         youtube_section = youtube_section
             .push(settings_text_field(
                 "YouTube OAuth Client ID",
                 "Google OAuth client ID (Desktop App client recommended).",
-                &app.settings_youtube_client_id,
+                &app.settings.youtube_client_id,
                 Message::YouTubeClientIdChanged,
             ))
             .push(settings_text_field(
-                if app.settings_youtube_client_secret_present {
+                if app.settings.youtube_client_secret_present {
                     "YouTube OAuth Client Secret (stored)"
                 } else {
                     "YouTube OAuth Client Secret"
                 },
                 "Required for confidential OAuth clients. Paste to replace.",
-                &app.settings_youtube_client_secret_input,
+                &app.settings.youtube_client_secret_input,
                 Message::YouTubeClientSecretChanged,
             ));
 
-        if !app.settings_youtube_client_secret_present
-            && app.settings_youtube_client_secret_input.trim().is_empty()
+        if !app.settings.youtube_client_secret_present
+            && app.settings.youtube_client_secret_input.trim().is_empty()
         {
             youtube_section = youtube_section.push(
                 banner("Client secret required for some OAuth clients")
@@ -1976,18 +2016,18 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     YouTubePrivacyStatus::Unlisted,
                     YouTubePrivacyStatus::Private,
                 ][..],
-                Some(app.settings_youtube_privacy_status),
+                Some(app.settings.youtube_privacy_status),
                 Message::YouTubePrivacyStatusSelected,
             ))
             .push(
                 row![
                     settings_status_badge(
-                        if app.settings_youtube_refresh_token_present {
+                        if app.settings.youtube_refresh_token_present {
                             "Account connected"
                         } else {
                             "No account connected"
                         },
-                        if app.settings_youtube_refresh_token_present {
+                        if app.settings.youtube_refresh_token_present {
                             BadgeTone::Success
                         } else {
                             BadgeTone::Neutral
@@ -1996,7 +2036,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     with_tooltip(
                         {
                             let button = styled_button("Connect YouTube", ButtonTone::Secondary);
-                            if app.settings_youtube_oauth_in_flight {
+                            if app.settings.youtube_oauth_in_flight {
                                 button.into()
                             } else {
                                 button.on_press(Message::ConnectYouTube).into()
@@ -2027,16 +2067,16 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Storage Tiering",
                     "Archive clips that exceed the age and score thresholds.",
-                    app.settings_storage_tiering_enabled,
+                    app.settings.storage_tiering_enabled,
                     Message::StorageTieringEnabledToggled,
                 )];
 
-                if app.settings_storage_tiering_enabled {
+                if app.settings.storage_tiering_enabled {
                     rows.extend([
                         settings_text_field_with_button(
                             "Archive Directory",
                             "Directory used for lower-cost clip storage.",
-                            &app.settings_storage_tier_directory,
+                            &app.settings.storage_tier_directory,
                             Message::StorageTierDirectoryChanged,
                             with_tooltip(
                                 styled_button("Browse", ButtonTone::Secondary)
@@ -2086,48 +2126,48 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Copyparty Uploads",
                     "Allow per-clip Copyparty uploads from the Clips tab.",
-                    app.settings_copyparty_enabled,
+                    app.settings.copyparty_enabled,
                     Message::CopypartyEnabledToggled,
                 )];
 
-                if app.settings_copyparty_enabled {
+                if app.settings.copyparty_enabled {
                     rows.extend([
                         settings_text_field(
                             "Copyparty Upload URL",
                             "Upload URL, e.g. `https://clips.example.com/up/`.",
-                            &app.settings_copyparty_upload_url,
+                            &app.settings.copyparty_upload_url,
                             Message::CopypartyUploadUrlChanged,
                         ),
                         settings_text_field(
                             "Copyparty Public Base URL",
                             "Optional public base URL when the server returns a relative path.",
-                            &app.settings_copyparty_public_base_url,
+                            &app.settings.copyparty_public_base_url,
                             Message::CopypartyPublicBaseUrlChanged,
                         ),
                         settings_text_field(
                             "Copyparty Username",
                             "Optional username for basic auth or `--usernames`.",
-                            &app.settings_copyparty_username,
+                            &app.settings.copyparty_username,
                             Message::CopypartyUsernameChanged,
                         ),
                         settings_text_field(
-                            if app.settings_copyparty_password_present {
+                            if app.settings.copyparty_password_present {
                                 "Copyparty Password (stored)"
                             } else {
                                 "Copyparty Password"
                             },
                             "Paste to replace the stored password. Blank keeps the current one.",
-                            &app.settings_copyparty_password_input,
+                            &app.settings.copyparty_password_input,
                             Message::CopypartyPasswordChanged,
                         ),
                         row![
                             settings_status_badge(
-                                if app.settings_copyparty_password_present {
+                                if app.settings.copyparty_password_present {
                                     "Password stored"
                                 } else {
                                     "No password stored"
                                 },
-                                if app.settings_copyparty_password_present {
+                                if app.settings.copyparty_password_present {
                                     BadgeTone::Success
                                 } else {
                                     BadgeTone::Neutral
@@ -2163,11 +2203,11 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Discord Webhook",
                     "Post qualifying clips to a stored Discord webhook.",
-                    app.settings_discord_enabled,
+                    app.settings.discord_enabled,
                     Message::DiscordWebhookEnabledToggled,
                 )];
 
-                if app.settings_discord_enabled {
+                if app.settings.discord_enabled {
                     rows.extend([
                         settings_stepper_field(
                             "Minimum Score",
@@ -2179,27 +2219,27 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                         settings_toggle_row(
                             "Attach Thumbnail",
                             "Extract a thumbnail with ffmpeg and attach it.",
-                            app.settings_discord_include_thumbnail,
+                            app.settings.discord_include_thumbnail,
                             Message::DiscordIncludeThumbnailToggled,
                         ),
                         settings_text_field(
-                            if app.settings_discord_webhook_present {
+                            if app.settings.discord_webhook_present {
                                 "Discord Webhook URL (stored)"
                             } else {
                                 "Discord Webhook URL"
                             },
                             "Paste to store or replace. Blank keeps the current one.",
-                            &app.settings_discord_webhook_input,
+                            &app.settings.discord_webhook_input,
                             Message::DiscordWebhookUrlChanged,
                         ),
                         row![
                             settings_status_badge(
-                                if app.settings_discord_webhook_present {
+                                if app.settings.discord_webhook_present {
                                     "Webhook stored"
                                 } else {
                                     "No webhook stored"
                                 },
-                                if app.settings_discord_webhook_present {
+                                if app.settings.discord_webhook_present {
                                     BadgeTone::Success
                                 } else {
                                     BadgeTone::Neutral
@@ -2247,17 +2287,20 @@ fn update_action_tone(action: UpdatePrimaryAction) -> ButtonTone {
 fn active_release_signature_summary(app: &App) -> String {
     let verifier_key_count = crate::update::update_public_keys().len();
     let signature = app
-        .settings_selected_rollback_release
+        .settings
+        .selected_rollback_release
         .as_ref()
         .map(|release| &release.signature)
         .or_else(|| {
-            app.update_state
+            app.updates
+                .state
                 .latest_release
                 .as_ref()
                 .map(|release| &release.signature)
         })
         .or_else(|| {
-            app.update_state
+            app.updates
+                .state
                 .prepared_update
                 .as_ref()
                 .map(|prepared| &prepared.signature)
@@ -2302,9 +2345,9 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
         with_tooltip(
             {
                 let button = styled_button("View Changelog", ButtonTone::Secondary);
-                if app.update_state.latest_release.is_some()
-                    || app.update_state.prepared_update.is_some()
-                    || app.settings_selected_rollback_release.is_some()
+                if app.updates.state.latest_release.is_some()
+                    || app.updates.state.prepared_update.is_some()
+                    || app.settings.selected_rollback_release.is_some()
                 {
                     button.on_press(Message::ViewUpdateDetails).into()
                 } else {
@@ -2321,7 +2364,8 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
 
 fn update_panel(app: &App) -> Element<'_, Message> {
     let last_checked_summary = app
-        .update_state
+        .updates
+        .state
         .last_checked_at
         .map(|checked_at| {
             format!(
@@ -2340,7 +2384,8 @@ fn update_panel(app: &App) -> Element<'_, Message> {
             "Next automatic check: automatic checks are off".into()
         };
     let latest_release_summary = app
-        .update_state
+        .updates
+        .state
         .latest_release
         .as_ref()
         .map(|release| {
@@ -2352,7 +2397,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
             )
         })
         .or_else(|| {
-            app.update_state.last_checked_at.map(|checked_at| {
+            app.updates.state.last_checked_at.map(|checked_at| {
                 format!(
                     "No newer release found. Last checked {}.",
                     super::clips::format_timestamp(checked_at)
@@ -2360,27 +2405,29 @@ fn update_panel(app: &App) -> Element<'_, Message> {
             })
         })
         .unwrap_or_else(|| "No update check has completed yet.".into());
-    let phase_summary = match app.update_state.phase {
+    let phase_summary = match app.updates.state.phase {
         UpdatePhase::Checking
         | UpdatePhase::Downloading
         | UpdatePhase::Verifying
         | UpdatePhase::Applying => app
-            .update_state
+            .updates
+            .state
             .progress
             .as_ref()
-            .map(|progress| format!("{}: {}", app.update_state.phase.label(), progress.detail))
-            .unwrap_or_else(|| app.update_state.phase.label().into()),
+            .map(|progress| format!("{}: {}", app.updates.state.phase.label(), progress.detail))
+            .unwrap_or_else(|| app.updates.state.phase.label().into()),
         UpdatePhase::ReadyToInstall => app
-            .update_state
+            .updates
+            .state
             .prepared_update
             .as_ref()
             .map(|prepared| {
                 let prepared_version = prepared
                     .parsed_version()
-                    .unwrap_or_else(|| app.update_state.current_version.clone());
+                    .unwrap_or_else(|| app.updates.state.current_version.clone());
                 format!(
                     "Ready to {}: {}",
-                    if prepared_version < app.update_state.current_version {
+                    if prepared_version < app.updates.state.current_version {
                         "roll back"
                     } else {
                         "install"
@@ -2388,9 +2435,10 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                     prepared.version
                 )
             })
-            .unwrap_or_else(|| app.update_state.phase.label().into()),
+            .unwrap_or_else(|| app.updates.state.phase.label().into()),
         UpdatePhase::Failed => app
-            .update_state
+            .updates
+            .state
             .last_error
             .as_ref()
             .map(|error| format!("{} issue: {}", error.kind.label(), error.detail))
@@ -2398,7 +2446,8 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         UpdatePhase::Idle => "Updater idle.".into(),
     };
     let reminder_summary = app
-        .update_state
+        .updates
+        .state
         .latest_release
         .as_ref()
         .filter(|release| app.is_update_reminder_deferred(&release.version.to_string()))
@@ -2413,7 +2462,8 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         });
     let security_summary = active_release_signature_summary(app);
     let last_apply_summary = app
-        .update_state
+        .updates
+        .state
         .last_apply_report
         .as_ref()
         .map(|report| {
@@ -2429,24 +2479,26 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         })
         .unwrap_or_else(|| "Last apply: no helper result recorded yet.".into());
     let previous_installed_summary = app
-        .update_state
+        .updates
+        .state
         .previous_installed_version
         .as_ref()
         .map(|version| format!("Previously installed version: {version}"))
         .unwrap_or_else(|| "Previously installed version: not recorded yet".into());
     let selected_rollback_summary = app
-        .settings_selected_rollback_release
+        .settings
+        .selected_rollback_release
         .as_ref()
         .map(|release| format!("Selected rollback target: {}.", release.version))
         .unwrap_or_else(|| "Selected rollback target: none".into());
-    let rollback_catalog_summary = if app.update_state.rollback_catalog_loading {
+    let rollback_catalog_summary = if app.updates.state.rollback_catalog_loading {
         "Rollback version list: loading…".into()
-    } else if app.update_state.rollback_candidates.is_empty() {
+    } else if app.updates.state.rollback_candidates.is_empty() {
         "Rollback version list: not loaded yet or no compatible older versions were found.".into()
     } else {
         format!(
             "Rollback version list: {} compatible older release(s) available.",
-            app.update_state.rollback_candidates.len()
+            app.updates.state.rollback_candidates.len()
         )
     };
 
@@ -2454,18 +2506,20 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         text(phase_summary).size(12).into(),
         text(latest_release_summary).size(12).into(),
         text(
-            app.update_state
+            app.updates
+                .state
                 .latest_release
                 .as_ref()
                 .map(|release| {
                     super::super::release_policy_summary(
                         release,
-                        &app.update_state.current_version,
-                        app.update_state.system_update_plan.as_ref(),
+                        &app.updates.state.current_version,
+                        app.updates.state.system_update_plan.as_ref(),
                     )
                 })
                 .unwrap_or_else(|| {
-                    app.update_state
+                    app.updates
+                        .state
                         .install_channel
                         .update_instructions()
                         .into()
@@ -2477,12 +2531,12 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         text(last_apply_summary).size(12).into(),
         text(format!(
             "Install behavior: {}.",
-            app.settings_update_install_behavior.description()
+            app.settings.update_install_behavior.description()
         ))
         .size(12)
         .into(),
     ];
-    if let Some(plan) = app.update_state.system_update_plan.as_ref() {
+    if let Some(plan) = app.updates.state.system_update_plan.as_ref() {
         available_release_rows.push(
             text(super::super::system_update_plan_summary(plan))
                 .size(12)
@@ -2502,7 +2556,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         .spacing(8)
         .into(),
     );
-    if app.update_state.latest_release.is_some() || app.update_state.prepared_update.is_some() {
+    if app.updates.state.latest_release.is_some() || app.updates.state.prepared_update.is_some() {
         available_release_rows.push(
             text(format!(
                 "Selected action: {}",
@@ -2522,21 +2576,21 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                 text(format!(
                     "Current version: {} · Install channel: {}",
                     crate::update::current_version_label(),
-                    app.update_state.install_channel.label()
+                    app.updates.state.install_channel.label()
                 ))
                 .size(12)
                 .into(),
                 settings_toggle_row(
                     "Automatic Update Checks",
                     "Check GitHub Releases in the background and show an update banner when a newer version is available.",
-                    app.settings_update_auto_check,
+                    app.settings.update_auto_check,
                     Message::UpdateAutoCheckToggled,
                 ),
                 settings_pick_list_field(
                     "Release Channel",
                     "Choose which release channel to check. Stable ignores GitHub prereleases. Beta includes them.",
                     &[UpdateChannel::Stable, UpdateChannel::Beta][..],
-                    Some(app.settings_update_channel),
+                    Some(app.settings.update_channel),
                     Message::UpdateChannelSelected,
                 ),
                 settings_pick_list_field(
@@ -2547,7 +2601,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                         UpdateInstallBehavior::WhenIdle,
                         UpdateInstallBehavior::OnNextLaunch,
                     ][..],
-                    Some(app.settings_update_install_behavior),
+                    Some(app.settings.update_install_behavior),
                     Message::UpdateInstallBehaviorSelected,
                 ),
                 text(last_checked_summary).size(12).into(),
@@ -2569,8 +2623,8 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                 settings_pick_list_field(
                     "Rollback Target",
                     "Choose a specific older release to download and install for this channel.",
-                    app.update_state.rollback_candidates.as_slice(),
-                    app.settings_selected_rollback_release.clone(),
+                    app.updates.state.rollback_candidates.as_slice(),
+                    app.settings.selected_rollback_release.clone(),
                     |value| Message::RollbackReleaseSelected(Box::new(value)),
                 ),
                 row![
@@ -2586,7 +2640,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                                 "Rollback to Previous",
                                 ButtonTone::Warning,
                             );
-                            if app.update_state.previous_installed_version.is_some() {
+                            if app.updates.state.previous_installed_version.is_some() {
                                 button
                                     .on_press(Message::RollbackToPreviousInstalledVersion)
                                     .into()
@@ -2602,9 +2656,9 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                                 "Download Selected Version",
                                 ButtonTone::Warning,
                             );
-                            if app.settings_selected_rollback_release.is_some()
+                            if app.settings.selected_rollback_release.is_some()
                                 && !matches!(
-                                    app.update_state.phase,
+                                    app.updates.state.phase,
                                     UpdatePhase::Downloading
                                         | UpdatePhase::Verifying
                                         | UpdatePhase::Applying
@@ -2656,7 +2710,7 @@ fn maintenance_panel(app: &App) -> Element<'_, Message> {
                 .into(),
                 text(format!(
                     "Exports and backups are written under {}.",
-                    app.settings_save_dir
+                    app.settings.save_dir
                 ))
                 .size(12)
                 .into(),
@@ -2716,7 +2770,7 @@ fn clip_naming_preview_card(app: &App) -> Element<'_, Message> {
         );
     }
 
-    match crate::clip_naming::preview_template(app.settings_clip_naming_template.as_str()) {
+    match crate::clip_naming::preview_template(app.settings.clip_naming_template.as_str()) {
         Ok(preview) => {
             lines = lines.push(settings_status_badge(
                 format!("Example output: {preview}.mkv"),
@@ -2741,7 +2795,8 @@ fn clip_naming_preview_card(app: &App) -> Element<'_, Message> {
 }
 
 fn configured_audio_source_count(app: &App) -> usize {
-    app.settings_audio_sources
+    app.settings
+        .audio_sources
         .iter()
         .filter(|draft| !audio_source_draft_is_blank(draft))
         .count()
@@ -2749,19 +2804,19 @@ fn configured_audio_source_count(app: &App) -> usize {
 
 fn hotkey_capture_field(app: &App) -> Element<'_, Message> {
     let description = "Click and press a key combination. X11 uses the direct backend; Wayland uses the desktop portal.";
-    let binding_label = if app.settings_hotkey_capture_active {
+    let binding_label = if app.settings.hotkey_capture_active {
         "Press the desired key combination..."
-    } else if app.settings_manual_clip_hotkey.trim().is_empty() {
+    } else if app.settings.manual_clip_hotkey.trim().is_empty() {
         "Click to record a hotkey"
     } else {
-        app.settings_manual_clip_hotkey.as_str()
+        app.settings.manual_clip_hotkey.as_str()
     };
-    let status = if app.settings_hotkey_capture_active {
+    let status = if app.settings.hotkey_capture_active {
         "Listening — click again to cancel."
     } else {
         "Click and press the combination you want."
     };
-    let on_press = if app.settings_hotkey_capture_active {
+    let on_press = if app.settings.hotkey_capture_active {
         Message::CancelHotkeyCapture
     } else {
         Message::BeginHotkeyCapture
@@ -2929,11 +2984,12 @@ fn available_audio_source_options(
     app: &App,
     kind: DiscoveredAudioKind,
 ) -> Vec<AvailableAudioSourceOption> {
-    app.settings_discovered_audio_sources
+    app.settings
+        .discovered_audio_sources
         .iter()
         .filter(|audio_source| audio_source.kind == kind)
         .filter(|audio_source| {
-            !app.settings_audio_sources.iter().any(|configured| {
+            !app.settings.audio_sources.iter().any(|configured| {
                 configured
                     .source
                     .trim()
@@ -2949,8 +3005,9 @@ fn available_audio_source_options(
 
 fn sync_selected_audio_sources(app: &mut App) {
     let available_devices = available_audio_source_options(app, DiscoveredAudioKind::Device);
-    app.settings_selected_device_audio_source = app
-        .settings_selected_device_audio_source
+    app.settings.selected_device_audio_source = app
+        .settings
+        .selected_device_audio_source
         .as_ref()
         .filter(|selected| available_devices.contains(*selected))
         .cloned()
@@ -2958,8 +3015,9 @@ fn sync_selected_audio_sources(app: &mut App) {
 
     let available_applications =
         available_audio_source_options(app, DiscoveredAudioKind::Application);
-    app.settings_selected_application_audio_source = app
-        .settings_selected_application_audio_source
+    app.settings.selected_application_audio_source = app
+        .settings
+        .selected_application_audio_source
         .as_ref()
         .filter(|selected| available_applications.contains(*selected))
         .cloned()
@@ -3061,62 +3119,62 @@ fn non_empty_or_default(value: &str, default: &str) -> String {
 }
 
 fn current_framerate(app: &App) -> u32 {
-    parse_or_default(&app.settings_framerate, app.config.recorder.gsr().framerate)
+    parse_or_default(&app.settings.framerate, app.config.recorder.gsr().framerate)
 }
 
 fn current_quality(app: &App) -> u32 {
-    parse_or_default(&app.settings_quality, 40_000)
+    parse_or_default(&app.settings.quality, 40_000)
 }
 
 fn current_buffer_secs(app: &App) -> u32 {
     parse_or_default(
-        &app.settings_buffer_secs,
+        &app.settings.buffer_secs,
         app.config.recorder.replay_buffer_secs,
     )
 }
 
 fn current_save_delay(app: &App) -> u32 {
     parse_or_default(
-        &app.settings_save_delay_secs,
+        &app.settings.save_delay_secs,
         app.config.recorder.save_delay_secs,
     )
 }
 
 fn current_manual_clip_duration(app: &App) -> u32 {
     parse_or_default(
-        &app.settings_manual_clip_duration_secs,
+        &app.settings.manual_clip_duration_secs,
         app.config.manual_clip.duration_secs,
     )
 }
 
 fn current_storage_min_age_days(app: &App) -> u32 {
     parse_or_default(
-        &app.settings_storage_min_age_days,
+        &app.settings.storage_min_age_days,
         app.config.storage_tiering.min_age_days,
     )
 }
 
 fn current_storage_max_score(app: &App) -> u32 {
     parse_or_default(
-        &app.settings_storage_max_score,
+        &app.settings.storage_max_score,
         app.config.storage_tiering.max_score,
     )
 }
 
 fn current_discord_min_score(app: &App) -> u32 {
     parse_or_default(
-        &app.settings_discord_min_score,
+        &app.settings.discord_min_score,
         app.config.discord_webhook.min_score,
     )
 }
 
 fn selected_capture_backend(app: &App) -> CaptureBackendPreset {
-    CaptureBackendPreset::from_value(app.settings_capture_backend.as_str())
+    CaptureBackendPreset::from_config(app.settings.capture_backend)
 }
 
 fn obs_audio_is_backend_owned(app: &App) -> bool {
     selected_capture_backend(app) == CaptureBackendPreset::Obs
-        && app.settings_obs_management_mode != ObsManagementMode::FullManagement
+        && app.settings.obs_management_mode != ObsManagementMode::FullManagement
 }
 
 fn obs_management_mode_label(mode: ObsManagementMode) -> &'static str {
@@ -3149,1067 +3207,4 @@ pub(super) async fn save_file(
     title: String,
 ) -> Result<Option<String>, String> {
     save_file_impl(initial_path, title)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
-    let dialog_attempts = [
-        ("zenity", build_zenity_args(current_dir.as_str())),
-        ("qarma", build_zenity_args(current_dir.as_str())),
-        ("yad", build_zenity_args(current_dir.as_str())),
-        ("kdialog", build_kdialog_args(current_dir.as_str())),
-    ];
-
-    for (program, args) in dialog_attempts {
-        let output = match std::process::Command::new(program).args(&args).output() {
-            Ok(output) => output,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("{program} failed to start: {error}")),
-        };
-
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return if path.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(path))
-            };
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if is_dialog_cancelled(program, output.status.code()) {
-            return Ok(None);
-        }
-
-        let detail = if stderr.is_empty() {
-            format!("exit status {}", output.status)
-        } else {
-            stderr
-        };
-        return Err(format!("{program} failed: {detail}"));
-    }
-
-    Err(
-        "No supported directory picker found. Install `zenity`, `qarma`, `yad`, or `kdialog`."
-            .into(),
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
-    let initial_directory = sanitize_windows_dialog_start_dir(current_dir.as_str());
-    std::thread::spawn(move || pick_directory_with_windows_shell_dialog(initial_directory))
-        .join()
-        .map_err(|_| "Windows folder picker thread panicked".to_string())?
-}
-
-#[cfg(not(target_os = "windows"))]
-fn pick_toml_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
-    let result = run_path_dialog(
-        [
-            (
-                "zenity",
-                build_zenity_open_toml_file_args(current_path.as_str(), title.as_str()),
-            ),
-            (
-                "qarma",
-                build_zenity_open_toml_file_args(current_path.as_str(), title.as_str()),
-            ),
-            (
-                "yad",
-                build_zenity_open_toml_file_args(current_path.as_str(), title.as_str()),
-            ),
-            (
-                "kdialog",
-                build_kdialog_open_toml_file_args(current_path.as_str(), title.as_str()),
-            ),
-        ],
-        "No supported file picker found. Install `zenity`, `qarma`, `yad`, or `kdialog`.",
-    )?;
-
-    validate_toml_file_selection(result)
-}
-
-#[cfg(target_os = "windows")]
-fn pick_toml_file_impl(current_path: String, title: String) -> Result<Option<String>, String> {
-    let (initial_directory, _) = sanitize_windows_file_dialog_target(current_path.as_str());
-    let result = std::thread::spawn(move || {
-        pick_toml_file_with_windows_shell_dialog(initial_directory, title)
-    })
-    .join()
-    .map_err(|_| "Windows file picker thread panicked".to_string())??;
-
-    validate_toml_file_selection(result)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn save_file_impl(initial_path: String, title: String) -> Result<Option<String>, String> {
-    run_path_dialog(
-        [
-            (
-                "zenity",
-                build_zenity_save_file_args(initial_path.as_str(), title.as_str()),
-            ),
-            (
-                "qarma",
-                build_zenity_save_file_args(initial_path.as_str(), title.as_str()),
-            ),
-            (
-                "yad",
-                build_zenity_save_file_args(initial_path.as_str(), title.as_str()),
-            ),
-            (
-                "kdialog",
-                build_kdialog_save_file_args(initial_path.as_str(), title.as_str()),
-            ),
-        ],
-        "No supported save-file picker found. Install `zenity`, `qarma`, `yad`, or `kdialog`.",
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn save_file_impl(initial_path: String, title: String) -> Result<Option<String>, String> {
-    let (initial_directory, suggested_name) =
-        sanitize_windows_file_dialog_target(initial_path.as_str());
-    std::thread::spawn(move || {
-        save_file_with_windows_shell_dialog(initial_directory, suggested_name, title)
-    })
-    .join()
-    .map_err(|_| "Windows save-file picker thread panicked".to_string())?
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_zenity_args(current_dir: &str) -> Vec<String> {
-    let mut args = vec!["--file-selection".into(), "--directory".into()];
-    if let Some(initial) = sanitize_dialog_start_dir(current_dir) {
-        args.push("--filename".into());
-        args.push(initial);
-    }
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_kdialog_args(current_dir: &str) -> Vec<String> {
-    let mut args = vec!["--getexistingdirectory".into()];
-    if let Some(initial) = sanitize_dialog_start_dir(current_dir) {
-        args.push(initial);
-    }
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_zenity_open_file_args(current_path: &str, title: &str) -> Vec<String> {
-    let mut args = vec!["--file-selection".into(), "--title".into(), title.into()];
-    if let Some(initial) = sanitize_dialog_file_path(current_path, false) {
-        args.push("--filename".into());
-        args.push(initial);
-    }
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_zenity_open_toml_file_args(current_path: &str, title: &str) -> Vec<String> {
-    let mut args = build_zenity_open_file_args(current_path, title);
-    args.push("--file-filter".into());
-    args.push("TOML files | *.toml".into());
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_zenity_save_file_args(initial_path: &str, title: &str) -> Vec<String> {
-    let mut args = vec![
-        "--file-selection".into(),
-        "--save".into(),
-        "--confirm-overwrite".into(),
-        "--title".into(),
-        title.into(),
-    ];
-    if let Some(initial) = sanitize_dialog_file_path(initial_path, true) {
-        args.push("--filename".into());
-        args.push(initial);
-    }
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_kdialog_open_file_args(current_path: &str, title: &str) -> Vec<String> {
-    let mut args = vec!["--title".into(), title.into(), "--getopenfilename".into()];
-    if let Some(initial) = sanitize_dialog_file_path(current_path, false) {
-        args.push(initial);
-    }
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_kdialog_open_toml_file_args(current_path: &str, title: &str) -> Vec<String> {
-    let mut args = build_kdialog_open_file_args(current_path, title);
-    args.push("TOML files (*.toml)".into());
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn build_kdialog_save_file_args(initial_path: &str, title: &str) -> Vec<String> {
-    let mut args = vec!["--title".into(), title.into(), "--getsavefilename".into()];
-    if let Some(initial) = sanitize_dialog_file_path(initial_path, true) {
-        args.push(initial);
-    }
-    args
-}
-
-#[cfg(not(target_os = "windows"))]
-fn run_path_dialog<const N: usize>(
-    dialog_attempts: [(&str, Vec<String>); N],
-    missing_dialog_error: &str,
-) -> Result<Option<String>, String> {
-    for (program, args) in dialog_attempts {
-        let output = match std::process::Command::new(program).args(&args).output() {
-            Ok(output) => output,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("{program} failed to start: {error}")),
-        };
-
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return if path.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(path))
-            };
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if is_dialog_cancelled(program, output.status.code()) {
-            return Ok(None);
-        }
-
-        let detail = if stderr.is_empty() {
-            format!("exit status {}", output.status)
-        } else {
-            stderr
-        };
-        return Err(format!("{program} failed: {detail}"));
-    }
-
-    Err(missing_dialog_error.into())
-}
-
-fn validate_toml_file_selection(selection: Option<String>) -> Result<Option<String>, String> {
-    let Some(path) = selection else {
-        return Ok(None);
-    };
-
-    if std::path::Path::new(&path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
-    {
-        Ok(Some(path))
-    } else {
-        Err("Select a `.toml` file to import profiles.".into())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ApplyDiscoveredAudioSource, apply_discovered_audio_source, audio_source_draft_is_blank,
-        manual_clip_settings_dirty_values, validate_toml_file_selection,
-    };
-    use crate::app::AudioSourceDraft;
-    use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
-    use crate::config::{AudioSourceKind, ManualClipConfig};
-
-    #[test]
-    fn discovered_audio_source_replaces_blank_placeholder_row() {
-        let mut drafts = vec![AudioSourceDraft::default()];
-        let discovered = DiscoveredAudioSource {
-            kind_hint: AudioSourceKind::DefaultOutput,
-            display_label: "Default output".into(),
-            kind: DiscoveredAudioKind::Device,
-            available: true,
-        };
-
-        let outcome = apply_discovered_audio_source(&mut drafts, &discovered);
-
-        assert_eq!(outcome, ApplyDiscoveredAudioSource::Added);
-        assert_eq!(
-            drafts,
-            vec![AudioSourceDraft {
-                label: "Default output".into(),
-                source: "default_output".into(),
-                ..AudioSourceDraft::default()
-            }]
-        );
-    }
-
-    #[test]
-    fn discovered_audio_source_does_not_duplicate_existing_source() {
-        let mut drafts = vec![AudioSourceDraft {
-            label: "Game audio".into(),
-            source: "default_output".into(),
-            ..AudioSourceDraft::default()
-        }];
-        let discovered = DiscoveredAudioSource {
-            kind_hint: AudioSourceKind::DefaultOutput,
-            display_label: "Default output".into(),
-            kind: DiscoveredAudioKind::Device,
-            available: true,
-        };
-
-        let outcome = apply_discovered_audio_source(&mut drafts, &discovered);
-
-        assert_eq!(outcome, ApplyDiscoveredAudioSource::Unchanged);
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].label, "Game audio");
-    }
-
-    #[test]
-    fn blank_audio_source_helper_requires_empty_label_and_source() {
-        assert!(audio_source_draft_is_blank(&AudioSourceDraft::default()));
-        assert!(!audio_source_draft_is_blank(&AudioSourceDraft {
-            label: "Game audio".into(),
-            source: String::new(),
-            ..AudioSourceDraft::default()
-        }));
-    }
-
-    #[test]
-    fn manual_clip_settings_dirty_helper_only_flags_real_changes() {
-        let config = ManualClipConfig {
-            enabled: true,
-            hotkey: "Ctrl+Shift+F8".into(),
-            duration_secs: 30,
-        };
-
-        assert!(!manual_clip_settings_dirty_values(
-            true,
-            "Ctrl+Shift+F8",
-            "30",
-            &config,
-        ));
-        assert!(manual_clip_settings_dirty_values(
-            false,
-            "Ctrl+Shift+F8",
-            "30",
-            &config,
-        ));
-        assert!(manual_clip_settings_dirty_values(
-            true, "Alt+F8", "30", &config,
-        ));
-        assert!(manual_clip_settings_dirty_values(
-            true,
-            "Ctrl+Shift+F8",
-            "45",
-            &config,
-        ));
-    }
-
-    #[test]
-    fn toml_picker_validation_accepts_toml_extensions_case_insensitively() {
-        assert_eq!(
-            validate_toml_file_selection(Some("/tmp/profile-export.TOML".into())).unwrap(),
-            Some("/tmp/profile-export.TOML".into())
-        );
-    }
-
-    #[test]
-    fn toml_picker_validation_rejects_non_toml_extensions() {
-        let error =
-            validate_toml_file_selection(Some("/tmp/profile-export.json".into())).unwrap_err();
-
-        assert!(error.contains("`.toml`"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn zenity_toml_picker_args_include_file_filter() {
-        let args = super::build_zenity_open_toml_file_args("/tmp", "Import");
-
-        assert!(args.iter().any(|arg| arg == "--file-filter"));
-        assert!(args.iter().any(|arg| arg == "TOML files | *.toml"));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn kdialog_toml_picker_args_include_file_filter() {
-        let args = super::build_kdialog_open_toml_file_args("/tmp", "Import");
-
-        assert!(args.iter().any(|arg| arg == "TOML files (*.toml)"));
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn sanitize_dialog_start_dir(current_dir: &str) -> Option<String> {
-    let trimmed = current_dir.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let path = std::path::Path::new(trimmed);
-    if path.exists() {
-        Some(with_trailing_slash(trimmed))
-    } else {
-        path.parent()
-            .map(|parent| with_trailing_slash(parent.to_string_lossy().as_ref()))
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn sanitize_dialog_file_path(path_hint: &str, allow_nonexistent_file_name: bool) -> Option<String> {
-    let trimmed = path_hint.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let path = std::path::Path::new(trimmed);
-    if path.exists() {
-        return if path.is_dir() {
-            Some(with_trailing_slash(trimmed))
-        } else {
-            Some(trimmed.to_string())
-        };
-    }
-
-    if allow_nonexistent_file_name && path.parent().is_some_and(std::path::Path::exists) {
-        return Some(path.to_string_lossy().into_owned());
-    }
-
-    path.parent()
-        .filter(|parent| parent.exists())
-        .map(|parent| with_trailing_slash(parent.to_string_lossy().as_ref()))
-}
-
-#[cfg(target_os = "windows")]
-fn sanitize_windows_dialog_start_dir(current_dir: &str) -> Option<String> {
-    let trimmed = current_dir.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let path = std::path::Path::new(trimmed);
-    if path.exists() {
-        Some(trimmed.to_string())
-    } else {
-        path.parent()
-            .map(|parent| parent.to_string_lossy().into_owned())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn sanitize_windows_file_dialog_target(path_hint: &str) -> (Option<String>, Option<String>) {
-    let trimmed = path_hint.trim();
-    if trimmed.is_empty() {
-        return (None, None);
-    }
-
-    let path = std::path::Path::new(trimmed);
-    if path.exists() {
-        if path.is_dir() {
-            return (Some(trimmed.to_string()), None);
-        }
-
-        return (
-            path.parent()
-                .map(|parent| parent.to_string_lossy().into_owned()),
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned()),
-        );
-    }
-
-    (
-        path.parent()
-            .map(|parent| parent.to_string_lossy().into_owned()),
-        path.file_name()
-            .map(|name| name.to_string_lossy().into_owned()),
-    )
-}
-
-#[cfg(not(target_os = "windows"))]
-fn with_trailing_slash(path: &str) -> String {
-    let mut value = path.to_string();
-    if !value.ends_with('/') {
-        value.push('/');
-    }
-    value
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_dialog_cancelled(program: &str, code: Option<i32>) -> bool {
-    match program {
-        "zenity" | "qarma" | "yad" | "kdialog" => code == Some(1),
-        _ => false,
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn pick_directory_with_windows_shell_dialog(
-    initial_directory: Option<String>,
-) -> Result<Option<String>, String> {
-    use windows::Win32::Foundation::ERROR_CANCELLED;
-    use windows::Win32::System::Com::{
-        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-        CoInitializeEx, CoTaskMemFree, CoUninitialize,
-    };
-    use windows::Win32::UI::Shell::{
-        FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
-        IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
-    };
-    use windows::core::{HRESULT, HSTRING};
-
-    struct ComApartment;
-
-    impl Drop for ComApartment {
-        fn drop(&mut self) {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
-            .ok()
-            .map_err(|error| format!("failed to initialize the Windows file picker: {error}"))?;
-        let _com_apartment = ComApartment;
-
-        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-            .map_err(|error| format!("failed to create the Windows file picker: {error}"))?;
-
-        dialog
-            .SetTitle(&HSTRING::from("Select a folder for NaniteClip"))
-            .map_err(|error| format!("failed to set the Windows file picker title: {error}"))?;
-
-        let options = dialog
-            .GetOptions()
-            .map_err(|error| format!("failed to read Windows file picker options: {error}"))?;
-        dialog
-            .SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)
-            .map_err(|error| format!("failed to configure the Windows file picker: {error}"))?;
-
-        if let Some(initial_directory) = initial_directory.as_ref() {
-            let shell_item: IShellItem =
-                SHCreateItemFromParsingName(&HSTRING::from(initial_directory), None).map_err(
-                    |error| {
-                        format!("failed to resolve the initial directory for the picker: {error}")
-                    },
-                )?;
-            dialog
-                .SetFolder(&shell_item)
-                .map_err(|error| format!("failed to set the initial picker directory: {error}"))?;
-            dialog
-                .SetDefaultFolder(&shell_item)
-                .map_err(|error| format!("failed to set the default picker directory: {error}"))?;
-        }
-
-        match dialog.Show(None) {
-            Ok(()) => {}
-            Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
-                return Ok(None);
-            }
-            Err(error) => {
-                return Err(format!("Windows folder picker failed: {error}"));
-            }
-        }
-
-        let selected_item = dialog
-            .GetResult()
-            .map_err(|error| format!("failed to read the selected folder: {error}"))?;
-        let selected_path = selected_item
-            .GetDisplayName(SIGDN_FILESYSPATH)
-            .map_err(|error| format!("failed to resolve the selected folder path: {error}"))?;
-        let path = selected_path
-            .to_string()
-            .map_err(|error| format!("selected folder path was not valid UTF-16: {error}"))?;
-        CoTaskMemFree(Some(selected_path.0.cast()));
-
-        if path.trim().is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(path))
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn pick_toml_file_with_windows_shell_dialog(
-    initial_directory: Option<String>,
-    title: String,
-) -> Result<Option<String>, String> {
-    use windows::Win32::Foundation::ERROR_CANCELLED;
-    use windows::Win32::System::Com::{
-        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-        CoInitializeEx, CoTaskMemFree, CoUninitialize,
-    };
-    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{
-        FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FileOpenDialog, IFileOpenDialog,
-        IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
-    };
-    use windows::core::{HRESULT, HSTRING, PCWSTR};
-
-    struct ComApartment;
-
-    impl Drop for ComApartment {
-        fn drop(&mut self) {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
-            .ok()
-            .map_err(|error| format!("failed to initialize the Windows file picker: {error}"))?;
-        let _com_apartment = ComApartment;
-
-        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-            .map_err(|error| format!("failed to create the Windows file picker: {error}"))?;
-
-        dialog
-            .SetTitle(&HSTRING::from(title))
-            .map_err(|error| format!("failed to set the Windows file picker title: {error}"))?;
-
-        let filter_name = HSTRING::from("TOML files");
-        let filter_spec = HSTRING::from("*.toml");
-        let file_types = [COMDLG_FILTERSPEC {
-            pszName: PCWSTR(filter_name.as_ptr()),
-            pszSpec: PCWSTR(filter_spec.as_ptr()),
-        }];
-        dialog
-            .SetFileTypes(&file_types)
-            .map_err(|error| format!("failed to set the Windows file picker filter: {error}"))?;
-
-        let options = dialog
-            .GetOptions()
-            .map_err(|error| format!("failed to read Windows file picker options: {error}"))?;
-        dialog
-            .SetOptions(options | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM)
-            .map_err(|error| format!("failed to configure the Windows file picker: {error}"))?;
-
-        if let Some(initial_directory) = initial_directory.as_ref() {
-            let shell_item: IShellItem =
-                SHCreateItemFromParsingName(&HSTRING::from(initial_directory), None).map_err(
-                    |error| {
-                        format!("failed to resolve the initial directory for the picker: {error}")
-                    },
-                )?;
-            dialog
-                .SetFolder(&shell_item)
-                .map_err(|error| format!("failed to set the initial picker directory: {error}"))?;
-            dialog
-                .SetDefaultFolder(&shell_item)
-                .map_err(|error| format!("failed to set the default picker directory: {error}"))?;
-        }
-
-        match dialog.Show(None) {
-            Ok(()) => {}
-            Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
-                return Ok(None);
-            }
-            Err(error) => {
-                return Err(format!("Windows file picker failed: {error}"));
-            }
-        }
-
-        let selected_item = dialog
-            .GetResult()
-            .map_err(|error| format!("failed to read the selected file: {error}"))?;
-        let selected_path = selected_item
-            .GetDisplayName(SIGDN_FILESYSPATH)
-            .map_err(|error| format!("failed to resolve the selected file path: {error}"))?;
-        let path = selected_path
-            .to_string()
-            .map_err(|error| format!("selected file path was not valid UTF-16: {error}"))?;
-        CoTaskMemFree(Some(selected_path.0.cast()));
-
-        if path.trim().is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(path))
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn save_file_with_windows_shell_dialog(
-    initial_directory: Option<String>,
-    suggested_name: Option<String>,
-    title: String,
-) -> Result<Option<String>, String> {
-    use windows::Win32::Foundation::ERROR_CANCELLED;
-    use windows::Win32::System::Com::{
-        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
-        CoInitializeEx, CoTaskMemFree, CoUninitialize,
-    };
-    use windows::Win32::UI::Shell::{
-        FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FileSaveDialog,
-        IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
-    };
-    use windows::core::{HRESULT, HSTRING};
-
-    struct ComApartment;
-
-    impl Drop for ComApartment {
-        fn drop(&mut self) {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-
-    unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
-            .ok()
-            .map_err(|error| format!("failed to initialize the Windows save picker: {error}"))?;
-        let _com_apartment = ComApartment;
-
-        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
-            .map_err(|error| format!("failed to create the Windows save picker: {error}"))?;
-
-        dialog
-            .SetTitle(&HSTRING::from(title))
-            .map_err(|error| format!("failed to set the Windows save picker title: {error}"))?;
-
-        let options = dialog
-            .GetOptions()
-            .map_err(|error| format!("failed to read Windows save picker options: {error}"))?;
-        dialog
-            .SetOptions(options | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT)
-            .map_err(|error| format!("failed to configure the Windows save picker: {error}"))?;
-
-        if let Some(initial_directory) = initial_directory.as_ref() {
-            let shell_item: IShellItem =
-                SHCreateItemFromParsingName(&HSTRING::from(initial_directory), None).map_err(
-                    |error| {
-                        format!("failed to resolve the initial directory for the picker: {error}")
-                    },
-                )?;
-            dialog
-                .SetFolder(&shell_item)
-                .map_err(|error| format!("failed to set the initial picker directory: {error}"))?;
-            dialog
-                .SetDefaultFolder(&shell_item)
-                .map_err(|error| format!("failed to set the default picker directory: {error}"))?;
-        }
-
-        if let Some(suggested_name) = suggested_name.as_ref() {
-            dialog
-                .SetFileName(&HSTRING::from(suggested_name))
-                .map_err(|error| format!("failed to set the suggested file name: {error}"))?;
-        }
-
-        dialog
-            .SetDefaultExtension(&HSTRING::from("toml"))
-            .map_err(|error| format!("failed to set the save picker extension: {error}"))?;
-
-        match dialog.Show(None) {
-            Ok(()) => {}
-            Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
-                return Ok(None);
-            }
-            Err(error) => {
-                return Err(format!("Windows save picker failed: {error}"));
-            }
-        }
-
-        let selected_item = dialog
-            .GetResult()
-            .map_err(|error| format!("failed to read the selected save path: {error}"))?;
-        let selected_path = selected_item
-            .GetDisplayName(SIGDN_FILESYSPATH)
-            .map_err(|error| format!("failed to resolve the selected save path: {error}"))?;
-        let path = selected_path
-            .to_string()
-            .map_err(|error| format!("selected save path was not valid UTF-16: {error}"))?;
-        CoTaskMemFree(Some(selected_path.0.cast()));
-
-        if path.trim().is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(path))
-        }
-    }
-}
-
-trait PresetValue: Sized {
-    fn from_value(value: &str) -> Self;
-    fn config_value(self) -> Option<&'static str>;
-}
-
-fn apply_preset_string_selection<T>(current_value: &str, preset: T) -> String
-where
-    T: PresetValue + PartialEq + Copy,
-{
-    match preset.config_value() {
-        Some(value) => value.to_string(),
-        None if T::from_value(current_value) == preset => current_value.to_string(),
-        None => String::new(),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureBackendPreset {
-    Gsr,
-    Obs,
-}
-
-impl CaptureBackendPreset {
-    #[cfg(target_os = "linux")]
-    const ALL: [Self; 2] = [Self::Gsr, Self::Obs];
-    #[cfg(not(target_os = "linux"))]
-    const ALL: [Self; 1] = [Self::Obs];
-
-    fn all() -> &'static [Self] {
-        &Self::ALL
-    }
-}
-
-impl PresetValue for CaptureBackendPreset {
-    fn from_value(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "obs" => Self::Obs,
-            _ => Self::Gsr,
-        }
-    }
-
-    fn config_value(self) -> Option<&'static str> {
-        Some(match self {
-            Self::Gsr => "gsr",
-            Self::Obs => "obs",
-        })
-    }
-}
-
-impl std::fmt::Display for CaptureBackendPreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Gsr => "gpu-screen-recorder",
-            Self::Obs => "OBS Studio",
-        })
-    }
-}
-
-impl std::fmt::Display for ObsManagementMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(obs_management_mode_label(*self))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureSourcePreset {
-    Automatic,
-    Portal,
-    Custom,
-}
-
-impl CaptureSourcePreset {
-    const ALL: [Self; 3] = [Self::Automatic, Self::Portal, Self::Custom];
-}
-
-impl PresetValue for CaptureSourcePreset {
-    fn from_value(value: &str) -> Self {
-        let value = value.trim();
-        if value.is_empty()
-            || value.eq_ignore_ascii_case("planetside2")
-            || value.eq_ignore_ascii_case("ps2")
-            || value.eq_ignore_ascii_case("auto")
-            || value.eq_ignore_ascii_case("screen")
-        {
-            Self::Automatic
-        } else if value.eq_ignore_ascii_case("portal") {
-            Self::Portal
-        } else {
-            Self::Custom
-        }
-    }
-
-    fn config_value(self) -> Option<&'static str> {
-        match self {
-            Self::Automatic => Some("planetside2"),
-            Self::Portal => Some("portal"),
-            Self::Custom => None,
-        }
-    }
-}
-
-impl std::fmt::Display for CaptureSourcePreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Automatic => "Automatic (PlanetSide 2)",
-            Self::Portal => "Portal/Desktop Picker",
-            Self::Custom => "Custom",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodecPreset {
-    Auto,
-    H264,
-    Hevc,
-    Av1,
-    Vp8,
-    Vp9,
-    HevcHdr,
-    Hevc10Bit,
-    Av1Hdr,
-    Av110Bit,
-    Custom,
-}
-
-impl CodecPreset {
-    const ALL: [Self; 11] = [
-        Self::Auto,
-        Self::H264,
-        Self::Hevc,
-        Self::Av1,
-        Self::Vp8,
-        Self::Vp9,
-        Self::HevcHdr,
-        Self::Hevc10Bit,
-        Self::Av1Hdr,
-        Self::Av110Bit,
-        Self::Custom,
-    ];
-}
-
-impl PresetValue for CodecPreset {
-    fn from_value(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "auto" => Self::Auto,
-            "h264" => Self::H264,
-            "h265" | "hevc" => Self::Hevc,
-            "av1" => Self::Av1,
-            "vp8" => Self::Vp8,
-            "vp9" => Self::Vp9,
-            "hevc_hdr" => Self::HevcHdr,
-            "hevc_10bit" => Self::Hevc10Bit,
-            "av1_hdr" => Self::Av1Hdr,
-            "av1_10bit" => Self::Av110Bit,
-            _ => Self::Custom,
-        }
-    }
-
-    fn config_value(self) -> Option<&'static str> {
-        match self {
-            Self::Auto => Some("auto"),
-            Self::H264 => Some("h264"),
-            Self::Hevc => Some("hevc"),
-            Self::Av1 => Some("av1"),
-            Self::Vp8 => Some("vp8"),
-            Self::Vp9 => Some("vp9"),
-            Self::HevcHdr => Some("hevc_hdr"),
-            Self::Hevc10Bit => Some("hevc_10bit"),
-            Self::Av1Hdr => Some("av1_hdr"),
-            Self::Av110Bit => Some("av1_10bit"),
-            Self::Custom => None,
-        }
-    }
-}
-
-impl std::fmt::Display for CodecPreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Auto => "Auto",
-            Self::H264 => "H.264",
-            Self::Hevc => "HEVC / H.265",
-            Self::Av1 => "AV1",
-            Self::Vp8 => "VP8",
-            Self::Vp9 => "VP9",
-            Self::HevcHdr => "HEVC HDR",
-            Self::Hevc10Bit => "HEVC 10-bit",
-            Self::Av1Hdr => "AV1 HDR",
-            Self::Av110Bit => "AV1 10-bit",
-            Self::Custom => "Custom",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContainerPreset {
-    Mkv,
-    Mp4,
-    Mov,
-    Custom,
-}
-
-impl ContainerPreset {
-    const ALL: [Self; 4] = [Self::Mkv, Self::Mp4, Self::Mov, Self::Custom];
-}
-
-impl PresetValue for ContainerPreset {
-    fn from_value(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "mkv" => Self::Mkv,
-            "mp4" => Self::Mp4,
-            "mov" => Self::Mov,
-            _ => Self::Custom,
-        }
-    }
-
-    fn config_value(self) -> Option<&'static str> {
-        match self {
-            Self::Mkv => Some("mkv"),
-            Self::Mp4 => Some("mp4"),
-            Self::Mov => Some("mov"),
-            Self::Custom => None,
-        }
-    }
-}
-
-impl std::fmt::Display for ContainerPreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Mkv => "MKV",
-            Self::Mp4 => "MP4",
-            Self::Mov => "MOV",
-            Self::Custom => "Custom",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObsContainerPreset {
-    Mkv,
-    Mp4,
-    Mov,
-    Flv,
-    Ts,
-}
-
-impl ObsContainerPreset {
-    const ALL: [Self; 5] = [Self::Mkv, Self::Mp4, Self::Mov, Self::Flv, Self::Ts];
-
-    fn from_value(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "mp4" => Self::Mp4,
-            "mov" => Self::Mov,
-            "flv" => Self::Flv,
-            "ts" => Self::Ts,
-            _ => Self::Mkv,
-        }
-    }
-
-    fn config_value(self) -> &'static str {
-        match self {
-            Self::Mkv => "mkv",
-            Self::Mp4 => "mp4",
-            Self::Mov => "mov",
-            Self::Flv => "flv",
-            Self::Ts => "ts",
-        }
-    }
-}
-
-impl std::fmt::Display for ObsContainerPreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Mkv => "MKV",
-            Self::Mp4 => "MP4",
-            Self::Mov => "MOV",
-            Self::Flv => "FLV",
-            Self::Ts => "TS",
-        })
-    }
 }

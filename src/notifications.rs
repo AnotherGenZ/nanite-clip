@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "windows")]
 use windows::core::Interface;
 
+use crate::command_runner;
 use crate::rules::ClipLength;
 
 #[cfg(target_os = "linux")]
@@ -86,12 +87,14 @@ impl NotificationCenter {
     fn spawn_notification_process(&mut self, text: &str, icon: Option<&str>) {
         let mut command = notification_command(text, icon);
 
-        match command.spawn() {
+        match command_runner::spawn(&mut command) {
             Ok(child) => {
                 self.active_notification = Some(child);
             }
             Err(error) => {
-                if error.kind() == io::ErrorKind::NotFound {
+                if let command_runner::CommandError::Spawn { source, .. } = &error
+                    && source.kind() == io::ErrorKind::NotFound
+                {
                     self.notify_available = false;
                 }
                 tracing::warn!("Failed to launch {}: {error}", notification_backend_name());

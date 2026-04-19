@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::command_runner::{self, CommandError};
+
 pub fn open_path(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("Clip file does not exist: {}", path.display()));
@@ -34,9 +36,11 @@ fn spawn_platform_opener(path: &Path) -> Result<(), String> {
         let mut command = Command::new(program);
         command.args(extra_args).arg(path);
 
-        match command.spawn() {
+        match command_runner::spawn(&mut command) {
             Ok(_) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(CommandError::Spawn { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
                 last_error = Some(format!("{program} is not installed"));
             }
             Err(error) => {
@@ -60,9 +64,11 @@ fn spawn_platform_url_opener(url: &str) -> Result<(), String> {
         let mut command = Command::new(program);
         command.args(extra_args).arg(url);
 
-        match command.spawn() {
+        match command_runner::spawn(&mut command) {
             Ok(_) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(CommandError::Spawn { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
                 last_error = Some(format!("{program} is not installed"));
             }
             Err(error) => {
@@ -101,9 +107,11 @@ fn spawn_platform_command(program: &str, args: &[String], display: &str) -> Resu
             command.args(["sh", "-lc", display]);
         }
 
-        match command.spawn() {
+        match command_runner::spawn(&mut command) {
             Ok(_) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(CommandError::Spawn { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
                 last_error = Some(format!("{terminal} is not installed"));
             }
             Err(error) => {
@@ -114,9 +122,9 @@ fn spawn_platform_command(program: &str, args: &[String], display: &str) -> Resu
         }
     }
 
-    Command::new(program)
-        .args(args)
-        .spawn()
+    let mut command = Command::new(program);
+    command.args(args);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| {
             let launcher_error =
@@ -127,37 +135,36 @@ fn spawn_platform_command(program: &str, args: &[String], display: &str) -> Resu
 
 #[cfg(target_os = "macos")]
 fn spawn_platform_opener(path: &Path) -> Result<(), String> {
-    Command::new("open")
-        .arg(path)
-        .spawn()
+    let mut command = Command::new("open");
+    command.arg(path);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("Failed to launch open for {}: {error}", path.display()))
 }
 
 #[cfg(target_os = "macos")]
 fn spawn_platform_url_opener(url: &str) -> Result<(), String> {
-    Command::new("open")
-        .arg(url)
-        .spawn()
+    let mut command = Command::new("open");
+    command.arg(url);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("Failed to launch open for {url}: {error}"))
 }
 
 #[cfg(target_os = "macos")]
 fn spawn_platform_command(program: &str, args: &[String], display: &str) -> Result<(), String> {
-    Command::new(program)
-        .args(args)
-        .spawn()
+    let mut command = Command::new(program);
+    command.args(args);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("Failed to launch `{display}`: {error}"))
 }
 
 #[cfg(target_os = "windows")]
 fn spawn_platform_opener(path: &Path) -> Result<(), String> {
-    Command::new("cmd")
-        .args(["/C", "start", ""])
-        .arg(path)
-        .spawn()
+    let mut command = Command::new("cmd");
+    command.args(["/C", "start", ""]).arg(path);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| {
             format!(
@@ -169,19 +176,18 @@ fn spawn_platform_opener(path: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn spawn_platform_url_opener(url: &str) -> Result<(), String> {
-    Command::new("cmd")
-        .args(["/C", "start", ""])
-        .arg(url)
-        .spawn()
+    let mut command = Command::new("cmd");
+    command.args(["/C", "start", ""]).arg(url);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("Failed to launch the default app for {url}: {error}"))
 }
 
 #[cfg(target_os = "windows")]
 fn spawn_platform_command(program: &str, args: &[String], display: &str) -> Result<(), String> {
-    Command::new(program)
-        .args(args)
-        .spawn()
+    let mut command = Command::new(program);
+    command.args(args);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("Failed to launch `{display}`: {error}"))
 }

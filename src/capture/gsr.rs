@@ -16,6 +16,7 @@ use crate::capture::{
     CaptureSession, DiscoveredAudioKind, DiscoveredAudioSource, RecoveryHint, ResolvedAudioSource,
     SavePollResult,
 };
+use crate::command_runner;
 use crate::config::AudioSourceKind;
 use crate::process::{CaptureSourcePlan, CaptureTarget, DisplayServer};
 use crate::recorder::VideoResolution;
@@ -135,8 +136,7 @@ impl CaptureBackend for GsrBackend {
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let child = cmd
-            .spawn()
+        let child = command_runner::spawn(&mut cmd)
             .map_err(|error| CaptureError::SpawnFailed(error.to_string()))?;
 
         if let Some(stdout) = child.stdout.as_ref() {
@@ -418,10 +418,9 @@ impl GsrCaptureSession {
 }
 
 fn list_audio_devices() -> Result<Vec<DiscoveredAudioSource>, AudioSourceError> {
-    let output = Command::new("gpu-screen-recorder")
-        .arg("--list-audio-devices")
-        .output()
-        .map_err(map_spawn_error)?;
+    let output =
+        command_runner::output(Command::new("gpu-screen-recorder").arg("--list-audio-devices"))
+            .map_err(map_spawn_error)?;
     parse_audio_discovery_output(output, DiscoveredAudioKind::Device)
 }
 
@@ -442,10 +441,9 @@ fn list_application_audio() -> Result<Vec<DiscoveredAudioSource>, AudioSourceErr
 }
 
 fn list_application_audio_via_gsr() -> Result<Vec<DiscoveredAudioSource>, AudioSourceError> {
-    let output = Command::new("gpu-screen-recorder")
-        .arg("--list-application-audio")
-        .output()
-        .map_err(map_spawn_error)?;
+    let output =
+        command_runner::output(Command::new("gpu-screen-recorder").arg("--list-application-audio"))
+            .map_err(map_spawn_error)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -755,11 +753,14 @@ fn translate_kind_to_gsr(
     }
 }
 
-fn map_spawn_error(error: std::io::Error) -> AudioSourceError {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        AudioSourceError::RecorderNotFound
-    } else {
-        AudioSourceError::DiscoveryFailed(error.to_string())
+fn map_spawn_error(error: command_runner::CommandError) -> AudioSourceError {
+    match error {
+        command_runner::CommandError::Spawn { source, .. }
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            AudioSourceError::RecorderNotFound
+        }
+        other => AudioSourceError::DiscoveryFailed(other.to_string()),
     }
 }
 

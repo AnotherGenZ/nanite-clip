@@ -2,6 +2,8 @@
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "windows")]
+use crate::command_runner;
 use crate::config::{LaunchAtLoginConfig, LaunchAtLoginProvider};
 
 const AUTOSTART_DESKTOP_FILE_NAME: &str = "nanite-clip.desktop";
@@ -350,8 +352,7 @@ fn run_windows_powershell(script: &str) -> Result<(), String> {
         .arg(script)
         .creation_flags(CREATE_NO_WINDOW);
 
-    let output = command
-        .output()
+    let output = command_runner::output(&mut command)
         .map_err(|error| format!("failed to start PowerShell: {error}"))?;
 
     if output.status.success() {

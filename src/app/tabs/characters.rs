@@ -65,13 +65,13 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::Remove(idx) => {
             if idx < app.config.characters.len() {
                 let removed = app.config.characters.remove(idx);
-                app.resolving_characters.remove(&removed.name);
+                app.rules.resolving_characters.remove(&removed.name);
                 let _ = app.config.save();
             }
             iced::Task::none()
         }
         Message::Resolved(name, resolved) => {
-            app.resolving_characters.remove(&name);
+            app.rules.resolving_characters.remove(&name);
 
             let mut changed = false;
             for character in app.config.characters.iter_mut().filter(|c| c.name == name) {
@@ -96,14 +96,14 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 let _ = app.config.save();
             }
 
-            if changed && matches!(app.state, AppState::WaitingForLogin) {
+            if changed && matches!(app.runtime.lifecycle, AppState::WaitingForLogin) {
                 app.check_online_status()
             } else {
                 iced::Task::none()
             }
         }
         Message::ResolveFailed(name, err) => {
-            app.resolving_characters.remove(&name);
+            app.rules.resolving_characters.remove(&name);
             tracing::error!("Failed to resolve {name}: {err}");
             iced::Task::none()
         }
@@ -117,7 +117,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         .iter()
         .filter(|c| c.character_id.is_some() && c.world_id.is_some() && c.faction_id.is_some())
         .count();
-    let resolving_count = app.resolving_characters.len();
+    let resolving_count = app.rules.resolving_characters.len();
     let total = app.config.characters.len();
 
     let header = page_header("Characters")
@@ -201,7 +201,7 @@ fn character_card<'a>(
 ) -> Element<'a, Message> {
     let (status_label, status_tone) = match character.character_id {
         Some(id) => (format!("ID: {id}"), BadgeTone::Success),
-        None if app.resolving_characters.contains(&character.name) => {
+        None if app.rules.resolving_characters.contains(&character.name) => {
             ("Resolving...".into(), BadgeTone::Warning)
         }
         None => ("Unresolved".into(), BadgeTone::Destructive),

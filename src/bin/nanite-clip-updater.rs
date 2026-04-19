@@ -3,6 +3,9 @@
     windows_subsystem = "windows"
 )]
 
+#[allow(dead_code)]
+#[path = "../command_runner.rs"]
+mod command_runner;
 #[path = "../update/helper_runner.rs"]
 mod helper_runner;
 #[path = "../update/helper_shared.rs"]

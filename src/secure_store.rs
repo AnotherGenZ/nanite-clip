@@ -13,6 +13,8 @@ use windows::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
 };
 
+use crate::command_runner;
+
 const SERVICE_LABEL: &str = "nanite-clip";
 #[cfg(target_os = "windows")]
 const WINDOWS_DPAPI_PREFIX: &str = "dpapi:";
@@ -89,7 +91,7 @@ impl SecureStore {
     pub fn new() -> Self {
         let backend = if cfg!(target_os = "windows") {
             SecureStoreBackend::WindowsDpapi
-        } else if command_available("secret-tool") {
+        } else if command_runner::command_available("secret-tool") {
             SecureStoreBackend::SecretTool
         } else {
             SecureStoreBackend::LocalFile
@@ -160,10 +162,11 @@ impl SecureStore {
         for entry_name in
             std::iter::once(key.attribute_name()).chain(key.legacy_entry_names().iter().copied())
         {
-            let output = Command::new("secret-tool")
+            let mut command = Command::new("secret-tool");
+            command
                 .args(["lookup", "service", SERVICE_LABEL, "entry"])
-                .arg(entry_name)
-                .output()
+                .arg(entry_name);
+            let output = command_runner::output(&mut command)
                 .map_err(|error| format!("failed to query secret-tool: {error}"))?;
 
             if output.status.success() {
@@ -201,7 +204,8 @@ impl SecureStore {
     }
 
     fn set_secret_tool(&self, key: SecretKey, value: &str) -> Result<(), String> {
-        let mut child = Command::new("secret-tool")
+        let mut command = Command::new("secret-tool");
+        command
             .args([
                 "store",
                 "--label",
@@ -211,8 +215,8 @@ impl SecureStore {
                 "entry",
             ])
             .arg(key.attribute_name())
-            .stdin(std::process::Stdio::piped())
-            .spawn()
+            .stdin(std::process::Stdio::piped());
+        let mut child = command_runner::spawn(&mut command)
             .map_err(|error| format!("failed to start secret-tool store: {error}"))?;
 
         use std::io::Write;
@@ -249,10 +253,11 @@ impl SecureStore {
         for entry_name in
             std::iter::once(key.attribute_name()).chain(key.legacy_entry_names().iter().copied())
         {
-            let status = Command::new("secret-tool")
+            let mut command = Command::new("secret-tool");
+            command
                 .args(["clear", "service", SERVICE_LABEL, "entry"])
-                .arg(entry_name)
-                .status()
+                .arg(entry_name);
+            let status = command_runner::status(&mut command)
                 .map_err(|error| format!("failed to start secret-tool clear: {error}"))?;
 
             if !status.success() && status.code() != Some(1) {
@@ -434,15 +439,6 @@ fn credentials_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "nanite-clip")
         .map(|dirs| dirs.config_dir().join("credentials.json"))
         .unwrap_or_else(|| PathBuf::from("nanite-clip-credentials.json"))
-}
-
-fn command_available(program: &str) -> bool {
-    Command::new(program)
-        .arg("--help")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
 }
 
 #[cfg(target_os = "windows")]

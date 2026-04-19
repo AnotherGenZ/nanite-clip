@@ -161,7 +161,7 @@ pub enum BackgroundJobSuccess {
         message: String,
     },
     AppUpdateDownload {
-        prepared: PreparedUpdate,
+        prepared: Box<PreparedUpdate>,
         message: String,
     },
 }
@@ -171,7 +171,7 @@ pub enum BackgroundJobNotification {
     Updated(BackgroundJobRecord),
     Finished {
         record: BackgroundJobRecord,
-        success: Option<BackgroundJobSuccess>,
+        success: Option<Box<BackgroundJobSuccess>>,
         error: Option<String>,
     },
 }
@@ -244,7 +244,7 @@ enum ManagerEvent {
     },
     Finished {
         id: BackgroundJobId,
-        success: BackgroundJobSuccess,
+        success: Box<BackgroundJobSuccess>,
     },
     Failed {
         id: BackgroundJobId,
@@ -391,7 +391,10 @@ impl BackgroundJobManager {
                         success = ?success,
                         "Background job succeeded"
                     );
-                    let _ = tx.send(ManagerEvent::Finished { id, success });
+                    let _ = tx.send(ManagerEvent::Finished {
+                        id,
+                        success: Box::new(success),
+                    });
                 }
                 Err(error) if cancelled.load(Ordering::SeqCst) => {
                     warn!(
@@ -474,7 +477,7 @@ impl BackgroundJobManager {
                         } else {
                             BackgroundJobState::Succeeded
                         };
-                        entry.record.detail = Some(match &success {
+                        entry.record.detail = Some(match success.as_ref() {
                             BackgroundJobSuccess::StorageTiering { message, .. }
                             | BackgroundJobSuccess::Upload { message, .. }
                             | BackgroundJobSuccess::Montage { message, .. }
@@ -592,9 +595,10 @@ mod tests {
                     notification,
                     BackgroundJobNotification::Finished {
                         record,
-                        success: Some(BackgroundJobSuccess::StorageTiering { .. }),
+                        success: Some(success),
                         ..
                     } if record.id == id
+                        && matches!(success.as_ref(), BackgroundJobSuccess::StorageTiering { .. })
                 )
             }) {
                 saw_finished = true;

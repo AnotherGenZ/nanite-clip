@@ -1,4 +1,8 @@
+mod helpers;
+mod runtime;
 mod shared;
+mod state;
+mod subscriptions;
 mod tabs;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -6,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, NaiveDate, Utc};
-use iced::{Element, Length, Subscription, Task, Theme, event, window};
+use chrono::{DateTime, Utc};
+use iced::{Element, Length, Subscription, Task, Theme, window};
 use semver::Version;
 use tracing::{info, warn};
 
@@ -17,9 +21,8 @@ use crate::background_jobs::{
 };
 use crate::capture;
 use crate::census::{self, AlertLifecycle, AlertUpdate, StreamEvent};
-use crate::config::{
-    AudioSourceConfig, Config, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
-};
+use crate::config::AudioSourceConfig;
+use crate::config::Config;
 use crate::db::{
     AlertInstanceRecord, CharacterOutfitCacheEntry, ClipAudioTrackDraft, ClipDetailRecord,
     ClipDraft, ClipEventContribution, ClipFilterOptions, ClipFilters, ClipOrigin,
@@ -32,9 +35,9 @@ use crate::honu::HonuClient;
 use crate::hotkey::{HotkeyEvent, HotkeyManager};
 use crate::montage::MontageClip;
 use crate::notifications::NotificationCenter;
+use crate::platform::PlatformServices;
 use crate::post_process::{
-    self, FfmpegCapabilities, PostProcessRequest, PostProcessResult, SavedPostProcessMetadata,
-    TrimSpec,
+    self, PostProcessRequest, PostProcessResult, SavedPostProcessMetadata, TrimSpec,
 };
 use crate::process;
 use crate::profile_transfer::{
@@ -44,9 +47,9 @@ use crate::recorder::{Recorder, SavePollResult, VideoResolution};
 use crate::rules::engine::RuleEngine;
 use crate::rules::switching::choose_runtime_rule;
 use crate::rules::{ClassifiedEvent, ClipAction, ClipActionLifecycle, ClipLength, RuleProfile};
-use crate::secure_store::{SecretKey, SecureStore};
+use crate::secure_store::SecretKey;
 use crate::storage_tiering::{self, StorageTier};
-use crate::tray::{TrayController, TrayEvent, TrayProfileOption, TraySnapshot};
+use crate::tray::{TrayEvent, TrayProfileOption, TraySnapshot};
 use crate::ui::app::{column, container, row, scrollable, stack, text};
 use crate::ui::layout::tabs::{Tab as NavTab, tabs as nav_tabs};
 use crate::ui::overlay::modal::modal;
@@ -58,181 +61,37 @@ use crate::update::{
 use crate::uploads::{
     self, CopypartyUploadCredentials, YouTubeOAuthClient, YouTubeUploadCredentials,
 };
+use helpers::*;
+use state::{
+    ClipLibraryState, RuleEditorState, RuntimeState, SettingsState, StatsState, UpdateUiState,
+};
+
+pub(in crate::app) use helpers::{
+    audio_source_drafts_from_config, clip_post_process_block_reason, release_policy_summary,
+    system_update_plan_summary,
+};
 
 pub struct App {
     config: Config,
     view: View,
-    state: AppState,
     recorder: Recorder,
     notifications: NotificationCenter,
     toasts: ToastStack,
     rule_engine: RuleEngine,
     process_watcher: Arc<dyn process::GameProcessWatcher>,
-    hotkeys: HotkeyManager,
-    tray: Option<TrayController>,
-    main_window_id: Option<window::Id>,
     clip_store: Option<ClipStore>,
     clip_store_notice: Option<String>,
     event_log: EventLog,
-    rule_vehicle_options: Vec<tabs::rules::LookupOption>,
-    rule_vehicle_browse_categories:
-        BTreeMap<tabs::rules::VehicleBrowseKey, tabs::rules::VehicleBrowseCategory>,
-    rule_weapon_options: Vec<tabs::rules::WeaponLookupOption>,
-    rule_weapon_browse_groups:
-        BTreeMap<tabs::rules::WeaponBrowseKey, tabs::rules::WeaponBrowseGroup>,
-    rule_weapon_browse_categories:
-        BTreeMap<tabs::rules::WeaponBrowseKey, tabs::rules::WeaponBrowseCategory>,
-    rule_weapon_browse_factions:
-        BTreeMap<tabs::rules::WeaponBrowseKey, tabs::rules::WeaponBrowseFaction>,
-    rule_filter_text_drafts: BTreeMap<tabs::rules::FilterTextDraftKey, String>,
-    rule_drag_state: Option<tabs::rules::RuleDragState>,
-    recent_clips: Vec<ClipRecord>,
-    clip_history_source: Vec<ClipRecord>,
-    clip_history: Vec<ClipRecord>,
-    clip_filter_options: ClipFilterOptions,
-    selected_clip_id: Option<i64>,
-    selected_clip_detail: Option<ClipDetailRecord>,
-    clip_detail_loading: bool,
-    clip_filters: ClipFilters,
-    clip_query_revision: u64,
-    stats_snapshot: Option<ClipStatsSnapshot>,
-    stats_loading: bool,
-    stats_error: Option<String>,
-    stats_revision: u64,
-    stats_time_range: tabs::stats::StatsTimeRange,
-    stats_collapsed_sections: Vec<tabs::stats::StatsSection>,
-    stats_last_refreshed_at: Option<Instant>,
-    clip_sort_column: tabs::clips::ClipSortColumn,
-    clip_sort_descending: bool,
-    clip_history_page: usize,
-    clip_history_page_size: usize,
-    clip_history_viewport: Option<tabs::clips::HistoryViewportState>,
-    clip_advanced_filters_open: bool,
-    clip_search_revision: u64,
-    clip_raw_event_filter: String,
-    clip_collapsed_detail_sections: Vec<tabs::clips::DetailSection>,
-    pending_clip_delete: Option<PendingClipDelete>,
-    deleting_clip_id: Option<i64>,
-    clip_error: Option<String>,
-    clip_error_expires_at: Option<Instant>,
-    clip_filter_feedback: Option<String>,
-    clip_filter_feedback_expires_at: Option<Instant>,
-    next_clip_sequence: u64,
-    pending_save_sequences: VecDeque<u64>,
-    pending_clip_links: BTreeMap<u64, PendingClipLink>,
-    hotkey_config_generation: u64,
-    settings_feedback: Option<String>,
-    settings_feedback_expires_at: Option<Instant>,
-    status_feedback: Option<String>,
-    status_feedback_expires_at: Option<Instant>,
-    rules_feedback: Option<String>,
-    rules_feedback_expires_at: Option<Instant>,
-    pending_profile_import: Option<PendingProfileImport>,
-    pending_profile_import_shake_started_at: Option<Instant>,
-    pending_rule_import: Option<PendingRuleImport>,
-    pending_rule_import_shake_started_at: Option<Instant>,
-    resolving_characters: BTreeSet<String>,
-    resolving_lookups: BTreeSet<(LookupKind, i64)>,
-    selected_rule_id: Option<String>,
-    rules_sub_view: tabs::rules::RulesSubView,
-    settings_sub_view: tabs::settings::SettingsSubView,
-    rules_expanded_events: HashSet<(String, usize)>,
-    rules_expanded_filters: HashSet<(String, usize)>,
+    platform: PlatformServices,
     honu_client: HonuClient,
-    secure_store: SecureStore,
     background_jobs: BackgroundJobManager,
-    honu_session_id: Option<i64>,
-    active_clip_capture: Option<ActiveClipCapture>,
-    tracked_alerts: BTreeMap<String, AlertInstanceRecord>,
-    manual_profile_override_profile_id: Option<String>,
-    last_auto_switch_rule_id: Option<String>,
-    active_session: Option<MonitoringSession>,
-    last_session_summary: Option<SessionSummary>,
-    portal_capture_recovery_notified: bool,
-    startup_probe_due_at: Option<Instant>,
-    startup_probe_pending_result: bool,
-    startup_probe_resolution: Option<VideoResolution>,
-    ffmpeg_capabilities: FfmpegCapabilities,
-    obs_connection_status: Option<capture::ObsConnectionStatus>,
-    pending_recorder_start: Option<PendingRecorderStart>,
-    next_recorder_start_id: u64,
-    obs_restart_requires_manual_restart: bool,
-    update_state: UpdateState,
-    update_details_modal_open: bool,
-    update_details_log_text: Option<String>,
-    update_details_log_error: Option<String>,
-    update_details_log_loading: bool,
-
-    // UI state
     new_character_name: String,
-    settings_launch_at_login: bool,
-    settings_auto_start_monitoring: bool,
-    settings_start_minimized: bool,
-    settings_minimize_to_tray: bool,
-    settings_update_auto_check: bool,
-    settings_update_channel: UpdateChannel,
-    settings_update_install_behavior: UpdateInstallBehavior,
-    settings_selected_update_action: UpdatePrimaryAction,
-    settings_selected_rollback_release: Option<update::AvailableRelease>,
-    pending_hotkey_binding_label: Option<String>,
-    pending_hotkey_success_toast: bool,
-    settings_service_id: String,
-    settings_capture_backend: String,
-    settings_capture_source: String,
-    settings_save_dir: String,
-    settings_framerate: String,
-    settings_codec: String,
-    settings_quality: String,
-    settings_audio_sources: Vec<AudioSourceDraft>,
-    settings_discovered_audio_sources: Vec<capture::DiscoveredAudioSource>,
-    settings_selected_device_audio_source: Option<tabs::settings::AvailableAudioSourceOption>,
-    settings_selected_application_audio_source: Option<tabs::settings::AvailableAudioSourceOption>,
-    settings_audio_discovery_running: bool,
-    settings_audio_discovery_error: Option<String>,
-    settings_container: String,
-    settings_obs_websocket_url: String,
-    settings_obs_password_input: String,
-    settings_obs_password_present: bool,
-    settings_obs_management_mode: ObsManagementMode,
-    settings_buffer_secs: String,
-    pub(crate) settings_save_delay_secs: String,
-    settings_clip_saved_notifications: bool,
-    settings_clip_naming_template: String,
-    settings_manual_clip_enabled: bool,
-    settings_manual_clip_hotkey: String,
-    settings_hotkey_capture_active: bool,
-    settings_manual_clip_duration_secs: String,
-    settings_storage_tiering_enabled: bool,
-    settings_storage_tier_directory: String,
-    settings_storage_min_age_days: String,
-    settings_storage_max_score: String,
-    settings_copyparty_enabled: bool,
-    settings_copyparty_upload_url: String,
-    settings_copyparty_public_base_url: String,
-    settings_copyparty_username: String,
-    settings_copyparty_password_input: String,
-    settings_copyparty_password_present: bool,
-    settings_youtube_enabled: bool,
-    settings_youtube_client_id: String,
-    settings_youtube_client_secret_input: String,
-    settings_youtube_client_secret_present: bool,
-    settings_youtube_refresh_token_present: bool,
-    settings_youtube_oauth_in_flight: bool,
-    settings_youtube_privacy_status: YouTubePrivacyStatus,
-    settings_discord_enabled: bool,
-    settings_discord_min_score: String,
-    settings_discord_include_thumbnail: bool,
-    settings_discord_webhook_input: String,
-    settings_discord_webhook_present: bool,
-    settings_secure_store_backend_label: String,
-    montage_selection: Vec<i64>,
-    selected_montage_clip_id: Option<i64>,
-    clip_montage_modal_open: bool,
-    clip_date_range_preset: tabs::clips::DateRangePreset,
-    clip_date_range_start: String,
-    clip_date_range_end: String,
-    active_clip_calendar: Option<tabs::clips::CalendarField>,
-    clip_calendar_month: NaiveDate,
+    runtime: RuntimeState,
+    clips: ClipLibraryState,
+    stats: StatsState,
+    rules: RuleEditorState,
+    settings: SettingsState,
+    updates: UpdateUiState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,7 +156,6 @@ pub(crate) struct PendingRuleImport {
 
 type RecorderStartResult =
     Result<Box<dyn crate::capture::CaptureSession>, crate::capture::CaptureError>;
-type RecorderStartSlot = Arc<Mutex<Option<RecorderStartResult>>>;
 
 #[cfg(not(target_os = "windows"))]
 #[allow(clippy::arc_with_non_send_sync)]
@@ -343,7 +201,7 @@ fn hotkey_configuration_feedback(
 struct PendingRecorderStart {
     id: u64,
     capture_plan: process::CaptureSourcePlan,
-    result_slot: RecorderStartSlot,
+    result_rx: tokio::sync::oneshot::Receiver<RecorderStartResult>,
     abort_handle: iced::task::Handle,
 }
 
@@ -413,12 +271,7 @@ impl Default for AudioSourceDraft {
 #[derive(Debug, Clone)]
 pub enum Message {
     SwitchView(View),
-
-    StartMonitoring,
-    StopMonitoring,
-    CensusStream(StreamEvent),
-    OnlineStatusChecked(Vec<u64>),
-    HonuSessionResolved(Result<Option<i64>, String>),
+    Runtime(RuntimeMessage),
 
     DatabaseReady(Result<ClipStore, String>),
     PostProcessRecoveryCompleted(Result<Vec<i64>, String>),
@@ -518,12 +371,38 @@ pub enum Message {
     RecentClipsLoaded(Result<Vec<ClipRecord>, String>),
     Clips(tabs::clips::Message),
     Stats(tabs::stats::Message),
-
     Characters(tabs::characters::Message),
-
     Rules(tabs::rules::Message),
-
     Settings(tabs::settings::Message),
+    Updates(UpdateMessage),
+    ToastDismiss(ToastId),
+    ToastToggleExpand(ToastId),
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeMessage {
+    StartMonitoring,
+    StopMonitoring,
+    CensusStream(StreamEvent),
+    OnlineStatusChecked(Vec<u64>),
+    HonuSessionResolved(Result<Option<i64>, String>),
+    RuntimePoll,
+    Tick,
+    RecorderStartCompleted {
+        id: u64,
+    },
+    MainWindowOpened(window::Id),
+    MainWindowClosed(window::Id),
+    WindowCloseRequested(window::Id),
+    #[cfg(not(target_os = "windows"))]
+    HotkeysConfigured {
+        generation: u64,
+        result: Result<Arc<Mutex<HotkeyManager>>, String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum UpdateMessage {
     LaunchAtLoginSynced(Result<(), String>),
     CheckForUpdates {
         manual: bool,
@@ -546,22 +425,16 @@ pub enum Message {
     ShowUpdateDetails,
     HideUpdateDetails,
     UpdateDetailsLogLoaded(Result<String, String>),
+}
 
-    RuntimePoll,
-    Tick,
-    RecorderStartCompleted {
-        id: u64,
-    },
-    MainWindowOpened(window::Id),
-    MainWindowClosed(window::Id),
-    WindowCloseRequested(window::Id),
-    #[cfg(not(target_os = "windows"))]
-    HotkeysConfigured {
-        generation: u64,
-        result: Result<Arc<Mutex<HotkeyManager>>, String>,
-    },
-    ToastDismiss(ToastId),
-    ToastToggleExpand(ToastId),
+impl Message {
+    fn runtime(message: RuntimeMessage) -> Self {
+        Self::Runtime(message)
+    }
+
+    fn updates(message: UpdateMessage) -> Self {
+        Self::Updates(message)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -596,7 +469,8 @@ impl App {
 
     pub fn new() -> (Self, Task<Message>) {
         let mut config = Config::load();
-        let secure_store = SecureStore::new();
+        let platform = PlatformServices::new();
+        let secure_store = platform.secure_store().clone();
         let copyparty_password_present = secure_store
             .contains(SecretKey::CopypartyPassword)
             .unwrap_or(false);
@@ -615,14 +489,14 @@ impl App {
             .flatten();
         let obs_websocket_password_present = obs_websocket_password.is_some();
         config.recorder.obs_mut().websocket_password = obs_websocket_password;
-        let initial_state = initial_runtime_state(&config);
+        let initial_state = runtime::initial_runtime_state(&config);
         let initial_audio_sources = audio_source_drafts_from_config(&config.recorder.audio_sources);
         let initial_rules_feedback = config.migration_notice.clone();
         let event_log_retention_secs = clip_log_retention_secs(&config);
         let recorder = Recorder::new(config.capture.clone(), config.recorder.clone());
         let process_watcher = process::default_game_process_watcher();
         let ffmpeg_capabilities = post_process::probe_ffmpeg_capabilities();
-        let notifications = NotificationCenter::new();
+        let notifications = platform.create_notification_center();
         let rule_engine = RuleEngine::new(
             config.rule_definitions.clone(),
             config.rule_profiles.clone(),
@@ -640,177 +514,189 @@ impl App {
         );
 
         let mut app = Self {
-            settings_launch_at_login: config.launch_at_login.enabled,
-            settings_auto_start_monitoring: config.auto_start_monitoring,
-            settings_start_minimized: config.start_minimized,
-            settings_minimize_to_tray: config.minimize_to_tray,
-            settings_update_auto_check: config.updates.auto_check,
-            settings_update_channel: config.updates.channel,
-            settings_update_install_behavior: config.updates.install_behavior,
-            settings_selected_update_action: UpdatePrimaryAction::DownloadUpdate,
-            settings_selected_rollback_release: None,
-            pending_hotkey_binding_label: None,
-            pending_hotkey_success_toast: false,
-            settings_service_id: config.service_id.clone(),
-            settings_capture_backend: config.capture.backend.clone(),
-            settings_capture_source: config.recorder.gsr().capture_source.clone(),
-            settings_save_dir: config.recorder.save_directory.to_string_lossy().into(),
-            settings_framerate: config.recorder.gsr().framerate.to_string(),
-            settings_codec: config.recorder.gsr().codec.clone(),
-            settings_quality: config.recorder.gsr().quality.clone(),
-            settings_audio_sources: initial_audio_sources,
-            settings_discovered_audio_sources: Vec::new(),
-            settings_selected_device_audio_source: None,
-            settings_selected_application_audio_source: None,
-            settings_audio_discovery_running: false,
-            settings_audio_discovery_error: None,
-            settings_container: config.recorder.gsr().container.clone(),
-            settings_obs_websocket_url: config.recorder.obs().websocket_url.clone(),
-            settings_obs_password_input: String::new(),
-            settings_obs_password_present: obs_websocket_password_present,
-            settings_obs_management_mode: config.recorder.obs().management_mode,
-            settings_buffer_secs: config.recorder.replay_buffer_secs.to_string(),
-            settings_save_delay_secs: config.recorder.save_delay_secs.to_string(),
-            settings_clip_saved_notifications: config.recorder.clip_saved_notifications,
-            settings_clip_naming_template: config.clip_naming_template.clone(),
-            settings_manual_clip_enabled: config.manual_clip.enabled,
-            settings_manual_clip_hotkey: config.manual_clip.hotkey.clone(),
-            settings_hotkey_capture_active: false,
-            settings_manual_clip_duration_secs: config.manual_clip.duration_secs.to_string(),
-            settings_storage_tiering_enabled: config.storage_tiering.enabled,
-            settings_storage_tier_directory: config
-                .storage_tiering
-                .tier_directory
-                .to_string_lossy()
-                .into(),
-            settings_storage_min_age_days: config.storage_tiering.min_age_days.to_string(),
-            settings_storage_max_score: config.storage_tiering.max_score.to_string(),
-            settings_copyparty_enabled: config.uploads.copyparty.enabled,
-            settings_copyparty_upload_url: config.uploads.copyparty.upload_url.clone(),
-            settings_copyparty_public_base_url: config.uploads.copyparty.public_base_url.clone(),
-            settings_copyparty_username: config.uploads.copyparty.username.clone(),
-            settings_copyparty_password_input: String::new(),
-            settings_copyparty_password_present: copyparty_password_present,
-            settings_youtube_enabled: config.uploads.youtube.enabled,
-            settings_youtube_client_id: config.uploads.youtube.client_id.clone(),
-            settings_youtube_client_secret_input: String::new(),
-            settings_youtube_client_secret_present: youtube_client_secret_present,
-            settings_youtube_refresh_token_present: youtube_refresh_token_present,
-            settings_youtube_oauth_in_flight: false,
-            settings_youtube_privacy_status: config.uploads.youtube.privacy_status,
-            settings_discord_enabled: config.discord_webhook.enabled,
-            settings_discord_min_score: config.discord_webhook.min_score.to_string(),
-            settings_discord_include_thumbnail: config.discord_webhook.include_thumbnail,
-            settings_discord_webhook_input: String::new(),
-            settings_discord_webhook_present: discord_webhook_present,
-            settings_secure_store_backend_label: secure_store.backend().label().into(),
-            montage_selection: Vec::new(),
-            selected_montage_clip_id: None,
-            clip_montage_modal_open: false,
-            config,
             view: View::Status,
-            state: initial_state,
             recorder,
             notifications,
             toasts: ToastStack::new(),
             rule_engine,
             process_watcher,
             event_log: EventLog::new(event_log_retention_secs),
-            hotkeys: HotkeyManager::disabled(),
-            tray: None,
-            main_window_id: None,
             clip_store: None,
             clip_store_notice: None,
-            recent_clips: Vec::new(),
-            rule_vehicle_options: Vec::new(),
-            rule_vehicle_browse_categories: BTreeMap::new(),
-            rule_weapon_options: Vec::new(),
-            rule_weapon_browse_groups: BTreeMap::new(),
-            rule_weapon_browse_categories: BTreeMap::new(),
-            rule_weapon_browse_factions: BTreeMap::new(),
-            rule_filter_text_drafts: BTreeMap::new(),
-            rule_drag_state: None,
-            clip_history_source: Vec::new(),
-            clip_history: Vec::new(),
-            clip_filter_options: ClipFilterOptions::default(),
-            selected_clip_id: None,
-            selected_clip_detail: None,
-            clip_detail_loading: false,
-            clip_filters: ClipFilters::default(),
-            clip_query_revision: 0,
-            stats_snapshot: None,
-            stats_loading: false,
-            stats_error: None,
-            stats_revision: 0,
-            stats_time_range: tabs::stats::StatsTimeRange::default(),
-            stats_collapsed_sections: vec![tabs::stats::StatsSection::RawEventKinds],
-            stats_last_refreshed_at: None,
-            clip_sort_column: tabs::clips::ClipSortColumn::When,
-            clip_sort_descending: true,
-            clip_history_page: 0,
-            clip_history_page_size: tabs::clips::DEFAULT_PAGE_SIZE,
-            clip_history_viewport: None,
-            clip_advanced_filters_open: false,
-            clip_search_revision: 0,
-            clip_raw_event_filter: String::new(),
-            clip_collapsed_detail_sections: Vec::new(),
-            pending_clip_delete: None,
-            deleting_clip_id: None,
-            clip_error: None,
-            clip_error_expires_at: None,
-            clip_filter_feedback: None,
-            clip_filter_feedback_expires_at: None,
-            next_clip_sequence: 0,
-            pending_save_sequences: VecDeque::new(),
-            pending_clip_links: BTreeMap::new(),
-            hotkey_config_generation: 0,
-            settings_feedback: None,
-            settings_feedback_expires_at: None,
-            status_feedback: None,
-            status_feedback_expires_at: None,
-            rules_feedback: initial_rules_feedback.clone(),
-            rules_feedback_expires_at: None,
-            pending_profile_import: None,
-            pending_profile_import_shake_started_at: None,
-            pending_rule_import: None,
-            pending_rule_import_shake_started_at: None,
-            resolving_characters: BTreeSet::new(),
-            resolving_lookups: BTreeSet::new(),
-            selected_rule_id: None,
-            rules_sub_view: tabs::rules::RulesSubView::default(),
-            settings_sub_view: tabs::settings::SettingsSubView::default(),
-            rules_expanded_events: HashSet::new(),
-            rules_expanded_filters: HashSet::new(),
+            platform,
             honu_client: HonuClient::new(),
-            secure_store,
             background_jobs: BackgroundJobManager::new(),
-            honu_session_id: None,
-            active_clip_capture: None,
-            tracked_alerts: BTreeMap::new(),
-            manual_profile_override_profile_id: None,
-            last_auto_switch_rule_id: None,
-            active_session: None,
-            last_session_summary: None,
-            portal_capture_recovery_notified: false,
-            startup_probe_due_at: None,
-            startup_probe_pending_result: false,
-            startup_probe_resolution: None,
-            ffmpeg_capabilities,
-            obs_connection_status: None,
-            pending_recorder_start: None,
-            next_recorder_start_id: 0,
-            obs_restart_requires_manual_restart: false,
-            update_state,
-            update_details_modal_open: false,
-            update_details_log_text: None,
-            update_details_log_error: None,
-            update_details_log_loading: false,
             new_character_name: String::new(),
-            clip_date_range_preset: tabs::clips::DateRangePreset::AllTime,
-            clip_date_range_start: String::new(),
-            clip_date_range_end: String::new(),
-            active_clip_calendar: None,
-            clip_calendar_month: tabs::clips::today_local_date(),
+            runtime: RuntimeState {
+                lifecycle: initial_state,
+                hotkeys: HotkeyManager::disabled(),
+                tray: None,
+                main_window_id: None,
+                hotkey_config_generation: 0,
+                next_clip_sequence: 0,
+                pending_save_sequences: VecDeque::new(),
+                pending_clip_links: BTreeMap::new(),
+                status_feedback: None,
+                status_feedback_expires_at: None,
+                honu_session_id: None,
+                active_clip_capture: None,
+                tracked_alerts: BTreeMap::new(),
+                manual_profile_override_profile_id: None,
+                last_auto_switch_rule_id: None,
+                active_session: None,
+                last_session_summary: None,
+                portal_capture_recovery_notified: false,
+                startup_probe_due_at: None,
+                startup_probe_pending_result: false,
+                startup_probe_resolution: None,
+                ffmpeg_capabilities,
+                obs_connection_status: None,
+                pending_recorder_start: None,
+                next_recorder_start_id: 0,
+                obs_restart_requires_manual_restart: false,
+            },
+            clips: ClipLibraryState {
+                recent: Vec::new(),
+                history_source: Vec::new(),
+                history: Vec::new(),
+                filter_options: ClipFilterOptions::default(),
+                selected_id: None,
+                selected_detail: None,
+                detail_loading: false,
+                filters: ClipFilters::default(),
+                query_revision: 0,
+                sort_column: tabs::clips::ClipSortColumn::When,
+                sort_descending: true,
+                history_page: 0,
+                history_page_size: tabs::clips::DEFAULT_PAGE_SIZE,
+                history_viewport: None,
+                advanced_filters_open: false,
+                search_revision: 0,
+                raw_event_filter: String::new(),
+                collapsed_detail_sections: Vec::new(),
+                pending_delete: None,
+                deleting_id: None,
+                error: None,
+                error_expires_at: None,
+                filter_feedback: None,
+                filter_feedback_expires_at: None,
+                montage_selection: Vec::new(),
+                selected_montage_clip_id: None,
+                montage_modal_open: false,
+                date_range_preset: tabs::clips::DateRangePreset::AllTime,
+                date_range_start: String::new(),
+                date_range_end: String::new(),
+                active_calendar: None,
+                calendar_month: tabs::clips::today_local_date(),
+            },
+            stats: StatsState {
+                snapshot: None,
+                loading: false,
+                error: None,
+                revision: 0,
+                time_range: tabs::stats::StatsTimeRange::default(),
+                collapsed_sections: vec![tabs::stats::StatsSection::RawEventKinds],
+                last_refreshed_at: None,
+            },
+            rules: RuleEditorState {
+                vehicle_options: Vec::new(),
+                vehicle_browse_categories: BTreeMap::new(),
+                weapon_options: Vec::new(),
+                weapon_browse_groups: BTreeMap::new(),
+                weapon_browse_categories: BTreeMap::new(),
+                weapon_browse_factions: BTreeMap::new(),
+                filter_text_drafts: BTreeMap::new(),
+                drag_state: None,
+                feedback: initial_rules_feedback.clone(),
+                feedback_expires_at: None,
+                pending_profile_import: None,
+                pending_profile_import_shake_started_at: None,
+                pending_rule_import: None,
+                pending_rule_import_shake_started_at: None,
+                resolving_characters: BTreeSet::new(),
+                resolving_lookups: BTreeSet::new(),
+                selected_rule_id: None,
+                sub_view: tabs::rules::RulesSubView::default(),
+                expanded_events: HashSet::new(),
+                expanded_filters: HashSet::new(),
+            },
+            settings: SettingsState {
+                feedback: None,
+                feedback_expires_at: None,
+                sub_view: tabs::settings::SettingsSubView::default(),
+                launch_at_login: config.launch_at_login.enabled,
+                auto_start_monitoring: config.auto_start_monitoring,
+                start_minimized: config.start_minimized,
+                minimize_to_tray: config.minimize_to_tray,
+                update_auto_check: config.updates.auto_check,
+                update_channel: config.updates.channel,
+                update_install_behavior: config.updates.install_behavior,
+                selected_update_action: UpdatePrimaryAction::DownloadUpdate,
+                selected_rollback_release: None,
+                pending_hotkey_binding_label: None,
+                pending_hotkey_success_toast: false,
+                service_id: config.service_id.clone(),
+                capture_backend: config.capture.backend,
+                capture_source: config.recorder.gsr().capture_source.clone(),
+                save_dir: config.recorder.save_directory.to_string_lossy().into(),
+                framerate: config.recorder.gsr().framerate.to_string(),
+                codec: config.recorder.gsr().codec.clone(),
+                quality: config.recorder.gsr().quality.clone(),
+                audio_sources: initial_audio_sources,
+                discovered_audio_sources: Vec::new(),
+                selected_device_audio_source: None,
+                selected_application_audio_source: None,
+                audio_discovery_running: false,
+                audio_discovery_error: None,
+                container: config.recorder.gsr().container.clone(),
+                obs_websocket_url: config.recorder.obs().websocket_url.clone(),
+                obs_password_input: String::new(),
+                obs_password_present: obs_websocket_password_present,
+                obs_management_mode: config.recorder.obs().management_mode,
+                buffer_secs: config.recorder.replay_buffer_secs.to_string(),
+                save_delay_secs: config.recorder.save_delay_secs.to_string(),
+                clip_saved_notifications: config.recorder.clip_saved_notifications,
+                clip_naming_template: config.clip_naming_template.clone(),
+                manual_clip_enabled: config.manual_clip.enabled,
+                manual_clip_hotkey: config.manual_clip.hotkey.clone(),
+                hotkey_capture_active: false,
+                manual_clip_duration_secs: config.manual_clip.duration_secs.to_string(),
+                storage_tiering_enabled: config.storage_tiering.enabled,
+                storage_tier_directory: config
+                    .storage_tiering
+                    .tier_directory
+                    .to_string_lossy()
+                    .into(),
+                storage_min_age_days: config.storage_tiering.min_age_days.to_string(),
+                storage_max_score: config.storage_tiering.max_score.to_string(),
+                copyparty_enabled: config.uploads.copyparty.enabled,
+                copyparty_upload_url: config.uploads.copyparty.upload_url.clone(),
+                copyparty_public_base_url: config.uploads.copyparty.public_base_url.clone(),
+                copyparty_username: config.uploads.copyparty.username.clone(),
+                copyparty_password_input: String::new(),
+                copyparty_password_present,
+                youtube_enabled: config.uploads.youtube.enabled,
+                youtube_client_id: config.uploads.youtube.client_id.clone(),
+                youtube_client_secret_input: String::new(),
+                youtube_client_secret_present,
+                youtube_refresh_token_present,
+                youtube_oauth_in_flight: false,
+                youtube_privacy_status: config.uploads.youtube.privacy_status,
+                discord_enabled: config.discord_webhook.enabled,
+                discord_min_score: config.discord_webhook.min_score.to_string(),
+                discord_include_thumbnail: config.discord_webhook.include_thumbnail,
+                discord_webhook_input: String::new(),
+                discord_webhook_present,
+                secure_store_backend_label: secure_store.backend().label().into(),
+            },
+            updates: UpdateUiState {
+                state: update_state,
+                details_modal_open: false,
+                details_log_text: None,
+                details_log_error: None,
+                details_log_loading: false,
+            },
+            config,
         };
 
         if let Some(notice) = initial_rules_feedback.as_ref() {
@@ -824,13 +710,16 @@ impl App {
         app.recover_apply_result();
 
         tabs::rules::ensure_selection(&mut app);
-        let initial_tray_snapshot = app.tray_snapshot();
-        match TrayController::spawn(initial_tray_snapshot) {
-            Ok(tray) => {
-                app.tray = Some(tray);
-            }
-            Err(error) => {
-                app.push_feedback_toast("Tray", error, true);
+        let capabilities = app.platform.capabilities();
+        if capabilities.tray {
+            let initial_tray_snapshot = app.tray_snapshot();
+            match app.platform.spawn_tray(initial_tray_snapshot) {
+                Ok(tray) => {
+                    app.runtime.tray = Some(tray);
+                }
+                Err(error) => {
+                    app.push_feedback_toast("Tray", error, true);
+                }
             }
         }
         let initial_window_task = if app.config.start_minimized {
@@ -863,9 +752,9 @@ impl App {
 
     fn maybe_auto_check_for_updates_task(&mut self) -> Task<Message> {
         if self.should_auto_check_for_updates() {
-            self.update_state.checking = true;
-            self.update_state.phase = UpdatePhase::Checking;
-            self.update_state.progress = Some(UpdateProgressState {
+            self.updates.state.checking = true;
+            self.updates.state.phase = UpdatePhase::Checking;
+            self.updates.state.progress = Some(UpdateProgressState {
                 detail: "Checking GitHub Releases for a newer version.".into(),
             });
             self.check_for_updates_task(false)
@@ -875,20 +764,21 @@ impl App {
     }
 
     fn maybe_resume_staged_update_task(&mut self) -> Task<Message> {
-        if self.update_state.has_downloaded_update() {
+        if self.updates.state.has_downloaded_update() {
             let prepared = self
-                .update_state
+                .updates
+                .state
                 .prepared_update
                 .as_ref()
                 .expect("checked prepared update presence");
             let prepared_version = prepared
                 .parsed_version()
-                .unwrap_or_else(|| self.update_state.current_version.clone());
-            self.update_state.phase = UpdatePhase::ReadyToInstall;
-            self.update_state.progress = None;
+                .unwrap_or_else(|| self.updates.state.current_version.clone());
+            self.updates.state.phase = UpdatePhase::ReadyToInstall;
+            self.updates.state.progress = None;
             self.push_toast(
                 ToastTone::Info,
-                release_action_title(&prepared_version, &self.update_state.current_version),
+                release_action_title(&prepared_version, &self.updates.state.current_version),
                 format!(
                     "NaniteClip {} is staged and ready to install.",
                     prepared.version
@@ -896,7 +786,9 @@ impl App {
                 true,
             );
             if self.should_auto_apply_staged_update() {
-                return Task::done(Message::InstallDownloadedUpdateWhenIdle);
+                return Task::done(Message::updates(
+                    UpdateMessage::InstallDownloadedUpdateWhenIdle,
+                ));
             }
         }
         Task::none()
@@ -906,7 +798,7 @@ impl App {
         match update::helper::take_apply_result() {
             Ok(Some(result)) => {
                 let report = update_apply_report_from_helper_result(&result);
-                self.update_state.last_apply_report = Some(report.clone());
+                self.updates.state.last_apply_report = Some(report.clone());
                 self.config.updates.last_apply_report = Some(report);
                 if let Err(error) = self.config.save() {
                     tracing::warn!("Failed to persist updater apply result: {error}");
@@ -944,13 +836,14 @@ impl App {
     }
 
     fn show_update_details(&mut self) -> Task<Message> {
-        self.update_details_modal_open = true;
-        self.update_details_log_text = None;
-        self.update_details_log_error = None;
-        self.update_details_log_loading = false;
+        self.updates.details_modal_open = true;
+        self.updates.details_log_text = None;
+        self.updates.details_log_error = None;
+        self.updates.details_log_loading = false;
 
         let Some(log_path) = self
-            .update_state
+            .updates
+            .state
             .last_apply_report
             .as_ref()
             .map(|report| report.log_path.clone())
@@ -959,14 +852,14 @@ impl App {
             return Task::none();
         };
 
-        self.update_details_log_loading = true;
+        self.updates.details_log_loading = true;
         Task::perform(
             async move {
                 tokio::fs::read_to_string(&log_path).await.map_err(|error| {
                     format!("failed to read updater log {}: {error}", log_path.display())
                 })
             },
-            Message::UpdateDetailsLogLoaded,
+            |result| Message::updates(UpdateMessage::UpdateDetailsLogLoaded(result)),
         )
     }
 
@@ -974,13 +867,15 @@ impl App {
         self.selected_rollback_release()
             .map(|release| release.html_url)
             .or_else(|| {
-                self.update_state
+                self.updates
+                    .state
                     .latest_release
                     .as_ref()
                     .map(|release| release.html_url.clone())
             })
             .or_else(|| {
-                self.update_state
+                self.updates
+                    .state
                     .prepared_update
                     .as_ref()
                     .map(|prepared| prepared.release_notes_url.clone())
@@ -988,7 +883,7 @@ impl App {
     }
 
     fn should_auto_check_for_updates(&self) -> bool {
-        if !self.config.updates.auto_check || self.update_state.checking {
+        if !self.config.updates.auto_check || self.updates.state.checking {
             return false;
         }
 
@@ -999,20 +894,22 @@ impl App {
     }
 
     fn can_apply_update_now(&self) -> bool {
-        !matches!(self.state, AppState::Monitoring { .. }) && !self.recorder.has_active_session()
+        !matches!(self.runtime.lifecycle, AppState::Monitoring { .. })
+            && !self.recorder.has_active_session()
     }
 
     fn should_auto_apply_staged_update(&self) -> bool {
         self.config.updates.install_behavior == UpdateInstallBehavior::WhenIdle
             && self.can_apply_update_now()
-            && self.update_state.has_downloaded_update()
-            && matches!(self.update_state.phase, UpdatePhase::ReadyToInstall)
+            && self.updates.state.has_downloaded_update()
+            && matches!(self.updates.state.phase, UpdatePhase::ReadyToInstall)
     }
 
     fn selected_rollback_release(&self) -> Option<update::AvailableRelease> {
-        self.settings_selected_rollback_release
+        self.settings
+            .selected_rollback_release
             .clone()
-            .or_else(|| self.update_state.rollback_candidates.first().cloned())
+            .or_else(|| self.updates.state.rollback_candidates.first().cloned())
     }
 
     fn run_selected_update_action(&mut self) -> Task<Message> {
@@ -1034,7 +931,7 @@ impl App {
     }
 
     fn open_system_updater(&mut self) -> Task<Message> {
-        let Some(plan) = self.update_state.system_update_plan.clone() else {
+        let Some(plan) = self.updates.state.system_update_plan.clone() else {
             self.set_status_feedback_silent(
                 "No system updater handoff is available for this install.",
                 false,
@@ -1050,14 +947,15 @@ impl App {
             .command_display
             .clone()
             .unwrap_or_else(|| plan.label.clone());
+        let platform = self.platform.clone();
         Task::perform(
-            async move { crate::launcher::launch_command(&program, &args, &command_display) },
-            Message::SystemUpdaterOpened,
+            async move { platform.launch_command(&program, &args, &command_display) },
+            |result| Message::updates(UpdateMessage::SystemUpdaterOpened(result)),
         )
     }
 
     fn schedule_downloaded_update_when_idle(&mut self) -> Task<Message> {
-        if !self.update_state.has_downloaded_update() {
+        if !self.updates.state.has_downloaded_update() {
             self.set_status_feedback_silent(
                 "Download an update before scheduling its install.",
                 false,
@@ -1065,12 +963,12 @@ impl App {
             return Task::none();
         }
         self.config.updates.install_behavior = UpdateInstallBehavior::WhenIdle;
-        self.settings_update_install_behavior = UpdateInstallBehavior::WhenIdle;
+        self.settings.update_install_behavior = UpdateInstallBehavior::WhenIdle;
         self.persist_update_config();
         if self.can_apply_update_now() {
             self.apply_prepared_update_now(true)
         } else {
-            if let Some(prepared) = self.update_state.prepared_update.as_ref() {
+            if let Some(prepared) = self.updates.state.prepared_update.as_ref() {
                 self.set_status_feedback_silent(
                     format!(
                         "NaniteClip {} will install automatically when monitoring is idle.",
@@ -1084,7 +982,7 @@ impl App {
     }
 
     fn schedule_downloaded_update_on_next_launch(&mut self) -> Task<Message> {
-        if !self.update_state.has_downloaded_update() {
+        if !self.updates.state.has_downloaded_update() {
             self.set_status_feedback_silent(
                 "Download an update before scheduling its install.",
                 false,
@@ -1092,9 +990,9 @@ impl App {
             return Task::none();
         }
         self.config.updates.install_behavior = UpdateInstallBehavior::OnNextLaunch;
-        self.settings_update_install_behavior = UpdateInstallBehavior::OnNextLaunch;
+        self.settings.update_install_behavior = UpdateInstallBehavior::OnNextLaunch;
         self.persist_update_config();
-        if let Some(prepared) = self.update_state.prepared_update.as_ref() {
+        if let Some(prepared) = self.updates.state.prepared_update.as_ref() {
             self.set_status_feedback_silent(
                 format!(
                     "NaniteClip {} is staged and will be ready on the next launch.",
@@ -1107,7 +1005,7 @@ impl App {
     }
 
     fn remind_update_later(&mut self) -> Task<Message> {
-        let Some(release) = self.update_state.latest_release.as_ref() else {
+        let Some(release) = self.updates.state.latest_release.as_ref() else {
             return Task::none();
         };
         let version = release.version.to_string();
@@ -1127,7 +1025,7 @@ impl App {
     }
 
     fn skip_available_update(&mut self) -> Task<Message> {
-        let Some(release) = self.update_state.latest_release.as_ref() else {
+        let Some(release) = self.updates.state.latest_release.as_ref() else {
             return Task::none();
         };
         self.config.updates.skipped_version = Some(release.version.to_string());
@@ -1147,7 +1045,7 @@ impl App {
                 true,
             );
         }
-        if let Some(release) = self.update_state.latest_release.as_mut() {
+        if let Some(release) = self.updates.state.latest_release.as_mut() {
             release.skipped = true;
         }
         Task::none()
@@ -1169,9 +1067,9 @@ impl App {
     }
 
     fn set_update_error(&mut self, kind: UpdateErrorKind, detail: impl Into<String>) {
-        self.update_state.phase = UpdatePhase::Failed;
-        self.update_state.progress = None;
-        self.update_state.last_error = Some(UpdateErrorState {
+        self.updates.state.phase = UpdatePhase::Failed;
+        self.updates.state.progress = None;
+        self.updates.state.last_error = Some(UpdateErrorState {
             kind,
             detail: detail.into(),
         });
@@ -1179,7 +1077,7 @@ impl App {
 
     fn apply_prepared_update_now(&mut self, _automatic: bool) -> Task<Message> {
         if matches!(
-            self.update_state.phase,
+            self.updates.state.phase,
             UpdatePhase::Downloading | UpdatePhase::Verifying | UpdatePhase::Applying
         ) {
             self.set_status_feedback_silent(
@@ -1193,24 +1091,24 @@ impl App {
             return Task::none();
         }
 
-        let Some(prepared) = self.update_state.prepared_update.clone() else {
+        let Some(prepared) = self.updates.state.prepared_update.clone() else {
             self.set_status_feedback_silent("No downloaded update is ready to install.", false);
             return Task::none();
         };
 
-        self.update_state.phase = UpdatePhase::Applying;
-        self.update_state.progress = Some(UpdateProgressState {
+        self.updates.state.phase = UpdatePhase::Applying;
+        self.updates.state.progress = Some(UpdateProgressState {
             detail: format!("Launching the updater helper for {}.", prepared.version),
         });
-        self.update_state.last_error = None;
+        self.updates.state.last_error = None;
         self.persist_update_config();
         self.push_toast(
             ToastTone::Info,
             release_action_title(
                 &prepared
                     .parsed_version()
-                    .unwrap_or_else(|| self.update_state.current_version.clone()),
-                &self.update_state.current_version,
+                    .unwrap_or_else(|| self.updates.state.current_version.clone()),
+                &self.updates.state.current_version,
             ),
             format!("NaniteClip {} is installing.", prepared.version),
             true,
@@ -1230,12 +1128,12 @@ impl App {
 
     fn check_for_updates_task(&self, manual: bool) -> Task<Message> {
         let channel = if manual {
-            self.settings_update_channel
+            self.settings.update_channel
         } else {
             self.config.updates.channel
         };
-        let install_channel = self.update_state.install_channel;
-        let current_version = self.update_state.current_version.clone();
+        let install_channel = self.updates.state.install_channel;
+        let current_version = self.updates.state.current_version.clone();
         let install_id = self.config.updates.install_id.clone();
         let skipped_version = self.config.updates.skipped_version.clone();
         Task::perform(
@@ -1249,93 +1147,55 @@ impl App {
                 )
                 .await
             },
-            move |result| Message::UpdateCheckCompleted { manual, result },
+            move |result| Message::updates(UpdateMessage::UpdateCheckCompleted { manual, result }),
         )
     }
 
     fn refresh_rollback_catalog_task(&self) -> Task<Message> {
-        let channel = self.settings_update_channel;
-        let install_channel = self.update_state.install_channel;
-        let current_version = self.update_state.current_version.clone();
+        let channel = self.settings.update_channel;
+        let install_channel = self.updates.state.install_channel;
+        let current_version = self.updates.state.current_version.clone();
         Task::perform(
             async move {
                 update::fetch_rollback_candidates(channel, install_channel, &current_version).await
             },
-            Message::RollbackCatalogLoaded,
+            |result| Message::updates(UpdateMessage::RollbackCatalogLoaded(result)),
         )
     }
 
     fn lookup_previous_installed_rollback_task(&self) -> Task<Message> {
-        let Some(previous_version) = self.update_state.previous_installed_version.clone() else {
-            return Task::done(Message::RollbackPreviousVersionResolved(Ok(None)));
+        let Some(previous_version) = self.updates.state.previous_installed_version.clone() else {
+            return Task::done(Message::updates(
+                UpdateMessage::RollbackPreviousVersionResolved(Ok(None)),
+            ));
         };
-        let channel = self.settings_update_channel;
-        let install_channel = self.update_state.install_channel;
+        let channel = self.settings.update_channel;
+        let install_channel = self.updates.state.install_channel;
         Task::perform(
             async move {
                 update::fetch_release_by_version(channel, install_channel, &previous_version).await
             },
-            Message::RollbackPreviousVersionResolved,
+            |result| Message::updates(UpdateMessage::RollbackPreviousVersionResolved(result)),
         )
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let tick = iced::time::every(Duration::from_secs(3)).map(|_| Message::Tick);
-        let runtime_poll =
-            iced::time::every(Duration::from_millis(200)).map(|_| Message::RuntimePoll);
-
-        let census_stream = match &self.state {
-            AppState::WaitingForLogin | AppState::Monitoring { .. } => {
-                let mut ids: Vec<u64> = self
-                    .config
-                    .characters
-                    .iter()
-                    .filter_map(|c| c.character_id)
-                    .collect();
-                ids.sort_unstable();
-                ids.dedup();
-                if !ids.is_empty() && !self.config.service_id.is_empty() {
-                    census_subscription(&self.config.service_id, ids)
-                } else {
-                    Subscription::none()
-                }
-            }
-            _ => Subscription::none(),
-        };
-        let hotkey_capture =
-            if matches!(self.view, View::Settings) && self.settings_hotkey_capture_active {
-                event::listen_with(capture_hotkey_event)
-            } else {
-                Subscription::none()
-            };
-        let clips_key_nav = if matches!(self.view, View::Clips) {
-            event::listen_with(clips_key_event_router)
-        } else {
-            Subscription::none()
-        };
-
-        Subscription::batch([
-            tick,
-            runtime_poll,
-            census_stream,
-            hotkey_capture,
-            clips_key_nav,
-            window::close_events().map(Message::MainWindowClosed),
-            window::close_requests().map(Message::WindowCloseRequested),
-        ])
+        subscriptions::build(self)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SwitchView(view) => {
-                self.settings_hotkey_capture_active = false;
+                self.settings.hotkey_capture_active = false;
                 self.view = view;
                 if matches!(self.view, View::Settings) {
                     let mut tasks = vec![tabs::settings::refresh_audio_sources(self)];
-                    if self.update_state.rollback_candidates.is_empty()
-                        || self.settings_update_channel != self.config.updates.channel
+                    if self.updates.state.rollback_candidates.is_empty()
+                        || self.settings.update_channel != self.config.updates.channel
                     {
-                        tasks.push(Task::done(Message::RefreshRollbackCatalog));
+                        tasks.push(Task::done(Message::updates(
+                            UpdateMessage::RefreshRollbackCatalog,
+                        )));
                     }
                     Task::batch(tasks)
                 } else if matches!(self.view, View::Stats) {
@@ -1348,6 +1208,10 @@ impl App {
                     Task::none()
                 }
             }
+
+            Message::Runtime(message) => self.handle_runtime_message(message),
+
+            Message::Updates(message) => self.handle_update_message(message),
 
             Message::ToastDismiss(id) => {
                 self.toasts.dismiss(id);
@@ -1394,8 +1258,8 @@ impl App {
                         );
                     }
 
-                    let detail = if self.selected_clip_id.is_some() {
-                        self.load_clip_detail(self.selected_clip_id)
+                    let detail = if self.clips.selected_id.is_some() {
+                        self.load_clip_detail(self.clips.selected_id)
                     } else {
                         Task::none()
                     };
@@ -1428,492 +1292,18 @@ impl App {
                 Task::none()
             }
 
-            Message::LaunchAtLoginSynced(result) => {
-                if let Err(error) = result {
-                    self.set_settings_feedback(
-                        format!(
-                            "Settings were saved, but launch-at-login could not be updated: {error}"
-                        ),
-                        false,
-                    );
-                }
-                Task::none()
-            }
-
-            Message::CheckForUpdates { manual } => {
-                if self.update_state.checking {
-                    return Task::none();
-                }
-                self.update_state.checking = true;
-                self.update_state.phase = UpdatePhase::Checking;
-                self.update_state.progress = Some(UpdateProgressState {
-                    detail: "Checking GitHub Releases for a newer version.".into(),
-                });
-                self.update_state.last_error = None;
-                self.check_for_updates_task(manual)
-            }
-
-            Message::RefreshRollbackCatalog => {
-                if self.update_state.rollback_catalog_loading {
-                    return Task::none();
-                }
-                self.update_state.rollback_catalog_loading = true;
-                self.refresh_rollback_catalog_task()
-            }
-
-            Message::UpdateCheckCompleted { manual, result } => {
-                self.update_state.checking = false;
-                self.update_state.progress = None;
-                let checked_at = Utc::now();
-                self.update_state.last_checked_at = Some(checked_at);
-                self.config.updates.last_check_utc = Some(checked_at);
-
-                match result {
-                    Ok(latest_release) => {
-                        self.update_state.latest_release = latest_release;
-                        self.update_state.last_error = None;
-                        self.update_state.phase = if self.update_state.has_downloaded_update() {
-                            UpdatePhase::ReadyToInstall
-                        } else {
-                            UpdatePhase::Idle
-                        };
-
-                        if let Some(release) = &self.update_state.latest_release {
-                            let release_version = release.version.to_string();
-                            if self.config.updates.remind_later_version.as_deref()
-                                != Some(release_version.as_str())
-                            {
-                                self.config.updates.remind_later_version = None;
-                                self.config.updates.remind_later_until_utc = None;
-                            }
-                        } else {
-                            self.config.updates.remind_later_version = None;
-                            self.config.updates.remind_later_until_utc = None;
-                        }
-                    }
-                    Err(error) => {
-                        self.set_update_error(
-                            classify_update_error(error.as_str(), UpdatePhase::Checking),
-                            error.clone(),
-                        );
-                        self.push_toast(
-                            ToastTone::Error,
-                            "Update Failed",
-                            format!("Failed to check for updates: {error}"),
-                            true,
-                        );
-                        if !manual {
-                            tracing::warn!("Automatic update check failed: {error}");
-                        }
-                    }
-                }
-
-                if let Err(error) = self.config.save() {
-                    tracing::warn!("Failed to persist update-check timestamp: {error}");
-                }
-
-                Task::none()
-            }
-
-            Message::RollbackCatalogLoaded(result) => {
-                self.update_state.rollback_catalog_loading = false;
-                match result {
-                    Ok(candidates) => {
-                        self.update_state.rollback_candidates = candidates.clone();
-                        let previous_version = self.update_state.previous_installed_version.clone();
-                        self.settings_selected_rollback_release = previous_version
-                            .as_ref()
-                            .and_then(|previous| {
-                                candidates
-                                    .iter()
-                                    .find(|release| &release.version == previous)
-                                    .cloned()
-                            })
-                            .or_else(|| candidates.first().cloned());
-                    }
-                    Err(error) => {
-                        self.set_update_error(
-                            classify_update_error(error.as_str(), UpdatePhase::Checking),
-                            error.clone(),
-                        );
-                        self.push_toast(
-                            ToastTone::Error,
-                            "Update Failed",
-                            format!("Failed to refresh rollback versions: {error}"),
-                            true,
-                        );
-                    }
-                }
-                Task::none()
-            }
-
-            Message::DownloadSelectedRollbackVersion => {
-                let Some(release) = self.selected_rollback_release() else {
-                    self.set_status_feedback_silent(
-                        "Load rollback versions and choose one before downloading it.",
-                        false,
-                    );
-                    return Task::none();
-                };
-                self.queue_release_download(release)
-            }
-
-            Message::RollbackToPreviousInstalledVersion => {
-                if self.update_state.previous_installed_version.is_none() {
-                    self.set_status_feedback_silent(
-                        "No previously installed version is recorded for this install yet.",
-                        false,
-                    );
-                    return Task::none();
-                }
-                self.lookup_previous_installed_rollback_task()
-            }
-
-            Message::RollbackPreviousVersionResolved(result) => match result {
-                Ok(Some(release)) => {
-                    self.settings_selected_rollback_release = Some(release.clone());
-                    self.queue_release_download(release)
-                }
-                Ok(None) => {
-                    let version_label = self
-                        .update_state
-                        .previous_installed_version
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "the previous version".into());
-                    self.set_status_feedback_silent(
-                        format!(
-                            "GitHub Releases did not expose a downloadable asset for {}.",
-                            version_label
-                        ),
-                        false,
-                    );
-                    Task::none()
-                }
-                Err(error) => {
-                    self.set_update_error(
-                        classify_update_error(error.as_str(), UpdatePhase::Checking),
-                        error.clone(),
-                    );
-                    self.push_toast(
-                        ToastTone::Error,
-                        "Update Failed",
-                        format!("Failed to resolve the previous version: {error}"),
-                        true,
-                    );
-                    Task::none()
-                }
-            },
-
-            Message::UpdatePrimaryActionSelected(action) => {
-                self.settings_selected_update_action = action;
-                Task::none()
-            }
-
-            Message::RunSelectedUpdateAction => self.run_selected_update_action(),
-
-            Message::InstallDownloadedUpdateWhenIdle => self.schedule_downloaded_update_when_idle(),
-
-            Message::ShowUpdateDetails => self.show_update_details(),
-
-            Message::HideUpdateDetails => {
-                self.update_details_modal_open = false;
-                self.update_details_log_loading = false;
-                Task::none()
-            }
-
-            Message::UpdateDetailsLogLoaded(result) => {
-                self.update_details_log_loading = false;
-                match result {
-                    Ok(log_text) => {
-                        self.update_details_log_text = Some(log_text);
-                        self.update_details_log_error = None;
-                    }
-                    Err(error) => {
-                        self.update_details_log_text = None;
-                        self.update_details_log_error = Some(error);
-                    }
-                }
-                Task::none()
-            }
-
-            Message::SystemUpdaterOpened(result) => {
-                if let Err(error) = result {
-                    self.set_status_feedback_silent(
-                        format!("Failed to launch the system updater: {error}"),
-                        false,
-                    );
-                }
-                Task::none()
-            }
-
-            Message::OpenUpdateReleaseNotes => {
-                let Some(url) = self.active_update_release_url() else {
-                    return Task::none();
-                };
-                Task::perform(
-                    async move { crate::launcher::open_url(&url) },
-                    Message::UpdateReleaseNotesOpened,
-                )
-            }
-
-            Message::UpdateReleaseNotesOpened(result) => {
-                if let Err(error) = result {
-                    self.set_status_feedback_silent(
-                        format!("Failed to open the release notes: {error}"),
-                        false,
-                    );
-                }
-                Task::none()
-            }
-
-            Message::StartMonitoring => {
-                self.state = AppState::WaitingForGame;
-                self.rule_engine.reset();
-                self.stop_recorder_if_running();
-                self.tracked_alerts.clear();
-                self.manual_profile_override_profile_id = None;
-                self.last_auto_switch_rule_id = None;
-                self.startup_probe_due_at = None;
-                self.startup_probe_pending_result = false;
-                self.startup_probe_resolution = None;
-                self.obs_connection_status = None;
-                self.sync_tray_snapshot()
-            }
-
-            Message::StopMonitoring => {
-                self.state = AppState::Idle;
-                self.rule_engine.reset();
-                self.honu_session_id = None;
-                self.stop_recorder_if_running();
-                self.tracked_alerts.clear();
-                self.manual_profile_override_profile_id = None;
-                self.last_auto_switch_rule_id = None;
-                self.startup_probe_due_at = None;
-                self.startup_probe_pending_result = false;
-                self.startup_probe_resolution = None;
-                self.obs_connection_status = None;
-                Task::batch([self.finish_active_session(), self.sync_tray_snapshot()])
-            }
-
-            Message::RuntimePoll => {
-                self.dismiss_expired_feedback();
-                self.toasts.tick();
-                let mut tasks = Vec::new();
-
-                if matches!(self.state, AppState::Monitoring { .. }) {
-                    for action in self.rule_engine.poll_due(Utc::now()) {
-                        tasks.push(Task::done(Message::RuleClipAction(action)));
-                    }
-                }
-
-                for result in self.recorder.poll_save_results() {
-                    if self.startup_probe_pending_result {
-                        self.startup_probe_pending_result = false;
-                        match result {
-                            SavePollResult::Saved { path, .. } => {
-                                tracing::info!(
-                                    "Startup recorder probe clip available at {}",
-                                    path.display()
-                                );
-                                tasks.push(self.inspect_and_delete_startup_probe(path));
-                            }
-                            SavePollResult::SaveFailed(error) => {
-                                tracing::warn!("Startup recorder probe save failed: {error}");
-                            }
-                            SavePollResult::BackendEvent(_) => {}
-                        }
-                        continue;
-                    }
-
-                    match result {
-                        SavePollResult::Saved {
-                            path,
-                            duration,
-                            audio_layout,
-                        } => {
-                            tracing::info!("Saved clip available at {}", path.display());
-                            if self.config.recorder.clip_saved_notifications {
-                                self.notifications.notify_clip_saved(duration);
-                            }
-                            tasks.push(self.record_save_outcome(PendingSaveOutcome::Saved {
-                                path,
-                                duration,
-                                audio_layout,
-                            }));
-                        }
-                        SavePollResult::SaveFailed(error) => {
-                            self.set_clip_error(error.clone());
-                            tracing::error!("Recorder save failed: {error}");
-                            tasks.push(self.record_save_outcome(PendingSaveOutcome::Failed));
-                        }
-                        SavePollResult::BackendEvent(event) => {
-                            if self.apply_backend_runtime_event(event) {
-                                tasks.push(self.sync_tray_snapshot());
-                            }
-                        }
-                    }
-                }
-
-                let hotkey_events = self.hotkeys.drain_events();
-                if !hotkey_events.is_empty() {
-                    tracing::debug!(
-                        event_count = hotkey_events.len(),
-                        ?hotkey_events,
-                        "runtime poll received manual clip hotkey events"
-                    );
-                }
-                for event in hotkey_events {
-                    match event {
-                        HotkeyEvent::Activated => {
-                            tracing::debug!("queueing manual clip save from hotkey activation");
-                            tasks.push(Task::done(Message::RequestManualClipSave));
-                        }
-                    }
-                }
-
-                if let Some(tray) = &self.tray {
-                    let tray_events = tray.drain_events();
-                    for event in tray_events {
-                        match event {
-                            TrayEvent::StartMonitoring => {
-                                tasks.push(Task::done(Message::StartMonitoring));
-                            }
-                            TrayEvent::StopMonitoring => {
-                                tasks.push(Task::done(Message::StopMonitoring));
-                            }
-                            TrayEvent::ShowWindow => {
-                                tasks.push(self.show_window_task());
-                            }
-                            TrayEvent::SwitchProfile(profile_id) => {
-                                self.apply_manual_profile_selection(profile_id);
-                            }
-                            TrayEvent::Quit => {
-                                tasks.push(iced::exit());
-                            }
-                        }
-                    }
-                }
-
-                if let Some(task) = self.poll_active_clip_capture() {
-                    tasks.push(task);
-                }
-
-                if let Some(task) = self.poll_startup_probe() {
-                    tasks.push(task);
-                }
-
-                tasks.push(self.process_background_job_notifications());
-
-                Task::batch(tasks)
-            }
-
-            Message::Tick => {
-                let mut tasks = Vec::new();
-                self.event_log.prune(Utc::now());
-
-                if matches!(
-                    self.state,
-                    AppState::WaitingForGame | AppState::WaitingForLogin
-                ) {
-                    if let Some(pid) = self.process_watcher.find_running_pid() {
-                        let (recorder_ready, recorder_task) = self.ensure_ps2_recorder_running(pid);
-                        tasks.push(recorder_task);
-                        if !recorder_ready {
-                            return Task::batch(tasks);
-                        }
-
-                        if !matches!(self.state, AppState::WaitingForLogin) {
-                            self.state = AppState::WaitingForLogin;
-                            tracing::info!("PS2 process found (pid {pid})");
-                            tasks.push(self.check_online_status());
-                            return Task::batch(tasks);
-                        }
-                    } else {
-                        self.stop_recorder_if_running();
-                        if matches!(self.state, AppState::WaitingForLogin) {
-                            self.state = AppState::WaitingForGame;
-                            self.rule_engine.reset();
-                            tracing::info!("PS2 process exited");
-                        }
-                    }
-                } else if matches!(self.state, AppState::Monitoring { .. }) {
-                    if let Some(pid) = self.process_watcher.find_running_pid() {
-                        let (_, recorder_task) = self.ensure_ps2_recorder_running(pid);
-                        tasks.push(recorder_task);
-                    } else {
-                        tracing::info!("PS2 exited while monitoring");
-                        self.state = AppState::WaitingForGame;
-                        self.rule_engine.reset();
-                        self.honu_session_id = None;
-                        self.stop_recorder_if_running();
-                        tasks.push(self.finish_active_session());
-                    }
-                }
-                tasks.push(Task::none());
-                let active_character_id = match &self.state {
-                    AppState::Monitoring { character_id, .. } => Some(*character_id),
-                    _ => None,
-                };
-                tasks.push(self.evaluate_runtime_auto_switch(Utc::now(), active_character_id));
-                if self.should_auto_check_for_updates() {
-                    self.update_state.checking = true;
-                    self.update_state.phase = UpdatePhase::Checking;
-                    self.update_state.progress = Some(UpdateProgressState {
-                        detail: "Checking GitHub Releases for a newer version.".into(),
-                    });
-                    tasks.push(self.check_for_updates_task(false));
-                }
-                if self.should_auto_apply_staged_update() {
-                    tasks.push(Task::done(Message::InstallDownloadedUpdateWhenIdle));
-                }
-                Task::batch(tasks)
-            }
-
-            Message::RecorderStartCompleted { id } => self.complete_pending_recorder_start(id),
-
-            Message::OnlineStatusChecked(online_ids) => {
-                if !matches!(self.state, AppState::WaitingForLogin) {
-                    return Task::none();
-                }
-                let Some(&id) = online_ids.first() else {
-                    return Task::none();
-                };
-                let character_name = self
-                    .config
-                    .characters
-                    .iter()
-                    .find(|c| c.character_id == Some(id))
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| format!("character {id}"));
-                tracing::info!("{character_name} already logged in ({id})");
-                self.enter_monitoring(character_name, id)
-            }
-
-            Message::HonuSessionResolved(result) => {
-                match result {
-                    Ok(Some(session_id)) => {
-                        tracing::info!("Honu session resolved: {session_id}");
-                        self.honu_session_id = Some(session_id);
-                    }
-                    Ok(None) => {
-                        tracing::info!("No active Honu session found");
-                    }
-                    Err(error) => {
-                        tracing::warn!("Failed to resolve Honu session: {error}");
-                    }
-                }
-                Task::none()
-            }
-
             Message::RuleClipAction(action) => self.handle_rule_clip_action(action),
 
             Message::ClipPersisted { sequence, result } => match result {
                 Ok(clip_id) => {
                     self.clear_clip_error();
-                    self.pending_clip_links.entry(sequence).or_default().clip_id = Some(clip_id);
+                    self.runtime
+                        .pending_clip_links
+                        .entry(sequence)
+                        .or_default()
+                        .clip_id = Some(clip_id);
                     let linked = self.resolve_pending_clip_links();
-                    let detail = if self.selected_clip_id == Some(clip_id) {
+                    let detail = if self.clips.selected_id == Some(clip_id) {
                         self.load_clip_detail(Some(clip_id))
                     } else {
                         Task::none()
@@ -1934,7 +1324,8 @@ impl App {
                 Err(error) => {
                     self.set_clip_error(error.clone());
                     tracing::error!("Failed to persist clip: {error}");
-                    self.pending_clip_links
+                    self.runtime
+                        .pending_clip_links
                         .entry(sequence)
                         .or_default()
                         .persist_failed = true;
@@ -1973,10 +1364,10 @@ impl App {
                 match result {
                     Ok(Some(resolution)) => {
                         if self.should_reset_portal_capture_after_clip(resolution) {
-                            self.portal_capture_recovery_notified = true;
+                            self.runtime.portal_capture_recovery_notified = true;
                             let clear_result = crate::recorder::clear_portal_session_token();
                             let next_step = if matches!(
-                                self.state,
+                                self.runtime.lifecycle,
                                 AppState::WaitingForGame
                                     | AppState::WaitingForLogin
                                     | AppState::Monitoring { .. }
@@ -2030,14 +1421,14 @@ impl App {
 
                 match result {
                     Ok(Some(resolution)) => {
-                        self.startup_probe_resolution = Some(resolution);
+                        self.runtime.startup_probe_resolution = Some(resolution);
                         tracing::info!(
                             "Startup recorder probe resolved to {}x{}",
                             resolution.width,
                             resolution.height
                         );
                         if self.should_reset_portal_capture_after_clip(resolution) {
-                            self.portal_capture_recovery_notified = true;
+                            self.runtime.portal_capture_recovery_notified = true;
                             let clear_result = crate::recorder::clear_portal_session_token();
                             let token_detail = match clear_result {
                                 Ok(true) => {
@@ -2059,14 +1450,14 @@ impl App {
                         }
                     }
                     Ok(None) => {
-                        self.startup_probe_resolution = None;
+                        self.runtime.startup_probe_resolution = None;
                         tracing::debug!(
                             "Startup recorder probe found no video stream in {}",
                             path.display()
                         );
                     }
                     Err(error) => {
-                        self.startup_probe_resolution = None;
+                        self.runtime.startup_probe_resolution = None;
                         tracing::debug!(
                             "Failed to inspect startup recorder probe {}: {error}",
                             path.display()
@@ -2131,7 +1522,7 @@ impl App {
                         format!("Clip #{clip_id} is now using the original captured audio layout."),
                         false,
                     );
-                    let detail = if self.selected_clip_id == Some(clip_id) {
+                    let detail = if self.clips.selected_id == Some(clip_id) {
                         self.load_clip_detail(Some(clip_id))
                     } else {
                         Task::none()
@@ -2145,15 +1536,15 @@ impl App {
             },
 
             Message::YouTubeOAuthCompleted(result) => {
-                self.settings_youtube_oauth_in_flight = false;
+                self.settings.youtube_oauth_in_flight = false;
                 match result {
                     Ok(()) => {
                         info!("YouTube OAuth flow completed and refresh token is marked as stored");
-                        if !self.settings_youtube_client_secret_input.trim().is_empty() {
-                            self.settings_youtube_client_secret_present = true;
-                            self.settings_youtube_client_secret_input.clear();
+                        if !self.settings.youtube_client_secret_input.trim().is_empty() {
+                            self.settings.youtube_client_secret_present = true;
+                            self.settings.youtube_client_secret_input.clear();
                         }
-                        self.settings_youtube_refresh_token_present = true;
+                        self.settings.youtube_refresh_token_present = true;
                         self.set_settings_feedback(
                             "YouTube account connected. Future uploads will use the stored refresh token.",
                             false,
@@ -2183,8 +1574,9 @@ impl App {
 
             Message::OpenClipRequested(path) => {
                 let open_path = path.clone();
+                let platform = self.platform.clone();
                 Task::perform(
-                    async move { crate::launcher::open_path(&open_path) },
+                    async move { platform.open_path(&open_path) },
                     move |result| Message::ClipOpenFinished { path, result },
                 )
             }
@@ -2209,7 +1601,7 @@ impl App {
                     return Task::none();
                 };
 
-                self.deleting_clip_id = Some(clip_id);
+                self.clips.deleting_id = Some(clip_id);
                 self.clear_clip_error();
 
                 let result_path = path.clone();
@@ -2228,8 +1620,8 @@ impl App {
                 path,
                 result,
             } => {
-                if self.deleting_clip_id == Some(clip_id) {
-                    self.deleting_clip_id = None;
+                if self.clips.deleting_id == Some(clip_id) {
+                    self.clips.deleting_id = None;
                 }
 
                 match result {
@@ -2265,9 +1657,9 @@ impl App {
             Message::RecentClipsLoaded(result) => {
                 match result {
                     Ok(clips) => {
-                        self.recent_clips = clips;
+                        self.clips.recent = clips;
                         self.clear_clip_error();
-                        let lookup_clips = self.recent_clips.clone();
+                        let lookup_clips = self.clips.recent.clone();
                         return Task::batch([
                             self.schedule_clip_record_lookup_resolutions(&lookup_clips),
                             Task::none(),
@@ -2291,22 +1683,20 @@ impl App {
 
             Message::Settings(msg) => tabs::settings::update(self, msg),
 
-            Message::CensusStream(event) => self.handle_census_stream(event),
-
             Message::RequestManualClipSave => self.request_manual_clip_save(),
 
             Message::ClipDetailLoaded(result) => {
-                self.clip_detail_loading = false;
+                self.clips.detail_loading = false;
                 match result {
                     Ok(detail) => {
-                        self.selected_clip_detail = detail;
+                        self.clips.selected_detail = detail;
                         self.clear_clip_error();
-                        if let Some(detail) = self.selected_clip_detail.clone() {
+                        if let Some(detail) = self.clips.selected_detail.clone() {
                             return self.schedule_clip_detail_lookup_resolutions(&detail);
                         }
                     }
                     Err(error) => {
-                        self.selected_clip_detail = None;
+                        self.clips.selected_detail = None;
                         self.set_clip_error(error.clone());
                         tracing::error!("Failed to load clip detail: {error}");
                     }
@@ -2317,9 +1707,9 @@ impl App {
             Message::ClipFilterOptionsLoaded(result) => {
                 match result {
                     Ok(options) => {
-                        self.clip_filter_options.targets = options.targets;
-                        self.clip_filter_options.weapons = options.weapons;
-                        self.clip_filter_options.alerts = options.alerts;
+                        self.clips.filter_options.targets = options.targets;
+                        self.clips.filter_options.weapons = options.weapons;
+                        self.clips.filter_options.alerts = options.alerts;
                     }
                     Err(error) => {
                         tracing::warn!("Failed to load clip filter options: {error}");
@@ -2329,19 +1719,19 @@ impl App {
             }
 
             Message::StatsLoaded { revision, result } => {
-                if revision != self.stats_revision {
+                if revision != self.stats.revision {
                     return Task::none();
                 }
 
-                self.stats_loading = false;
+                self.stats.loading = false;
                 match result {
                     Ok(snapshot) => {
-                        self.stats_error = None;
-                        self.stats_snapshot = Some(snapshot);
-                        self.stats_last_refreshed_at = Some(Instant::now());
+                        self.stats.error = None;
+                        self.stats.snapshot = Some(snapshot);
+                        self.stats.last_refreshed_at = Some(Instant::now());
                     }
                     Err(error) => {
-                        self.stats_error = Some(error.clone());
+                        self.stats.error = Some(error.clone());
                         self.push_toast(ToastTone::Error, "Stats", error.clone(), true);
                         tracing::error!("Failed to load stats: {error}");
                     }
@@ -2353,7 +1743,7 @@ impl App {
                 match result {
                     Ok(summary) => {
                         if summary.session_id == session_id {
-                            self.last_session_summary = Some(summary);
+                            self.runtime.last_session_summary = Some(summary);
                         }
                     }
                     Err(error) => {
@@ -2410,7 +1800,7 @@ impl App {
                 refreshed,
                 result,
             } => {
-                self.resolving_lookups.remove(&(kind, lookup_id));
+                self.rules.resolving_lookups.remove(&(kind, lookup_id));
                 match result {
                     Ok(()) if refreshed => {
                         let mut tasks = vec![
@@ -2420,8 +1810,8 @@ impl App {
                         if matches!(self.view, View::Stats) {
                             tasks.push(self.load_stats());
                         }
-                        if self.selected_clip_id.is_some() {
-                            tasks.push(self.load_clip_detail(self.selected_clip_id));
+                        if self.clips.selected_id.is_some() {
+                            tasks.push(self.load_clip_detail(self.clips.selected_id));
                         }
                         Task::batch(tasks)
                     }
@@ -2446,35 +1836,235 @@ impl App {
                 }
                 Task::none()
             }
+        }
+    }
 
-            Message::MainWindowOpened(window_id) => {
-                self.main_window_id = Some(window_id);
-                Task::none()
-            }
-
-            Message::MainWindowClosed(window_id) => {
-                if self.main_window_id == Some(window_id) {
-                    self.main_window_id = None;
+    fn handle_update_message(&mut self, message: UpdateMessage) -> Task<Message> {
+        match message {
+            UpdateMessage::LaunchAtLoginSynced(result) => {
+                if let Err(error) = result {
+                    self.set_settings_feedback(
+                        format!(
+                            "Settings were saved, but launch-at-login could not be updated: {error}"
+                        ),
+                        false,
+                    );
                 }
                 Task::none()
             }
-
-            Message::WindowCloseRequested(window_id) => {
-                if self.config.minimize_to_tray && self.main_window_id == Some(window_id) {
-                    self.main_window_id = None;
-                    return window::close(window_id);
-                }
-
-                iced::exit()
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            Message::HotkeysConfigured { generation, result } => {
-                if generation != self.hotkey_config_generation {
+            UpdateMessage::CheckForUpdates { manual } => {
+                if self.updates.state.checking {
                     return Task::none();
                 }
+                self.updates.state.checking = true;
+                self.updates.state.phase = UpdatePhase::Checking;
+                self.updates.state.progress = Some(UpdateProgressState {
+                    detail: "Checking GitHub Releases for a newer version.".into(),
+                });
+                self.updates.state.last_error = None;
+                self.check_for_updates_task(manual)
+            }
+            UpdateMessage::RefreshRollbackCatalog => {
+                if self.updates.state.rollback_catalog_loading {
+                    return Task::none();
+                }
+                self.updates.state.rollback_catalog_loading = true;
+                self.refresh_rollback_catalog_task()
+            }
+            UpdateMessage::UpdateCheckCompleted { manual, result } => {
+                self.updates.state.checking = false;
+                self.updates.state.progress = None;
+                let checked_at = Utc::now();
+                self.updates.state.last_checked_at = Some(checked_at);
+                self.config.updates.last_check_utc = Some(checked_at);
 
-                self.finish_hotkey_configuration(result.map(take_hotkey_config_result));
+                match result {
+                    Ok(latest_release) => {
+                        self.updates.state.latest_release = latest_release;
+                        self.updates.state.last_error = None;
+                        self.updates.state.phase = if self.updates.state.has_downloaded_update() {
+                            UpdatePhase::ReadyToInstall
+                        } else {
+                            UpdatePhase::Idle
+                        };
+
+                        if let Some(release) = &self.updates.state.latest_release {
+                            let release_version = release.version.to_string();
+                            if self.config.updates.remind_later_version.as_deref()
+                                != Some(release_version.as_str())
+                            {
+                                self.config.updates.remind_later_version = None;
+                                self.config.updates.remind_later_until_utc = None;
+                            }
+                        } else {
+                            self.config.updates.remind_later_version = None;
+                            self.config.updates.remind_later_until_utc = None;
+                        }
+                    }
+                    Err(error) => {
+                        self.set_update_error(
+                            classify_update_error(error.as_str(), UpdatePhase::Checking),
+                            error.clone(),
+                        );
+                        self.push_toast(
+                            ToastTone::Error,
+                            "Update Failed",
+                            format!("Failed to check for updates: {error}"),
+                            true,
+                        );
+                        if !manual {
+                            tracing::warn!("Automatic update check failed: {error}");
+                        }
+                    }
+                }
+
+                if let Err(error) = self.config.save() {
+                    tracing::warn!("Failed to persist update-check timestamp: {error}");
+                }
+
+                Task::none()
+            }
+            UpdateMessage::RollbackCatalogLoaded(result) => {
+                self.updates.state.rollback_catalog_loading = false;
+                match result {
+                    Ok(candidates) => {
+                        self.updates.state.rollback_candidates = candidates.clone();
+                        let previous_version =
+                            self.updates.state.previous_installed_version.clone();
+                        self.settings.selected_rollback_release = previous_version
+                            .as_ref()
+                            .and_then(|previous| {
+                                candidates
+                                    .iter()
+                                    .find(|release| &release.version == previous)
+                                    .cloned()
+                            })
+                            .or_else(|| candidates.first().cloned());
+                    }
+                    Err(error) => {
+                        self.set_update_error(
+                            classify_update_error(error.as_str(), UpdatePhase::Checking),
+                            error.clone(),
+                        );
+                        self.push_toast(
+                            ToastTone::Error,
+                            "Update Failed",
+                            format!("Failed to refresh rollback versions: {error}"),
+                            true,
+                        );
+                    }
+                }
+                Task::none()
+            }
+            UpdateMessage::DownloadSelectedRollbackVersion => {
+                let Some(release) = self.selected_rollback_release() else {
+                    self.set_status_feedback_silent(
+                        "Load rollback versions and choose one before downloading it.",
+                        false,
+                    );
+                    return Task::none();
+                };
+                self.queue_release_download(release)
+            }
+            UpdateMessage::RollbackToPreviousInstalledVersion => {
+                if self.updates.state.previous_installed_version.is_none() {
+                    self.set_status_feedback_silent(
+                        "No previously installed version is recorded for this install yet.",
+                        false,
+                    );
+                    return Task::none();
+                }
+                self.lookup_previous_installed_rollback_task()
+            }
+            UpdateMessage::RollbackPreviousVersionResolved(result) => match result {
+                Ok(Some(release)) => {
+                    self.settings.selected_rollback_release = Some(release.clone());
+                    self.queue_release_download(release)
+                }
+                Ok(None) => {
+                    let version_label = self
+                        .updates
+                        .state
+                        .previous_installed_version
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "the previous version".into());
+                    self.set_status_feedback_silent(
+                        format!(
+                            "GitHub Releases did not expose a downloadable asset for {}.",
+                            version_label
+                        ),
+                        false,
+                    );
+                    Task::none()
+                }
+                Err(error) => {
+                    self.set_update_error(
+                        classify_update_error(error.as_str(), UpdatePhase::Checking),
+                        error.clone(),
+                    );
+                    self.push_toast(
+                        ToastTone::Error,
+                        "Update Failed",
+                        format!("Failed to resolve the previous version: {error}"),
+                        true,
+                    );
+                    Task::none()
+                }
+            },
+            UpdateMessage::UpdatePrimaryActionSelected(action) => {
+                self.settings.selected_update_action = action;
+                Task::none()
+            }
+            UpdateMessage::RunSelectedUpdateAction => self.run_selected_update_action(),
+            UpdateMessage::InstallDownloadedUpdateWhenIdle => {
+                self.schedule_downloaded_update_when_idle()
+            }
+            UpdateMessage::ShowUpdateDetails => self.show_update_details(),
+            UpdateMessage::HideUpdateDetails => {
+                self.updates.details_modal_open = false;
+                self.updates.details_log_loading = false;
+                Task::none()
+            }
+            UpdateMessage::UpdateDetailsLogLoaded(result) => {
+                self.updates.details_log_loading = false;
+                match result {
+                    Ok(log_text) => {
+                        self.updates.details_log_text = Some(log_text);
+                        self.updates.details_log_error = None;
+                    }
+                    Err(error) => {
+                        self.updates.details_log_text = None;
+                        self.updates.details_log_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+            UpdateMessage::SystemUpdaterOpened(result) => {
+                if let Err(error) = result {
+                    self.set_status_feedback_silent(
+                        format!("Failed to launch the system updater: {error}"),
+                        false,
+                    );
+                }
+                Task::none()
+            }
+            UpdateMessage::OpenUpdateReleaseNotes => {
+                let Some(url) = self.active_update_release_url() else {
+                    return Task::none();
+                };
+                let platform = self.platform.clone();
+                Task::perform(async move { platform.open_url(&url) }, |result| {
+                    Message::updates(UpdateMessage::UpdateReleaseNotesOpened(result))
+                })
+            }
+            UpdateMessage::UpdateReleaseNotesOpened(result) => {
+                if let Err(error) = result {
+                    self.set_status_feedback_silent(
+                        format!("Failed to open the release notes: {error}"),
+                        false,
+                    );
+                }
                 Task::none()
             }
         }
@@ -2484,7 +2074,11 @@ impl App {
         let client = self.honu_client.clone();
         Task::perform(
             async move { client.fetch_active_session(character_id).await },
-            |result| Message::HonuSessionResolved(result.map_err(|e| e.to_string())),
+            |result| {
+                Message::runtime(RuntimeMessage::HonuSessionResolved(
+                    result.map_err(|e| e.to_string()),
+                ))
+            },
         )
     }
 
@@ -2502,10 +2096,10 @@ impl App {
         Task::perform(
             async move { census::fetch_online_status(&service_id, &ids).await },
             |result| match result {
-                Ok(online) => Message::OnlineStatusChecked(online),
+                Ok(online) => Message::runtime(RuntimeMessage::OnlineStatusChecked(online)),
                 Err(e) => {
                     tracing::warn!("Online status check failed: {e}");
-                    Message::OnlineStatusChecked(Vec::new())
+                    Message::runtime(RuntimeMessage::OnlineStatusChecked(Vec::new()))
                 }
             },
         )
@@ -2514,7 +2108,7 @@ impl App {
     fn handle_census_stream(&mut self, event: StreamEvent) -> Task<Message> {
         match event {
             StreamEvent::Login { character_id } => {
-                if matches!(self.state, AppState::WaitingForLogin) {
+                if matches!(self.runtime.lifecycle, AppState::WaitingForLogin) {
                     let character_name = self
                         .config
                         .characters
@@ -2531,13 +2125,13 @@ impl App {
                 if let AppState::Monitoring {
                     character_id: active,
                     ..
-                } = &self.state
+                } = &self.runtime.lifecycle
                     && *active == character_id
                 {
                     tracing::info!("character {character_id} logged out");
-                    self.state = AppState::WaitingForLogin;
+                    self.runtime.lifecycle = AppState::WaitingForLogin;
                     self.rule_engine.reset();
-                    self.honu_session_id = None;
+                    self.runtime.honu_session_id = None;
                     return self.finish_active_session();
                 }
                 Task::none()
@@ -2546,7 +2140,7 @@ impl App {
                 character_id,
                 event,
             } => {
-                let should_handle = match &self.state {
+                let should_handle = match &self.runtime.lifecycle {
                     AppState::Monitoring {
                         character_id: active_id,
                         ..
@@ -2726,208 +2320,14 @@ impl App {
         });
 
         let base: Element<'_, Message> = stack![base, overlay].into();
-        if self.update_details_modal_open {
+        if self.updates.details_modal_open {
             modal(
                 base,
                 update_details_modal(self),
-                Some(Message::HideUpdateDetails),
+                Some(Message::updates(UpdateMessage::HideUpdateDetails)),
             )
         } else {
             base
-        }
-    }
-
-    fn ensure_ps2_recorder_running(&mut self, ps2_pid: u32) -> (bool, Task<Message>) {
-        if self.recorder.is_running() {
-            return (true, Task::none());
-        }
-
-        if self.recorder.backend_id() == "obs" && self.obs_restart_requires_manual_restart {
-            return (false, Task::none());
-        }
-
-        let capture_plan = if self.recorder.backend_id() == "obs" {
-            process::CaptureSourcePlan {
-                target: process::CaptureTarget::BackendOwned,
-                backend_hints: process::BackendHints::default(),
-            }
-        } else {
-            match self
-                .process_watcher
-                .resolve_capture_target(ps2_pid, &self.config.recorder.gsr().capture_source)
-            {
-                Ok(capture_plan) => capture_plan,
-                Err(error) => {
-                    tracing::debug!(
-                        "Waiting for PlanetSide 2 window before starting recorder: {error}"
-                    );
-                    return (false, Task::none());
-                }
-            }
-        };
-
-        if self
-            .pending_recorder_start
-            .as_ref()
-            .is_some_and(|pending| pending.capture_plan == capture_plan)
-        {
-            return (false, Task::none());
-        }
-
-        (false, self.start_recorder_in_background(capture_plan))
-    }
-
-    fn start_recorder_in_background(
-        &mut self,
-        capture_plan: process::CaptureSourcePlan,
-    ) -> Task<Message> {
-        self.cancel_pending_recorder_start();
-
-        let start_id = self.next_recorder_start_id;
-        self.next_recorder_start_id += 1;
-        let backend = self.recorder.backend_handle();
-        let request = self.recorder.capture_request(&capture_plan);
-        let result_slot = Arc::new(Mutex::new(None));
-        let task_result_slot = result_slot.clone();
-
-        let task = Task::perform(
-            async move {
-                let result = tokio::task::spawn_blocking(move || backend.spawn_replay(request))
-                    .await
-                    .map_err(|error| {
-                        crate::capture::CaptureError::SpawnFailed(format!(
-                            "failed to join recorder startup worker: {error}"
-                        ))
-                    })
-                    .and_then(|result| result);
-                *task_result_slot
-                    .lock()
-                    .expect("recorder startup result mutex poisoned") = Some(result);
-            },
-            move |_| Message::RecorderStartCompleted { id: start_id },
-        );
-        let (task, abort_handle) = task.abortable();
-
-        self.pending_recorder_start = Some(PendingRecorderStart {
-            id: start_id,
-            capture_plan,
-            result_slot,
-            abort_handle,
-        });
-
-        task
-    }
-
-    fn cancel_pending_recorder_start(&mut self) {
-        if let Some(pending) = self.pending_recorder_start.take() {
-            pending.abort_handle.abort();
-        }
-    }
-
-    fn complete_pending_recorder_start(&mut self, id: u64) -> Task<Message> {
-        let Some(pending_id) = self
-            .pending_recorder_start
-            .as_ref()
-            .map(|pending| pending.id)
-        else {
-            return Task::none();
-        };
-        if pending_id != id {
-            return Task::none();
-        }
-
-        let pending = self
-            .pending_recorder_start
-            .take()
-            .expect("pending recorder start vanished unexpectedly");
-        let result = pending
-            .result_slot
-            .lock()
-            .expect("recorder startup result mutex poisoned")
-            .take()
-            .unwrap_or_else(|| {
-                Err(crate::capture::CaptureError::SpawnFailed(
-                    "recorder startup completed without a result".into(),
-                ))
-            });
-
-        match result {
-            Ok(session) => {
-                if !matches!(
-                    self.state,
-                    AppState::WaitingForGame
-                        | AppState::WaitingForLogin
-                        | AppState::Monitoring { .. }
-                ) {
-                    return Task::none();
-                }
-
-                match self.recorder.attach_session(pending.capture_plan, session) {
-                    Ok(()) => {
-                        self.portal_capture_recovery_notified = false;
-                        self.obs_connection_status = None;
-                        self.obs_restart_requires_manual_restart = false;
-
-                        let mut tasks = vec![self.sync_tray_snapshot()];
-                        if matches!(self.state, AppState::WaitingForGame)
-                            && let Some(pid) = self.process_watcher.find_running_pid()
-                        {
-                            self.state = AppState::WaitingForLogin;
-                            tracing::info!("PS2 process found (pid {pid})");
-                            tasks.push(self.check_online_status());
-                        }
-                        Task::batch(tasks)
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            "Recorder finished starting but could not attach session: {error}"
-                        );
-                        Task::none()
-                    }
-                }
-            }
-            Err(error) => {
-                let error_text = error.to_string();
-                tracing::error!("Failed to start recorder: {error_text}");
-
-                if self.recorder.backend_id() == "obs" {
-                    let status = capture::ObsConnectionStatus::Failed {
-                        reason: error_text.clone(),
-                    };
-                    let changed = self.obs_connection_status.as_ref() != Some(&status);
-                    self.obs_connection_status = Some(status);
-                    self.obs_restart_requires_manual_restart = true;
-                    if changed {
-                        self.set_status_feedback(
-                            format!(
-                                "OBS failed to start monitoring: {error_text}. Fix OBS and restart monitoring."
-                            ),
-                            false,
-                        );
-                    }
-                    return self.sync_tray_snapshot();
-                }
-
-                self.set_status_feedback(format!("Failed to start recorder: {error_text}"), false);
-                Task::none()
-            }
-        }
-    }
-
-    fn stop_recorder_if_running(&mut self) {
-        self.cancel_pending_recorder_start();
-        self.active_clip_capture = None;
-        self.startup_probe_due_at = None;
-        self.startup_probe_pending_result = false;
-        self.startup_probe_resolution = None;
-        self.obs_connection_status = None;
-        self.obs_restart_requires_manual_restart = false;
-        if !self.recorder.is_running() {
-            return;
-        }
-
-        if let Err(error) = self.recorder.stop() {
-            tracing::warn!("Failed to stop recorder: {error}");
         }
     }
 
@@ -2956,12 +2356,12 @@ impl App {
         let name = name.trim().to_string();
         if name.is_empty()
             || self.config.service_id.trim().is_empty()
-            || self.resolving_characters.contains(&name)
+            || self.rules.resolving_characters.contains(&name)
         {
             return Task::none();
         }
 
-        self.resolving_characters.insert(name.clone());
+        self.rules.resolving_characters.insert(name.clone());
         let service_id = self.config.service_id.clone();
         let resolved_name = name.clone();
         Task::perform(
@@ -3001,7 +2401,7 @@ impl App {
     }
 
     fn clip_request_from_rule_action(&self, action: &ClipAction) -> Option<ClipSaveRequest> {
-        let AppState::Monitoring { character_id, .. } = &self.state else {
+        let AppState::Monitoring { character_id, .. } = &self.runtime.lifecycle else {
             return None;
         };
 
@@ -3025,8 +2425,9 @@ impl App {
             zone_id: action.event.zone_id,
             facility_id: action.event.facility_id,
             character_id: *character_id,
-            honu_session_id: self.honu_session_id,
+            honu_session_id: self.runtime.honu_session_id,
             session_id: self
+                .runtime
                 .active_session
                 .as_ref()
                 .map(|session| session.id.clone()),
@@ -3034,12 +2435,12 @@ impl App {
     }
 
     fn queue_immediate_clip_save(&mut self, request: ClipSaveRequest) -> Task<Message> {
-        if self.active_clip_capture.is_some() {
+        if self.runtime.active_clip_capture.is_some() {
             tracing::info!("Clip trigger ignored: another pending clip capture is already active");
             return Task::none();
         }
 
-        self.active_clip_capture = Some(ActiveClipCapture {
+        self.runtime.active_clip_capture = Some(ActiveClipCapture {
             preferred_start_at: request.clip_start_at,
             request,
         });
@@ -3051,7 +2452,7 @@ impl App {
         mut request: ClipSaveRequest,
         expires_at: chrono::DateTime<Utc>,
     ) -> Task<Message> {
-        if self.active_clip_capture.is_some() {
+        if self.runtime.active_clip_capture.is_some() {
             tracing::info!(
                 "Auto-extend trigger ignored for rule `{}` because another clip capture is already pending",
                 request.rule_id
@@ -3067,7 +2468,7 @@ impl App {
             preferred_start_at,
             self.config.recorder.replay_buffer_secs,
         );
-        self.active_clip_capture = Some(ActiveClipCapture {
+        self.runtime.active_clip_capture = Some(ActiveClipCapture {
             request,
             preferred_start_at,
         });
@@ -3083,7 +2484,7 @@ impl App {
         let save_delay_secs = self.config.recorder.save_delay_secs;
         let replay_buffer_secs = self.config.recorder.replay_buffer_secs;
 
-        let Some(active_capture) = self.active_clip_capture.as_mut() else {
+        let Some(active_capture) = self.runtime.active_clip_capture.as_mut() else {
             tracing::debug!(
                 "Received extend action for rule `{}` without an active capture",
                 action.rule_id
@@ -3131,7 +2532,7 @@ impl App {
     ) -> Task<Message> {
         let save_delay_secs = self.config.recorder.save_delay_secs;
         let replay_buffer_secs = self.config.recorder.replay_buffer_secs;
-        let Some(active_capture) = self.active_clip_capture.as_mut() else {
+        let Some(active_capture) = self.runtime.active_clip_capture.as_mut() else {
             tracing::debug!(
                 "Received finalize action for rule `{rule_id}` without an active capture"
             );
@@ -3155,38 +2556,6 @@ impl App {
         self.poll_active_clip_capture().unwrap_or_else(Task::none)
     }
 
-    fn enter_monitoring(&mut self, character_name: String, character_id: u64) -> Task<Message> {
-        if self.notifications_enabled() {
-            self.notifications
-                .notify_character_confirmed(character_name.as_str());
-        }
-        let started_at = Utc::now();
-        self.event_log.clear();
-        self.honu_session_id = None;
-        self.tracked_alerts.clear();
-        self.manual_profile_override_profile_id = None;
-        self.last_auto_switch_rule_id = None;
-        self.active_session = Some(MonitoringSession {
-            id: format!("{character_id}-{}", started_at.timestamp_millis()),
-            started_at,
-            character_id,
-            character_name: character_name.clone(),
-        });
-        self.state = AppState::Monitoring {
-            character_name,
-            character_id,
-        };
-        self.rule_engine.reset();
-        self.startup_probe_due_at = Some(Instant::now() + Duration::from_secs(6));
-        self.startup_probe_pending_result = false;
-        self.startup_probe_resolution = None;
-        Task::batch([
-            self.fetch_honu_session(character_id),
-            self.evaluate_runtime_auto_switch(Utc::now(), Some(character_id)),
-            self.sync_tray_snapshot(),
-        ])
-    }
-
     pub(in crate::app) fn active_profile_index(&self) -> Option<usize> {
         self.config
             .rule_profiles
@@ -3204,7 +2573,7 @@ impl App {
     }
 
     pub(in crate::app) fn manual_profile_override_name(&self) -> Option<String> {
-        let profile_id = self.manual_profile_override_profile_id.as_deref()?;
+        let profile_id = self.runtime.manual_profile_override_profile_id.as_deref()?;
         self.config
             .rule_profiles
             .iter()
@@ -3231,13 +2600,13 @@ impl App {
     }
 
     pub(in crate::app) fn apply_manual_profile_selection(&mut self, profile_id: String) {
-        self.manual_profile_override_profile_id = Some(profile_id.clone());
-        self.last_auto_switch_rule_id = None;
+        self.runtime.manual_profile_override_profile_id = Some(profile_id.clone());
+        self.runtime.last_auto_switch_rule_id = None;
         self.set_active_profile_runtime(profile_id, true);
     }
 
     pub(in crate::app) fn resume_auto_switching(&mut self) {
-        self.manual_profile_override_profile_id = None;
+        self.runtime.manual_profile_override_profile_id = None;
     }
 
     fn evaluate_runtime_auto_switch(
@@ -3245,7 +2614,7 @@ impl App {
         now: chrono::DateTime<Utc>,
         active_character_id: Option<u64>,
     ) -> Task<Message> {
-        if self.manual_profile_override_profile_id.is_some() {
+        if self.runtime.manual_profile_override_profile_id.is_some() {
             return Task::none();
         }
         let Some(decision) =
@@ -3256,13 +2625,14 @@ impl App {
         if self.config.active_profile_id == decision.target_profile_id {
             return Task::none();
         }
-        self.last_auto_switch_rule_id = Some(decision.rule_id);
+        self.runtime.last_auto_switch_rule_id = Some(decision.rule_id);
         self.set_active_profile_runtime(decision.target_profile_id, false);
         Task::none()
     }
 
     fn handle_alert_update(&mut self, alert_update: AlertUpdate) -> Task<Message> {
         let mut record = self
+            .runtime
             .tracked_alerts
             .get(&alert_update.alert_key)
             .cloned()
@@ -3290,7 +2660,8 @@ impl App {
             record.ended_at = Some(alert_update.timestamp);
             record.winner_faction = alert_update.winner_faction.clone();
         }
-        self.tracked_alerts
+        self.runtime
+            .tracked_alerts
             .insert(alert_update.alert_key.clone(), record.clone());
 
         let Some(store) = self.clip_store.clone() else {
@@ -3317,7 +2688,8 @@ impl App {
             return Vec::new();
         };
 
-        self.tracked_alerts
+        self.runtime
+            .tracked_alerts
             .values()
             .filter(|alert| alert.world_id == world_id && alert.zone_id == zone_id)
             .filter(|alert| {
@@ -3334,13 +2706,14 @@ impl App {
 
     pub(in crate::app) fn sync_launch_at_login_task(&self) -> Task<Message> {
         let config = self.config.launch_at_login.clone();
+        let platform = self.platform.clone();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || crate::autostart::sync_launch_at_login(&config))
+                tokio::task::spawn_blocking(move || platform.sync_launch_at_login(&config))
                     .await
                     .map_err(|error| format!("failed to join launch-at-login task: {error}"))?
             },
-            Message::LaunchAtLoginSynced,
+            |result| Message::updates(UpdateMessage::LaunchAtLoginSynced(result)),
         )
     }
 
@@ -3363,7 +2736,7 @@ impl App {
     }
 
     fn poll_active_clip_capture(&mut self) -> Option<Task<Message>> {
-        let active_capture = self.active_clip_capture.as_ref()?;
+        let active_capture = self.runtime.active_clip_capture.as_ref()?;
         if self.recorder.save_in_progress() {
             return None;
         }
@@ -3371,27 +2744,27 @@ impl App {
             return None;
         }
 
-        let request = self.active_clip_capture.take()?.request;
+        let request = self.runtime.active_clip_capture.take()?.request;
         Some(self.begin_clip_save(request))
     }
 
     fn poll_startup_probe(&mut self) -> Option<Task<Message>> {
-        let due_at = self.startup_probe_due_at?;
+        let due_at = self.runtime.startup_probe_due_at?;
         if Instant::now() < due_at {
             return None;
         }
-        if self.startup_probe_pending_result
+        if self.runtime.startup_probe_pending_result
             || self.recorder.save_in_progress()
-            || self.active_clip_capture.is_some()
+            || self.runtime.active_clip_capture.is_some()
             || !self.recorder.should_probe_saved_clip_resolution()
         {
             return None;
         }
 
-        self.startup_probe_due_at = None;
-        self.startup_probe_pending_result = true;
+        self.runtime.startup_probe_due_at = None;
+        self.runtime.startup_probe_pending_result = true;
         if let Err(error) = self.recorder.save_clip(ClipLength::Seconds(5)) {
-            self.startup_probe_pending_result = false;
+            self.runtime.startup_probe_pending_result = false;
             tracing::warn!("Failed to start startup recorder probe save: {error}");
             return None;
         }
@@ -3426,10 +2799,11 @@ impl App {
             return lookup_tasks;
         };
 
-        let sequence = self.next_clip_sequence;
-        self.next_clip_sequence += 1;
-        self.pending_save_sequences.push_back(sequence);
-        self.pending_clip_links
+        let sequence = self.runtime.next_clip_sequence;
+        self.runtime.next_clip_sequence += 1;
+        self.runtime.pending_save_sequences.push_back(sequence);
+        self.runtime
+            .pending_clip_links
             .entry(sequence)
             .or_default()
             .naming_context = Some(self.build_clip_naming_context(&request));
@@ -3446,19 +2820,19 @@ impl App {
     }
 
     fn load_clip_detail(&mut self, clip_id: Option<i64>) -> Task<Message> {
-        self.selected_clip_id = clip_id;
-        self.selected_clip_detail = None;
+        self.clips.selected_id = clip_id;
+        self.clips.selected_detail = None;
 
         let Some(clip_id) = clip_id else {
-            self.clip_detail_loading = false;
+            self.clips.detail_loading = false;
             return Task::none();
         };
         let Some(store) = self.clip_store.clone() else {
-            self.clip_detail_loading = false;
+            self.clips.detail_loading = false;
             return Task::none();
         };
 
-        self.clip_detail_loading = true;
+        self.clips.detail_loading = true;
         Task::perform(async move { store.clip_detail(clip_id).await }, |result| {
             Message::ClipDetailLoaded(result.map_err(|e| e.to_string()))
         })
@@ -3466,15 +2840,15 @@ impl App {
 
     fn load_stats(&mut self) -> Task<Message> {
         let Some(store) = self.clip_store.clone() else {
-            self.stats_snapshot = None;
-            self.stats_loading = false;
+            self.stats.snapshot = None;
+            self.stats.loading = false;
             return Task::none();
         };
 
-        self.stats_revision += 1;
-        let revision = self.stats_revision;
-        self.stats_loading = true;
-        let since_ts = self.stats_time_range.since_timestamp_ms();
+        self.stats.revision += 1;
+        let revision = self.stats.revision;
+        self.stats.loading = true;
+        let since_ts = self.stats.time_range.since_timestamp_ms();
 
         Task::perform(
             async move { store.stats_snapshot(since_ts).await },
@@ -3487,8 +2861,8 @@ impl App {
 
     fn load_clip_filter_options(&mut self) -> Task<Message> {
         let Some(store) = self.clip_store.clone() else {
-            self.clip_filter_options.targets.clear();
-            self.clip_filter_options.weapons.clear();
+            self.clips.filter_options.targets.clear();
+            self.clips.filter_options.weapons.clear();
             return Task::none();
         };
 
@@ -3504,7 +2878,8 @@ impl App {
         kind: crate::timeline_export::TimelineExportKind,
     ) -> Task<Message> {
         let Some(detail) = self
-            .selected_clip_detail
+            .clips
+            .selected_detail
             .clone()
             .filter(|detail| detail.clip.id == clip_id)
         else {
@@ -3522,7 +2897,7 @@ impl App {
     }
 
     fn export_last_session_summary_markdown(&mut self) -> Task<Message> {
-        let Some(summary) = self.last_session_summary.clone() else {
+        let Some(summary) = self.runtime.last_session_summary.clone() else {
             self.set_status_feedback("No completed session summary is available to export.", true);
             return Task::none();
         };
@@ -3536,12 +2911,12 @@ impl App {
 
     fn finish_active_session(&mut self) -> Task<Message> {
         self.event_log.clear();
-        let Some(session) = self.active_session.take() else {
+        let Some(session) = self.runtime.active_session.take() else {
             return Task::none();
         };
 
         let Some(store) = self.clip_store.clone() else {
-            self.last_session_summary = Some(empty_session_summary(&session));
+            self.runtime.last_session_summary = Some(empty_session_summary(&session));
             return Task::none();
         };
         let session_id = session.id.clone();
@@ -3655,7 +3030,7 @@ impl App {
     fn queue_lookup_resolution(&mut self, kind: LookupKind, lookup_id: i64) -> Task<Message> {
         if lookup_id <= 0
             || self.config.service_id.trim().is_empty()
-            || self.resolving_lookups.contains(&(kind, lookup_id))
+            || self.rules.resolving_lookups.contains(&(kind, lookup_id))
         {
             return Task::none();
         }
@@ -3664,7 +3039,7 @@ impl App {
             return Task::none();
         };
 
-        self.resolving_lookups.insert((kind, lookup_id));
+        self.rules.resolving_lookups.insert((kind, lookup_id));
         let service_id = self.config.service_id.clone();
 
         Task::perform(
@@ -3737,12 +3112,13 @@ impl App {
     }
 
     fn record_save_outcome(&mut self, outcome: PendingSaveOutcome) -> Task<Message> {
-        let Some(sequence) = self.pending_save_sequences.pop_front() else {
+        let Some(sequence) = self.runtime.pending_save_sequences.pop_front() else {
             tracing::warn!("Received a clip save result without a pending clip request");
             return Task::none();
         };
 
-        self.pending_clip_links
+        self.runtime
+            .pending_clip_links
             .entry(sequence)
             .or_default()
             .save_outcome = Some(outcome);
@@ -3752,6 +3128,7 @@ impl App {
     fn resolve_pending_clip_links(&mut self) -> Task<Message> {
         let naming_template = self.config.clip_naming_template.clone();
         let ready_sequences: Vec<u64> = self
+            .runtime
             .pending_clip_links
             .iter()
             .filter_map(|(&sequence, pending)| {
@@ -3768,7 +3145,7 @@ impl App {
         let mut tasks = Vec::new();
 
         for sequence in ready_sequences {
-            let Some(pending) = self.pending_clip_links.remove(&sequence) else {
+            let Some(pending) = self.runtime.pending_clip_links.remove(&sequence) else {
                 continue;
             };
 
@@ -3852,21 +3229,21 @@ impl App {
             .as_deref()
             .and_then(|value| std::fs::metadata(value).ok().map(|metadata| metadata.len()));
 
-        for clip in &mut self.recent_clips {
+        for clip in &mut self.clips.recent {
             if clip.id == clip_id {
                 clip.path = path.clone();
                 clip.file_size_bytes = file_size_bytes;
             }
         }
 
-        for clip in &mut self.clip_history_source {
+        for clip in &mut self.clips.history_source {
             if clip.id == clip_id {
                 clip.path = path.clone();
                 clip.file_size_bytes = file_size_bytes;
             }
         }
 
-        for clip in &mut self.clip_history {
+        for clip in &mut self.clips.history {
             if clip.id == clip_id {
                 clip.path = path.clone();
                 clip.file_size_bytes = file_size_bytes;
@@ -3875,7 +3252,7 @@ impl App {
     }
 
     fn inspect_saved_clip_resolution(&self, path: String) -> Task<Message> {
-        if self.portal_capture_recovery_notified
+        if self.runtime.portal_capture_recovery_notified
             || !self.recorder.should_probe_saved_clip_resolution()
         {
             return Task::none();
@@ -4003,12 +3380,14 @@ impl App {
             },
         };
 
-        if !self.ffmpeg_capabilities.present || !self.ffmpeg_capabilities.meets_floor {
+        if !self.runtime.ffmpeg_capabilities.present
+            || !self.runtime.ffmpeg_capabilities.meets_floor
+        {
             tracing::warn!(
                 clip_id,
                 path = %path.display(),
-                ffmpeg_present = self.ffmpeg_capabilities.present,
-                ffmpeg_meets_floor = self.ffmpeg_capabilities.meets_floor,
+                ffmpeg_present = self.runtime.ffmpeg_capabilities.present,
+                ffmpeg_meets_floor = self.runtime.ffmpeg_capabilities.meets_floor,
                 "Skipping audio post-process because ffmpeg is unavailable or below the supported version floor"
             );
             let _ = post_process::delete_saved_metadata(&path);
@@ -4043,7 +3422,7 @@ impl App {
             }
         }
 
-        let ffmpeg_capabilities = self.ffmpeg_capabilities.clone();
+        let ffmpeg_capabilities = self.runtime.ffmpeg_capabilities.clone();
         let job_id = self.background_jobs.start(
             BackgroundJobKind::PostProcess,
             format!("Post-process clip #{clip_id}"),
@@ -4176,7 +3555,7 @@ impl App {
     }
 
     fn should_reset_portal_capture_after_clip(&self, resolution: VideoResolution) -> bool {
-        !self.portal_capture_recovery_notified
+        !self.runtime.portal_capture_recovery_notified
             && matches!(
                 self.recorder.post_save_recovery_hint(Some(resolution)),
                 capture::RecoveryHint::ReacquireCaptureTarget
@@ -4188,11 +3567,12 @@ impl App {
             return None;
         }
 
-        if self.startup_probe_pending_result || self.startup_probe_due_at.is_some() {
+        if self.runtime.startup_probe_pending_result || self.runtime.startup_probe_due_at.is_some()
+        {
             return Some("Recorder startup probe: pending".into());
         }
 
-        self.startup_probe_resolution.map(|resolution| {
+        self.runtime.startup_probe_resolution.map(|resolution| {
             format!(
                 "Recorder startup probe: {}x{}",
                 resolution.width, resolution.height
@@ -4201,14 +3581,14 @@ impl App {
     }
 
     fn remove_clip_from_memory(&mut self, clip_id: i64) {
-        self.recent_clips.retain(|clip| clip.id != clip_id);
-        self.clip_history_source.retain(|clip| clip.id != clip_id);
-        self.clip_history.retain(|clip| clip.id != clip_id);
+        self.clips.recent.retain(|clip| clip.id != clip_id);
+        self.clips.history_source.retain(|clip| clip.id != clip_id);
+        self.clips.history.retain(|clip| clip.id != clip_id);
 
-        if self.selected_clip_id == Some(clip_id) {
-            self.selected_clip_id = None;
-            self.selected_clip_detail = None;
-            self.clip_detail_loading = false;
+        if self.clips.selected_id == Some(clip_id) {
+            self.clips.selected_id = None;
+            self.clips.selected_detail = None;
+            self.clips.detail_loading = false;
         }
     }
 
@@ -4320,12 +3700,12 @@ impl App {
                     } else if matches!(record.kind, BackgroundJobKind::AppUpdateDownload)
                         && let Some(progress) = &record.progress
                     {
-                        self.update_state.phase = if progress.message.contains("Verifying") {
+                        self.updates.state.phase = if progress.message.contains("Verifying") {
                             UpdatePhase::Verifying
                         } else {
                             UpdatePhase::Downloading
                         };
-                        self.update_state.progress = Some(UpdateProgressState {
+                        self.updates.state.progress = Some(UpdateProgressState {
                             detail: progress.message.clone(),
                         });
                     }
@@ -4336,18 +3716,18 @@ impl App {
                     error,
                 } => {
                     tasks.push(self.persist_background_job_record(record.clone()));
-                    match success {
+                    match success.map(|success| *success) {
                         Some(BackgroundJobSuccess::StorageTiering {
                             moved_clip_ids,
                             message,
                         }) => {
                             self.set_status_feedback(message, false);
                             tasks.push(tabs::clips::reload_views(self));
-                            if self.selected_clip_id.is_some()
+                            if self.clips.selected_id.is_some()
                                 && moved_clip_ids
-                                    .contains(&self.selected_clip_id.unwrap_or_default())
+                                    .contains(&self.clips.selected_id.unwrap_or_default())
                             {
-                                tasks.push(self.load_clip_detail(self.selected_clip_id));
+                                tasks.push(self.load_clip_detail(self.clips.selected_id));
                             }
                         }
                         Some(BackgroundJobSuccess::Upload {
@@ -4366,7 +3746,7 @@ impl App {
                                 format!("{provider_label}: {message}"),
                                 true,
                             );
-                            if self.selected_clip_id == Some(clip_id) {
+                            if self.clips.selected_id == Some(clip_id) {
                                 tasks.push(self.load_clip_detail(Some(clip_id)));
                             }
                             tasks.push(self.queue_discord_webhook_for_uploaded_clip(
@@ -4413,22 +3793,25 @@ impl App {
                                 false,
                             );
                             tasks.push(tabs::clips::reload_views(self));
-                            if self.selected_clip_id == Some(clip_id) {
+                            if self.clips.selected_id == Some(clip_id) {
                                 tasks.push(self.load_clip_detail(Some(clip_id)));
                             }
                         }
                         Some(BackgroundJobSuccess::AppUpdateDownload { prepared, message }) => {
-                            self.update_state.prepared_update = Some(prepared.clone());
-                            self.update_state.phase = UpdatePhase::ReadyToInstall;
-                            self.update_state.progress = None;
-                            self.update_state.last_error = None;
+                            let prepared = *prepared;
+                            self.updates.state.prepared_update = Some(prepared.clone());
+                            self.updates.state.phase = UpdatePhase::ReadyToInstall;
+                            self.updates.state.progress = None;
+                            self.updates.state.last_error = None;
                             self.config.updates.prepared_update = Some(prepared.clone());
                             self.persist_update_config();
 
                             let follow_up = match self.config.updates.install_behavior {
                                 UpdateInstallBehavior::Manual => None,
                                 UpdateInstallBehavior::WhenIdle if self.can_apply_update_now() => {
-                                    Some(Task::done(Message::InstallDownloadedUpdateWhenIdle))
+                                    Some(Task::done(Message::updates(
+                                        UpdateMessage::InstallDownloadedUpdateWhenIdle,
+                                    )))
                                 }
                                 UpdateInstallBehavior::WhenIdle => {
                                     self.push_toast(
@@ -4476,21 +3859,21 @@ impl App {
                             if matches!(record.kind, BackgroundJobKind::PostProcess) {
                                 self.set_clip_filter_feedback(message.clone(), false);
                                 tasks.push(tabs::clips::reload_views(self));
-                                if self.selected_clip_id.is_some_and(|clip_id| {
+                                if self.clips.selected_id.is_some_and(|clip_id| {
                                     record.related_clip_ids.contains(&clip_id)
                                 }) {
-                                    tasks.push(self.load_clip_detail(self.selected_clip_id));
+                                    tasks.push(self.load_clip_detail(self.clips.selected_id));
                                 }
                             }
                             if matches!(record.kind, BackgroundJobKind::AppUpdateDownload) {
                                 self.set_update_error(
                                     classify_update_error(
                                         message.as_str(),
-                                        self.update_state.phase,
+                                        self.updates.state.phase,
                                     ),
                                     message.clone(),
                                 );
-                                self.update_state.progress = None;
+                                self.updates.state.progress = None;
                                 self.push_toast(
                                     ToastTone::Error,
                                     "Update Failed",
@@ -4697,7 +4080,7 @@ impl App {
     }
 
     fn queue_update_download(&mut self) -> Task<Message> {
-        let Some(release) = self.update_state.latest_release.clone() else {
+        let Some(release) = self.updates.state.latest_release.clone() else {
             self.set_status_feedback_silent("Check for updates before downloading one.", false);
             return Task::none();
         };
@@ -4706,7 +4089,7 @@ impl App {
 
     fn queue_release_download(&mut self, release: update::AvailableRelease) -> Task<Message> {
         if matches!(
-            self.update_state.phase,
+            self.updates.state.phase,
             UpdatePhase::Downloading | UpdatePhase::Verifying | UpdatePhase::Applying
         ) {
             self.set_status_feedback_silent("An update operation is already in progress.", true);
@@ -4716,21 +4099,22 @@ impl App {
             self.set_status_feedback_silent(
                 release_policy_summary(
                     &release,
-                    &self.update_state.current_version,
-                    self.update_state.system_update_plan.as_ref(),
+                    &self.updates.state.current_version,
+                    self.updates.state.system_update_plan.as_ref(),
                 ),
                 false,
             );
             return Task::none();
         }
         if self
-            .update_state
+            .updates
+            .state
             .prepared_update
             .as_ref()
             .is_some_and(|prepared| prepared.version == release.version.to_string())
         {
             let action_title =
-                release_action_title(&release.version, &self.update_state.current_version);
+                release_action_title(&release.version, &self.updates.state.current_version);
             self.set_status_feedback_silent(
                 format!(
                     "{action_title} target {} is already downloaded.",
@@ -4742,14 +4126,14 @@ impl App {
         }
 
         let action_label =
-            release_action_label(&release.version, &self.update_state.current_version);
+            release_action_label(&release.version, &self.updates.state.current_version);
         let action_title =
-            release_action_title(&release.version, &self.update_state.current_version);
-        self.update_state.phase = UpdatePhase::Downloading;
-        self.update_state.progress = Some(UpdateProgressState {
+            release_action_title(&release.version, &self.updates.state.current_version);
+        self.updates.state.phase = UpdatePhase::Downloading;
+        self.updates.state.progress = Some(UpdateProgressState {
             detail: format!("Preparing to download {action_label} {}.", release.version),
         });
-        self.update_state.last_error = None;
+        self.updates.state.last_error = None;
 
         let release_for_job = release.clone();
         let version_label = release.version.to_string();
@@ -4807,7 +4191,7 @@ impl App {
                     format!("Downloaded {action_label} target {}.", prepared.version),
                 )?;
                 Ok(BackgroundJobSuccess::AppUpdateDownload {
-                    prepared,
+                    prepared: Box::new(prepared),
                     message: format!("Downloaded {action_title} target {}.", version_label),
                 })
             },
@@ -4901,7 +4285,8 @@ impl App {
             return Task::none();
         };
         let Some(record) = self
-            .clip_history_source
+            .clips
+            .history_source
             .iter()
             .find(|record| record.id == clip_id)
             .cloned()
@@ -4973,7 +4358,8 @@ impl App {
             return Task::none();
         };
         let Some(record) = self
-            .clip_history_source
+            .clips
+            .history_source
             .iter()
             .find(|record| record.id == clip_id)
             .cloned()
@@ -5008,7 +4394,7 @@ impl App {
             title,
             description,
         };
-        let secure_store = self.secure_store.clone();
+        let secure_store = self.platform.secure_store().clone();
         let copyparty = self.config.uploads.copyparty.clone();
         let youtube = self.config.uploads.youtube.clone();
 
@@ -5149,7 +4535,7 @@ impl App {
     }
 
     fn queue_montage_creation(&mut self) -> Task<Message> {
-        self.queue_montage_creation_for_clip_ids(self.montage_selection.clone(), true)
+        self.queue_montage_creation_for_clip_ids(self.clips.montage_selection.clone(), true)
     }
 
     fn queue_montage_creation_for_clip_ids(
@@ -5169,7 +4555,8 @@ impl App {
         let mut clips = Vec::new();
         for clip_id in &clip_ids {
             let Some(record) = self
-                .clip_history_source
+                .clips
+                .history_source
                 .iter()
                 .find(|record| record.id == *clip_id)
             else {
@@ -5237,8 +4624,8 @@ impl App {
         );
 
         if clear_selection {
-            self.montage_selection.clear();
-            self.selected_montage_clip_id = None;
+            self.clips.montage_selection.clear();
+            self.clips.selected_montage_clip_id = None;
         }
 
         self.persist_background_job_snapshot(job_id)
@@ -5266,7 +4653,11 @@ impl App {
             );
             return Task::none();
         };
-        let Ok(Some(_)) = self.secure_store.get(SecretKey::DiscordWebhookUrl) else {
+        let Ok(Some(_)) = self
+            .platform
+            .secure_store()
+            .get(SecretKey::DiscordWebhookUrl)
+        else {
             tracing::warn!(
                 clip_id,
                 provider = %provider_label,
@@ -5328,7 +4719,11 @@ impl App {
             return Task::none();
         }
 
-        let webhook_url = match self.secure_store.get(SecretKey::DiscordWebhookUrl) {
+        let webhook_url = match self
+            .platform
+            .secure_store()
+            .get(SecretKey::DiscordWebhookUrl)
+        {
             Ok(Some(url)) => url,
             Ok(None) => {
                 tracing::warn!(
@@ -5406,20 +4801,21 @@ impl App {
     }
 
     pub(in crate::app) fn start_youtube_oauth(&mut self) -> Task<Message> {
-        let client_id = self.settings_youtube_client_id.trim().to_string();
+        let client_id = self.settings.youtube_client_id.trim().to_string();
         if client_id.is_empty() {
             self.set_settings_feedback("Enter a YouTube desktop OAuth client ID first.", false);
             return Task::none();
         }
 
-        let client_secret_input = self.settings_youtube_client_secret_input.trim().to_string();
-        let secure_store = self.secure_store.clone();
+        let client_secret_input = self.settings.youtube_client_secret_input.trim().to_string();
+        let platform = self.platform.clone();
+        let secure_store = self.platform.secure_store().clone();
         info!(
             secure_store_backend = %secure_store.backend().label(),
             client_secret_input_present = !client_secret_input.is_empty(),
             "Scheduling YouTube OAuth task"
         );
-        self.settings_youtube_oauth_in_flight = true;
+        self.settings.youtube_oauth_in_flight = true;
 
         Task::perform(
             async move {
@@ -5428,14 +4824,17 @@ impl App {
                     secure_store.set(SecretKey::YoutubeClientSecret, &client_secret_input)?;
                 }
                 info!("Resolving YouTube client secret for OAuth flow");
-                let tokens = uploads::begin_youtube_oauth(YouTubeOAuthClient {
-                    client_id,
-                    client_secret: if client_secret_input.is_empty() {
-                        secure_store.get(SecretKey::YoutubeClientSecret)?
-                    } else {
-                        Some(client_secret_input)
+                let tokens = uploads::begin_youtube_oauth(
+                    YouTubeOAuthClient {
+                        client_id,
+                        client_secret: if client_secret_input.is_empty() {
+                            secure_store.get(SecretKey::YoutubeClientSecret)?
+                        } else {
+                            Some(client_secret_input)
+                        },
                     },
-                })
+                    move |url| platform.open_url(url),
+                )
                 .await?;
                 info!(
                     refresh_token_len = tokens.refresh_token.len(),
@@ -5513,14 +4912,14 @@ impl App {
 
     pub(in crate::app) fn set_clip_error(&mut self, message: impl Into<String>) {
         let message = message.into();
-        self.clip_error = Some(message.clone());
-        self.clip_error_expires_at = Some(Instant::now() + Self::ERROR_MESSAGE_TIMEOUT);
+        self.clips.error = Some(message.clone());
+        self.clips.error_expires_at = Some(Instant::now() + Self::ERROR_MESSAGE_TIMEOUT);
         self.push_toast(ToastTone::Error, "Clips", message, true);
     }
 
     pub(in crate::app) fn clear_clip_error(&mut self) {
-        self.clip_error = None;
-        self.clip_error_expires_at = None;
+        self.clips.error = None;
+        self.clips.error_expires_at = None;
     }
 
     pub(in crate::app) fn set_clip_filter_feedback(
@@ -5529,15 +4928,15 @@ impl App {
         auto_dismiss: bool,
     ) {
         let message = message.into();
-        self.clip_filter_feedback = Some(message.clone());
-        self.clip_filter_feedback_expires_at =
+        self.clips.filter_feedback = Some(message.clone());
+        self.clips.filter_feedback_expires_at =
             Some(Instant::now() + Self::feedback_timeout(auto_dismiss));
         self.push_feedback_toast("Clips", message, auto_dismiss);
     }
 
     pub(in crate::app) fn clear_clip_filter_feedback(&mut self) {
-        self.clip_filter_feedback = None;
-        self.clip_filter_feedback_expires_at = None;
+        self.clips.filter_feedback = None;
+        self.clips.filter_feedback_expires_at = None;
     }
 
     pub(in crate::app) fn set_settings_feedback(
@@ -5546,8 +4945,8 @@ impl App {
         auto_dismiss: bool,
     ) {
         let message = message.into();
-        self.settings_feedback = Some(message.clone());
-        self.settings_feedback_expires_at =
+        self.settings.feedback = Some(message.clone());
+        self.settings.feedback_expires_at =
             Some(Instant::now() + Self::feedback_timeout(auto_dismiss));
         self.push_feedback_toast("Settings", message, auto_dismiss);
     }
@@ -5558,14 +4957,14 @@ impl App {
         auto_dismiss: bool,
     ) {
         let message = message.into();
-        self.settings_feedback = Some(message);
-        self.settings_feedback_expires_at =
+        self.settings.feedback = Some(message);
+        self.settings.feedback_expires_at =
             Some(Instant::now() + Self::feedback_timeout(auto_dismiss));
     }
 
     pub(in crate::app) fn clear_settings_feedback(&mut self) {
-        self.settings_feedback = None;
-        self.settings_feedback_expires_at = None;
+        self.settings.feedback = None;
+        self.settings.feedback_expires_at = None;
     }
 
     pub(in crate::app) fn set_status_feedback(
@@ -5574,8 +4973,8 @@ impl App {
         auto_dismiss: bool,
     ) {
         let message = message.into();
-        self.status_feedback = Some(message.clone());
-        self.status_feedback_expires_at =
+        self.runtime.status_feedback = Some(message.clone());
+        self.runtime.status_feedback_expires_at =
             Some(Instant::now() + Self::feedback_timeout(auto_dismiss));
         self.push_feedback_toast("Status", message, auto_dismiss);
     }
@@ -5586,14 +4985,14 @@ impl App {
         auto_dismiss: bool,
     ) {
         let message = message.into();
-        self.status_feedback = Some(message);
-        self.status_feedback_expires_at =
+        self.runtime.status_feedback = Some(message);
+        self.runtime.status_feedback_expires_at =
             Some(Instant::now() + Self::feedback_timeout(auto_dismiss));
     }
 
     pub(in crate::app) fn clear_status_feedback(&mut self) {
-        self.status_feedback = None;
-        self.status_feedback_expires_at = None;
+        self.runtime.status_feedback = None;
+        self.runtime.status_feedback_expires_at = None;
     }
 
     pub(in crate::app) fn set_rules_feedback(
@@ -5602,8 +5001,8 @@ impl App {
         auto_dismiss: bool,
     ) {
         let message = message.into();
-        self.rules_feedback = Some(message.clone());
-        self.rules_feedback_expires_at =
+        self.rules.feedback = Some(message.clone());
+        self.rules.feedback_expires_at =
             Some(Instant::now() + Self::feedback_timeout(auto_dismiss));
         self.push_feedback_toast("Rules", message, auto_dismiss);
     }
@@ -5639,35 +5038,39 @@ impl App {
     }
 
     pub(in crate::app) fn clear_rules_feedback(&mut self) {
-        self.rules_feedback = None;
-        self.rules_feedback_expires_at = None;
+        self.rules.feedback = None;
+        self.rules.feedback_expires_at = None;
     }
 
     fn dismiss_expired_feedback(&mut self) {
         let now = Instant::now();
 
         if self
-            .clip_error_expires_at
+            .clips
+            .error_expires_at
             .is_some_and(|expires_at| now >= expires_at)
         {
             self.clear_clip_error();
         }
 
         if self
-            .clip_filter_feedback_expires_at
+            .clips
+            .filter_feedback_expires_at
             .is_some_and(|expires_at| now >= expires_at)
         {
             self.clear_clip_filter_feedback();
         }
 
         if self
-            .settings_feedback_expires_at
+            .settings
+            .feedback_expires_at
             .is_some_and(|expires_at| now >= expires_at)
         {
             self.clear_settings_feedback();
         }
 
         if self
+            .runtime
             .status_feedback_expires_at
             .is_some_and(|expires_at| now >= expires_at)
         {
@@ -5675,7 +5078,8 @@ impl App {
         }
 
         if self
-            .rules_feedback_expires_at
+            .rules
+            .feedback_expires_at
             .is_some_and(|expires_at| now >= expires_at)
         {
             self.clear_rules_feedback();
@@ -5683,17 +5087,17 @@ impl App {
     }
 
     fn configure_hotkeys(&mut self, show_success_toast: bool) -> Task<Message> {
-        self.hotkey_config_generation += 1;
+        self.runtime.hotkey_config_generation += 1;
         #[cfg(not(target_os = "windows"))]
-        let generation = self.hotkey_config_generation;
-        let previous_binding_label = self.hotkeys.binding_label().map(str::to_string);
-        self.pending_hotkey_binding_label = previous_binding_label.clone();
-        self.pending_hotkey_success_toast = show_success_toast;
+        let generation = self.runtime.hotkey_config_generation;
+        let previous_binding_label = self.runtime.hotkeys.binding_label().map(str::to_string);
+        self.settings.pending_hotkey_binding_label = previous_binding_label.clone();
+        self.settings.pending_hotkey_success_toast = show_success_toast;
         let config = self.config.manual_clip.clone();
         let display_server = process::detect_display_server();
         let desktop_environment = process::detect_desktop_environment();
         tracing::debug!(
-            generation = self.hotkey_config_generation,
+            generation = self.runtime.hotkey_config_generation,
             enabled = config.enabled,
             hotkey = %config.hotkey,
             duration_secs = config.duration_secs,
@@ -5703,35 +5107,42 @@ impl App {
         );
         if let Some(previous_binding_label) = previous_binding_label {
             tracing::debug!(
-                generation = self.hotkey_config_generation,
+                generation = self.runtime.hotkey_config_generation,
                 previous_binding_label,
                 "dropping existing manual clip hotkey before reconfiguration"
             );
         }
-        self.hotkeys = HotkeyManager::disabled();
+        self.runtime.hotkeys = self.platform.disabled_hotkeys();
 
         #[cfg(target_os = "windows")]
         {
             let result =
-                HotkeyManager::configure_sync(&config, display_server, desktop_environment);
+                self.platform
+                    .configure_hotkeys_sync(&config, display_server, desktop_environment);
             self.finish_hotkey_configuration(result);
             Task::none()
         }
 
         #[cfg(not(target_os = "windows"))]
+        let platform = self.platform.clone();
+
+        #[cfg(not(target_os = "windows"))]
         Task::perform(
             async move {
-                HotkeyManager::configure(&config, display_server, desktop_environment)
+                platform
+                    .configure_hotkeys(&config, display_server, desktop_environment)
                     .await
                     .map(share_hotkey_config_result)
             },
-            move |result| Message::HotkeysConfigured { generation, result },
+            move |result| {
+                Message::runtime(RuntimeMessage::HotkeysConfigured { generation, result })
+            },
         )
     }
 
     fn finish_hotkey_configuration(&mut self, result: Result<HotkeyManager, String>) {
-        let previous_binding_label = self.pending_hotkey_binding_label.take();
-        let show_success_toast = std::mem::take(&mut self.pending_hotkey_success_toast);
+        let previous_binding_label = self.settings.pending_hotkey_binding_label.take();
+        let show_success_toast = std::mem::take(&mut self.settings.pending_hotkey_success_toast);
         match result {
             Ok(hotkeys) => {
                 let binding_label = hotkeys.binding_label().map(str::to_string);
@@ -5742,7 +5153,7 @@ impl App {
                     configuration_note = ?configuration_note,
                     "manual clip hotkey configuration completed"
                 );
-                self.hotkeys = hotkeys;
+                self.runtime.hotkeys = hotkeys;
                 if self.config.manual_clip.enabled {
                     match hotkey_configuration_feedback(
                         show_success_toast,
@@ -5763,13 +5174,13 @@ impl App {
             Err(error) => {
                 tracing::warn!(enabled = self.config.manual_clip.enabled, %error, "manual clip hotkey configuration failed");
                 self.set_settings_feedback(error, false);
-                self.hotkeys = HotkeyManager::disabled();
+                self.runtime.hotkeys = self.platform.disabled_hotkeys();
             }
         }
     }
 
     fn tray_snapshot(&self) -> TraySnapshot {
-        let mut status_label = match &self.state {
+        let mut status_label = match &self.runtime.lifecycle {
             AppState::Idle => "Idle".into(),
             AppState::WaitingForGame => "Waiting for PlanetSide 2".into(),
             AppState::WaitingForLogin => "Waiting for character login".into(),
@@ -5778,7 +5189,7 @@ impl App {
             }
         };
 
-        if let Some(status) = &self.obs_connection_status {
+        if let Some(status) = &self.runtime.obs_connection_status {
             status_label = match status {
                 capture::ObsConnectionStatus::Connected => status_label,
                 capture::ObsConnectionStatus::Reconnecting {
@@ -5796,8 +5207,8 @@ impl App {
         TraySnapshot {
             title: "NaniteClip".into(),
             status_label,
-            can_start_monitoring: matches!(self.state, AppState::Idle),
-            can_stop_monitoring: !matches!(self.state, AppState::Idle),
+            can_start_monitoring: matches!(self.runtime.lifecycle, AppState::Idle),
+            can_stop_monitoring: !matches!(self.runtime.lifecycle, AppState::Idle),
             profile_options: self
                 .config
                 .rule_profiles
@@ -5812,7 +5223,7 @@ impl App {
     }
 
     pub(in crate::app) fn sync_tray_snapshot(&self) -> Task<Message> {
-        let Some(tray) = &self.tray else {
+        let Some(tray) = &self.runtime.tray else {
             return Task::none();
         };
         tray.update_snapshot(self.tray_snapshot());
@@ -5823,17 +5234,17 @@ impl App {
         match event {
             capture::BackendRuntimeEvent::ObsConnection(status) => match status {
                 capture::ObsConnectionStatus::Connected => {
-                    self.obs_restart_requires_manual_restart = false;
-                    let changed = self.obs_connection_status.take().is_some();
+                    self.runtime.obs_restart_requires_manual_restart = false;
+                    let changed = self.runtime.obs_connection_status.take().is_some();
                     if changed {
                         self.set_status_feedback("OBS reconnected.", true);
                     }
                     changed
                 }
                 ref other @ capture::ObsConnectionStatus::Failed { ref reason } => {
-                    let changed = self.obs_connection_status.as_ref() != Some(other);
-                    self.obs_restart_requires_manual_restart = true;
-                    self.obs_connection_status = Some(other.clone());
+                    let changed = self.runtime.obs_connection_status.as_ref() != Some(other);
+                    self.runtime.obs_restart_requires_manual_restart = true;
+                    self.runtime.obs_connection_status = Some(other.clone());
                     if changed {
                         self.set_status_feedback(
                             format!(
@@ -5845,8 +5256,8 @@ impl App {
                     changed
                 }
                 other => {
-                    let changed = self.obs_connection_status.as_ref() != Some(&other);
-                    self.obs_connection_status = Some(other);
+                    let changed = self.runtime.obs_connection_status.as_ref() != Some(&other);
+                    self.runtime.obs_connection_status = Some(other);
                     changed
                 }
             },
@@ -5854,7 +5265,7 @@ impl App {
     }
 
     fn show_window_task(&mut self) -> Task<Message> {
-        if let Some(window_id) = self.main_window_id {
+        if let Some(window_id) = self.runtime.main_window_id {
             Task::batch([
                 window::minimize(window_id, false),
                 window::gain_focus(window_id),
@@ -5865,13 +5276,13 @@ impl App {
     }
 
     fn open_main_window_task(&mut self) -> Task<Message> {
-        if self.main_window_id.is_some() {
+        if self.runtime.main_window_id.is_some() {
             return Task::none();
         }
 
         let (window_id, task) = window::open(main_window_settings());
-        self.main_window_id = Some(window_id);
-        task.map(Message::MainWindowOpened)
+        self.runtime.main_window_id = Some(window_id);
+        task.map(|window_id| Message::runtime(RuntimeMessage::MainWindowOpened(window_id)))
     }
 
     fn request_manual_clip_save(&mut self) -> Task<Message> {
@@ -5881,9 +5292,9 @@ impl App {
         }
         if !self.recorder.is_running() {
             tracing::debug!(
-                state = ?self.state,
+                state = ?self.runtime.lifecycle,
                 save_in_progress = self.recorder.save_in_progress(),
-                active_clip_capture = self.active_clip_capture.is_some(),
+                active_clip_capture = self.runtime.active_clip_capture.is_some(),
                 "rejecting manual clip save request because recorder is not running"
             );
             self.set_clip_error(
@@ -5891,11 +5302,11 @@ impl App {
             );
             return Task::none();
         }
-        if self.active_clip_capture.is_some() || self.recorder.save_in_progress() {
+        if self.runtime.active_clip_capture.is_some() || self.recorder.save_in_progress() {
             tracing::debug!(
-                state = ?self.state,
+                state = ?self.runtime.lifecycle,
                 save_in_progress = self.recorder.save_in_progress(),
-                active_clip_capture = self.active_clip_capture.is_some(),
+                active_clip_capture = self.runtime.active_clip_capture.is_some(),
                 "rejecting manual clip save request because another save is already in progress"
             );
             self.set_clip_error(
@@ -5904,7 +5315,7 @@ impl App {
             return Task::none();
         }
 
-        let (character_id, world_id) = match &self.state {
+        let (character_id, world_id) = match &self.runtime.lifecycle {
             AppState::Monitoring { character_id, .. } => (*character_id, 0),
             _ => (0, 0),
         };
@@ -5915,7 +5326,7 @@ impl App {
         let clip_start_at = clip_end_at
             - chrono::Duration::seconds(i64::from(self.config.manual_clip.duration_secs));
         tracing::debug!(
-            state = ?self.state,
+            state = ?self.runtime.lifecycle,
             character_id,
             world_id,
             trigger_at = %trigger_at,
@@ -5941,8 +5352,9 @@ impl App {
             zone_id: None,
             facility_id: None,
             character_id,
-            honu_session_id: self.honu_session_id,
+            honu_session_id: self.runtime.honu_session_id,
             session_id: self
+                .runtime
                 .active_session
                 .as_ref()
                 .map(|session| session.id.clone()),
@@ -5986,50 +5398,6 @@ impl App {
             duration_secs: request.clip_duration_secs,
         }
     }
-}
-
-#[derive(Debug, Clone, Hash)]
-struct CensusKey {
-    service_id: String,
-    character_ids: Vec<u64>,
-}
-
-fn census_subscription(service_id: &str, character_ids: Vec<u64>) -> Subscription<Message> {
-    let key = CensusKey {
-        service_id: service_id.to_string(),
-        character_ids,
-    };
-    Subscription::run_with(key, build_census_stream).map(Message::CensusStream)
-}
-
-fn build_census_stream(key: &CensusKey) -> iced::futures::stream::BoxStream<'static, StreamEvent> {
-    use iced::futures::StreamExt;
-    Box::pin(census::event_stream(
-        key.service_id.clone(),
-        key.character_ids.clone(),
-    ))
-    .boxed()
-}
-
-fn capture_hotkey_event(
-    event: iced::Event,
-    _status: event::Status,
-    _window: window::Id,
-) -> Option<Message> {
-    match event {
-        iced::Event::Keyboard(event) => Some(Message::Settings(
-            tabs::settings::Message::HotkeyCaptureEvent(event),
-        )),
-        _ => None,
-    }
-}
-
-fn clips_key_event_router(
-    event: iced::Event,
-    status: event::Status,
-    _window: window::Id,
-) -> Option<Message> {
-    tabs::clips::subscription_event_handler(event, status).map(Message::Clips)
 }
 
 fn clip_draft_from_request(
@@ -6172,14 +5540,6 @@ fn empty_session_summary(session: &MonitoringSession) -> SessionSummary {
     }
 }
 
-fn initial_runtime_state(config: &Config) -> AppState {
-    if config.auto_start_monitoring {
-        AppState::WaitingForGame
-    } else {
-        AppState::Idle
-    }
-}
-
 fn infer_storage_move_retry_target(record: &BackgroundJobRecord) -> Result<StorageTier, String> {
     let label = record.label.to_ascii_lowercase();
     if label.contains("to archive") {
@@ -6188,1747 +5548,5 @@ fn infer_storage_move_retry_target(record: &BackgroundJobRecord) -> Result<Stora
         Ok(StorageTier::Primary)
     } else {
         Err("storage move retry could not determine the original target tier.".into())
-    }
-}
-
-fn hydrate_update_state_from_config(
-    config: &mut Config,
-    install_channel: update::InstallChannel,
-    current_version: semver::Version,
-) -> UpdateState {
-    record_running_version(config, &current_version);
-    config.updates.ensure_install_id();
-    let mut update_state = UpdateState::new(install_channel, current_version.clone());
-    update_state.system_update_plan = update::detect_system_update_plan(install_channel);
-    update_state.last_checked_at = config.updates.last_check_utc;
-    update_state.previous_installed_version = config
-        .updates
-        .installed_version_history
-        .first()
-        .and_then(|version| semver::Version::parse(version).ok());
-    update_state.last_apply_report = config.updates.last_apply_report.clone();
-
-    let prepared_update = config.updates.prepared_update.take().and_then(|prepared| {
-        let prepared_version = prepared.parsed_version()?;
-        if prepared_version == current_version || !prepared.asset_path.exists() {
-            return None;
-        }
-        Some(prepared)
-    });
-
-    if let Some(prepared) = prepared_update {
-        update_state.phase = UpdatePhase::ReadyToInstall;
-        update_state.prepared_update = Some(prepared.clone());
-        config.updates.prepared_update = Some(prepared);
-    }
-
-    if config
-        .updates
-        .remind_later_until_utc
-        .is_some_and(|until| until <= Utc::now())
-    {
-        config.updates.remind_later_until_utc = None;
-        config.updates.remind_later_version = None;
-    }
-
-    update_state
-}
-
-fn record_running_version(config: &mut Config, current_version: &semver::Version) {
-    let current_version = current_version.to_string();
-    if config.updates.current_version.as_deref() == Some(current_version.as_str()) {
-        return;
-    }
-
-    if let Some(previous_current) = config
-        .updates
-        .current_version
-        .take()
-        .filter(|version| version != &current_version)
-    {
-        config
-            .updates
-            .installed_version_history
-            .retain(|version| version != &previous_current);
-        config
-            .updates
-            .installed_version_history
-            .insert(0, previous_current);
-    }
-
-    config
-        .updates
-        .installed_version_history
-        .retain(|version| version != &current_version);
-    config.updates.current_version = Some(current_version);
-    config.updates.installed_version_history.truncate(10);
-}
-
-fn classify_update_error(detail: &str, phase: UpdatePhase) -> UpdateErrorKind {
-    let normalized = detail.to_ascii_lowercase();
-    if matches!(phase, UpdatePhase::Applying) {
-        return UpdateErrorKind::Install;
-    }
-    if normalized.contains("signature")
-        || normalized.contains("checksum")
-        || normalized.contains("manifest")
-        || normalized.contains("verification")
-    {
-        return UpdateErrorKind::Verification;
-    }
-    if normalized.contains("download")
-        || normalized.contains("http")
-        || normalized.contains("github")
-        || normalized.contains("network")
-        || normalized.contains("timed out")
-        || normalized.contains("connect")
-    {
-        return UpdateErrorKind::Network;
-    }
-    UpdateErrorKind::Unknown
-}
-
-fn next_automatic_update_check_at(app: &App) -> Option<DateTime<Utc>> {
-    app.config.updates.auto_check.then_some(())?;
-    app.update_state
-        .last_checked_at
-        .or(app.config.updates.last_check_utc)
-        .map(|checked_at| checked_at + chrono::Duration::hours(12))
-}
-
-fn system_update_plan_summary(plan: &update::SystemUpdatePlan) -> String {
-    match &plan.command_display {
-        Some(command) => format!("{}: {} Command: `{command}`.", plan.label, plan.detail),
-        None => format!("{}: {}", plan.label, plan.detail),
-    }
-}
-
-fn release_banner_title(release: &update::AvailableRelease, current_version: &Version) -> String {
-    match release.policy.availability {
-        update::UpdateAvailability::DeferredByRollout => {
-            format!("Update {} is rolling out", release.version)
-        }
-        update::UpdateAvailability::RequiresManualUpgrade => {
-            format!("Update {} needs a newer base install", release.version)
-        }
-        update::UpdateAvailability::Available if release.policy.requires_attention() => {
-            format!(
-                "{} {} requires attention",
-                release_action_title(&release.version, current_version),
-                release.version
-            )
-        }
-        update::UpdateAvailability::Available => format!("Update {} is available", release.version),
-    }
-}
-
-fn release_policy_summary(
-    release: &update::AvailableRelease,
-    current_version: &Version,
-    system_update_plan: Option<&update::SystemUpdatePlan>,
-) -> String {
-    let mut parts = Vec::new();
-
-    match release.policy.availability {
-        update::UpdateAvailability::Available => {
-            if release.policy.requires_attention() {
-                parts.push(format!(
-                    "Current version {} requires attention before you keep using it.",
-                    current_version
-                ));
-            } else if release.supports_download() {
-                parts.push(format!(
-                    "{} {} is ready for this install.",
-                    release_action_title(&release.version, current_version),
-                    release.version
-                ));
-            }
-        }
-        update::UpdateAvailability::DeferredByRollout => {
-            parts.push(format!(
-                "{} is still in a staged rollout and this install is outside the active cohort.",
-                release.version
-            ));
-        }
-        update::UpdateAvailability::RequiresManualUpgrade => {
-            let minimum_version = release
-                .policy
-                .minimum_version
-                .as_deref()
-                .unwrap_or("a newer supported version");
-            parts.push(format!(
-                "{} requires at least NaniteClip {} before it can be offered to this install.",
-                release.version, minimum_version
-            ));
-        }
-    }
-
-    if release.policy.blocked_current_version {
-        parts.push(format!(
-            "Current version {} is blocked by this release manifest.",
-            current_version
-        ));
-    }
-    if release.policy.mandatory {
-        parts.push("This release is marked mandatory.".into());
-    }
-    if let Some(percentage) = release.policy.rollout_percentage {
-        parts.push(if release.policy.rollout_eligible {
-            format!("Rollout bucket: eligible within the current {percentage}% rollout.")
-        } else {
-            format!("Rollout bucket: outside the current {percentage}% rollout.")
-        });
-    }
-    if let Some(message) = release.policy.message.as_deref() {
-        parts.push(message.into());
-    }
-    if !release.install_channel.supports_self_update() {
-        if let Some(plan) = system_update_plan {
-            parts.push(system_update_plan_summary(plan));
-        } else {
-            parts.push(release.install_channel.update_instructions().into());
-        }
-    }
-
-    if parts.is_empty() {
-        release.install_channel.update_instructions().into()
-    } else {
-        parts.join(" ")
-    }
-}
-
-const DOWNLOADABLE_UPDATE_ACTIONS: [UpdatePrimaryAction; 3] = [
-    UpdatePrimaryAction::DownloadUpdate,
-    UpdatePrimaryAction::RemindLater,
-    UpdatePrimaryAction::SkipThisVersion,
-];
-const REQUIRED_DOWNLOADABLE_UPDATE_ACTIONS: [UpdatePrimaryAction; 1] =
-    [UpdatePrimaryAction::DownloadUpdate];
-const SYSTEM_UPDATE_ACTIONS: [UpdatePrimaryAction; 3] = [
-    UpdatePrimaryAction::OpenSystemUpdater,
-    UpdatePrimaryAction::RemindLater,
-    UpdatePrimaryAction::SkipThisVersion,
-];
-const REQUIRED_SYSTEM_UPDATE_ACTIONS: [UpdatePrimaryAction; 1] =
-    [UpdatePrimaryAction::OpenSystemUpdater];
-const NOTIFICATION_UPDATE_ACTIONS: [UpdatePrimaryAction; 2] = [
-    UpdatePrimaryAction::RemindLater,
-    UpdatePrimaryAction::SkipThisVersion,
-];
-const STAGED_UPDATE_ACTIONS: [UpdatePrimaryAction; 3] = [
-    UpdatePrimaryAction::InstallAndRestart,
-    UpdatePrimaryAction::InstallWhenIdle,
-    UpdatePrimaryAction::InstallOnNextLaunch,
-];
-
-fn can_launch_system_updater(app: &App) -> bool {
-    app.update_state
-        .system_update_plan
-        .as_ref()
-        .is_some_and(|plan| plan.can_launch())
-}
-
-fn update_action_options(app: &App) -> &'static [UpdatePrimaryAction] {
-    if app.update_state.prepared_update.is_some() {
-        &STAGED_UPDATE_ACTIONS
-    } else if let Some(release) = app.update_state.latest_release.as_ref() {
-        if release.policy.requires_attention() && release.supports_download() {
-            &REQUIRED_DOWNLOADABLE_UPDATE_ACTIONS
-        } else if release.policy.requires_attention() && can_launch_system_updater(app) {
-            &REQUIRED_SYSTEM_UPDATE_ACTIONS
-        } else if release.supports_download() {
-            &DOWNLOADABLE_UPDATE_ACTIONS
-        } else if can_launch_system_updater(app) {
-            &SYSTEM_UPDATE_ACTIONS
-        } else {
-            &NOTIFICATION_UPDATE_ACTIONS
-        }
-    } else {
-        &NOTIFICATION_UPDATE_ACTIONS
-    }
-}
-
-fn default_update_action(app: &App) -> UpdatePrimaryAction {
-    if app.update_state.prepared_update.is_some() {
-        match app.settings_update_install_behavior {
-            UpdateInstallBehavior::Manual => UpdatePrimaryAction::InstallAndRestart,
-            UpdateInstallBehavior::WhenIdle => UpdatePrimaryAction::InstallWhenIdle,
-            UpdateInstallBehavior::OnNextLaunch => UpdatePrimaryAction::InstallOnNextLaunch,
-        }
-    } else if app
-        .update_state
-        .latest_release
-        .as_ref()
-        .is_some_and(|release| release.supports_download())
-    {
-        UpdatePrimaryAction::DownloadUpdate
-    } else if can_launch_system_updater(app) {
-        UpdatePrimaryAction::OpenSystemUpdater
-    } else {
-        UpdatePrimaryAction::RemindLater
-    }
-}
-
-fn selected_update_action(app: &App) -> UpdatePrimaryAction {
-    let selected = app.settings_selected_update_action;
-    if update_action_options(app).contains(&selected) {
-        selected
-    } else {
-        default_update_action(app)
-    }
-}
-
-fn can_run_selected_update_action(app: &App) -> bool {
-    match selected_update_action(app) {
-        UpdatePrimaryAction::DownloadUpdate => {
-            app.update_state
-                .latest_release
-                .as_ref()
-                .is_some_and(|release| release.supports_download())
-                && !matches!(
-                    app.update_state.phase,
-                    UpdatePhase::Downloading | UpdatePhase::Verifying | UpdatePhase::Applying
-                )
-        }
-        UpdatePrimaryAction::InstallAndRestart
-        | UpdatePrimaryAction::InstallWhenIdle
-        | UpdatePrimaryAction::InstallOnNextLaunch => {
-            app.update_state.has_downloaded_update()
-                && !matches!(
-                    app.update_state.phase,
-                    UpdatePhase::Downloading | UpdatePhase::Verifying | UpdatePhase::Applying
-                )
-        }
-        UpdatePrimaryAction::OpenSystemUpdater => {
-            app.update_state.latest_release.is_some() && can_launch_system_updater(app)
-        }
-        UpdatePrimaryAction::RemindLater | UpdatePrimaryAction::SkipThisVersion => {
-            app.update_state.latest_release.is_some()
-        }
-    }
-}
-
-fn update_apply_report_from_helper_result(
-    result: &update::helper_shared::ApplyResult,
-) -> UpdateApplyReport {
-    UpdateApplyReport {
-        target_version: result.target_version.clone(),
-        status: match result.status {
-            update::helper_shared::ApplyResultStatus::Succeeded => {
-                UpdateApplyReportStatus::Succeeded
-            }
-            update::helper_shared::ApplyResultStatus::Failed => UpdateApplyReportStatus::Failed,
-        },
-        detail: result.detail.clone(),
-        log_path: result.log_path.clone(),
-        finished_at: result.finished_at,
-    }
-}
-
-fn active_release_for_details(app: &App) -> Option<&update::AvailableRelease> {
-    app.settings_selected_rollback_release
-        .as_ref()
-        .or(app.update_state.latest_release.as_ref())
-}
-
-fn update_details_modal(app: &App) -> Element<'_, Message> {
-    let active_release = active_release_for_details(app);
-    let prepared = app.update_state.prepared_update.as_ref();
-    let title = prepared
-        .map(|prepared| format!("Release {}", prepared.version))
-        .or_else(|| active_release.map(|release| format!("Release {}", release.version)))
-        .unwrap_or_else(|| "Updater Details".into());
-    let changelog = active_release
-        .map(|release| release.changelog_markdown.as_str())
-        .or_else(|| prepared.and_then(|prepared| prepared.changelog_markdown.as_deref()))
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or("No changelog text is available for this release yet.");
-    let signing_key_id = active_release
-        .and_then(|release| release.signature.key_id.as_deref())
-        .or_else(|| prepared.and_then(|prepared| prepared.signature.key_id.as_deref()))
-        .unwrap_or("Not reported");
-    let signing_key_label = active_release
-        .and_then(|release| release.signature.key_label.as_deref())
-        .or_else(|| prepared.and_then(|prepared| prepared.signature.key_label.as_deref()))
-        .unwrap_or("Not reported");
-    let signing_algorithm = active_release
-        .and_then(|release| release.signature.algorithm.as_deref())
-        .or_else(|| prepared.and_then(|prepared| prepared.signature.algorithm.as_deref()))
-        .unwrap_or("ed25519");
-    let published_summary = active_release
-        .and_then(|release| release.published_at)
-        .or_else(|| prepared.and_then(|prepared| prepared.published_at))
-        .map(tabs::clips::format_timestamp)
-        .unwrap_or_else(|| "Not reported".into());
-    let release_policy = active_release
-        .map(|release| &release.policy)
-        .or_else(|| prepared.map(|prepared| &prepared.policy));
-    let minimum_version = release_policy
-        .and_then(|policy| policy.minimum_version.as_deref())
-        .unwrap_or("None");
-    let availability_summary = release_policy
-        .map(|policy| policy.availability.label())
-        .unwrap_or(update::UpdateAvailability::Available.label());
-    let rollout_summary = release_policy
-        .and_then(|policy| policy.rollout_percentage)
-        .map(|percentage| {
-            if release_policy.is_some_and(|policy| policy.rollout_eligible) {
-                format!("Rollout: eligible within the current {percentage}% rollout")
-            } else {
-                format!("Rollout: outside the current {percentage}% rollout")
-            }
-        })
-        .unwrap_or_else(|| "Rollout: not configured".into());
-    let policy_message = release_policy
-        .and_then(|policy| policy.message.as_deref())
-        .unwrap_or("No release policy message was provided.");
-    let policy_flags = release_policy
-        .map(|policy| {
-            format!(
-                "Mandatory: {} · Current version blocked: {}",
-                if policy.mandatory { "yes" } else { "no" },
-                if policy.blocked_current_version {
-                    "yes"
-                } else {
-                    "no"
-                }
-            )
-        })
-        .unwrap_or_else(|| "Mandatory: no · Current version blocked: no".into());
-    let verifier_key_count = update::update_public_keys().len();
-    let prepared_summary = prepared.map(|prepared| {
-        format!(
-            "Staged {} at {}",
-            prepared.asset_kind.label(),
-            prepared.asset_path.display()
-        )
-    });
-    let last_apply_summary = app
-        .update_state
-        .last_apply_report
-        .as_ref()
-        .map(|report| {
-            format!(
-                "Last apply: {} {} at {}",
-                match report.status {
-                    UpdateApplyReportStatus::Succeeded => "Succeeded for",
-                    UpdateApplyReportStatus::Failed => "Failed for",
-                },
-                report.target_version,
-                tabs::clips::format_timestamp(report.finished_at)
-            )
-        })
-        .unwrap_or_else(|| "Last apply: no helper result has been recorded yet.".into());
-    let last_apply_detail = app
-        .update_state
-        .last_apply_report
-        .as_ref()
-        .and_then(|report| report.detail.as_deref())
-        .unwrap_or("No additional apply detail was recorded.");
-    let log_summary = if app.update_details_log_loading {
-        "Loading updater log…".into()
-    } else if let Some(error) = &app.update_details_log_error {
-        format!("Could not load updater log: {error}")
-    } else if let Some(log_text) = &app.update_details_log_text {
-        summarize_update_log_for_viewer(log_text)
-    } else if let Some(report) = &app.update_state.last_apply_report {
-        format!(
-            "No updater log preview loaded. Log path: {}",
-            report.log_path.display()
-        )
-    } else {
-        "No updater log has been recorded yet.".into()
-    };
-
-    let mut details = column![
-        text(title).size(24),
-        text("Release metadata, signing details, and the current changelog.").size(13),
-        text(format!("Current version: {}", app.update_state.current_version)).size(12),
-        text(format!(
-            "Install channel: {}",
-            app.update_state.install_channel.label()
-        ))
-        .size(12),
-        text(format!("Published: {published_summary}")).size(12),
-        text(format!("Availability: {availability_summary}")).size(12),
-        text(format!("Minimum supported version: {minimum_version}")).size(12),
-        text(rollout_summary).size(12),
-        text(policy_flags).size(12),
-        text(format!("Release policy message: {policy_message}")).size(12),
-        text(format!(
-            "Manifest signature: {signing_algorithm} via key `{signing_key_id}` ({signing_key_label})"
-        ))
-        .size(12),
-        text(format!(
-            "Embedded verifier keys in this build: {verifier_key_count}"
-        ))
-        .size(12),
-        text(last_apply_summary).size(12),
-        text(format!("Apply detail: {last_apply_detail}")).size(12),
-    ]
-    .spacing(8);
-
-    if let Some(summary) = prepared_summary {
-        details = details.push(text(summary).size(12));
-    }
-    if let Some(plan) = app.update_state.system_update_plan.as_ref() {
-        details = details.push(text(system_update_plan_summary(plan)).size(12));
-    }
-    if let Some(report) = &app.update_state.last_apply_report {
-        details =
-            details.push(text(format!("Updater log path: {}", report.log_path.display())).size(12));
-    }
-
-    details = details
-        .push(text("Changelog").size(16))
-        .push(container(text(changelog).size(12)).width(Length::Fill))
-        .push(text("Updater Log").size(16))
-        .push(container(text(log_summary).size(12)).width(Length::Fill));
-
-    let controls = row![
-        {
-            let button = shared::styled_button("Close", shared::ButtonTone::Secondary);
-            button.on_press(Message::HideUpdateDetails)
-        },
-        {
-            let button = shared::styled_button("Open on GitHub", shared::ButtonTone::Primary);
-            if app.active_update_release_url().is_some() {
-                button.on_press(Message::OpenUpdateReleaseNotes)
-            } else {
-                button
-            }
-        }
-    ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center);
-
-    column![
-        scrollable(container(details).width(Length::Fill)).height(Length::Fixed(420.0)),
-        controls
-    ]
-    .spacing(16)
-    .width(Length::Fill)
-    .into()
-}
-
-fn summarize_update_log_for_viewer(log_text: &str) -> String {
-    const MAX_LINES: usize = 120;
-    let lines: Vec<_> = log_text.lines().collect();
-    if lines.len() <= MAX_LINES {
-        return log_text.to_string();
-    }
-
-    let tail = lines[lines.len() - MAX_LINES..].join("\n");
-    format!("Showing the last {MAX_LINES} lines of the updater log.\n\n{tail}")
-}
-
-fn release_action_label(
-    target_version: &semver::Version,
-    current_version: &semver::Version,
-) -> &'static str {
-    if target_version < current_version {
-        "rollback"
-    } else if target_version > current_version {
-        "update"
-    } else {
-        "reinstall"
-    }
-}
-
-fn release_action_title(
-    target_version: &semver::Version,
-    current_version: &semver::Version,
-) -> &'static str {
-    if target_version < current_version {
-        "Rollback"
-    } else if target_version > current_version {
-        "Update"
-    } else {
-        "Reinstall"
-    }
-}
-
-fn format_update_download_progress(downloaded_bytes: u64, total_bytes: Option<u64>) -> String {
-    match total_bytes {
-        Some(total_bytes) => format!(
-            "{} of {}",
-            format_update_bytes(downloaded_bytes),
-            format_update_bytes(total_bytes)
-        ),
-        None => format!("{} downloaded", format_update_bytes(downloaded_bytes)),
-    }
-}
-
-fn format_update_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let bytes = bytes as f64;
-    if bytes >= GB {
-        format!("{:.1} GiB", bytes / GB)
-    } else if bytes >= MB {
-        format!("{:.1} MiB", bytes / MB)
-    } else if bytes >= KB {
-        format!("{:.1} KiB", bytes / KB)
-    } else {
-        format!("{} B", bytes as u64)
-    }
-}
-
-fn main_window_settings() -> window::Settings {
-    #[cfg(target_os = "linux")]
-    let mut platform_specific = window::settings::PlatformSpecific::default();
-    #[cfg(not(target_os = "linux"))]
-    let platform_specific = window::settings::PlatformSpecific::default();
-    #[cfg(target_os = "linux")]
-    {
-        platform_specific.application_id = "nanite-clip".into();
-    }
-
-    window::Settings {
-        exit_on_close_request: false,
-        icon: crate::app_icon::window_icon(),
-        platform_specific,
-        ..window::Settings::default()
-    }
-}
-
-fn audio_source_drafts_from_config(audio_sources: &[AudioSourceConfig]) -> Vec<AudioSourceDraft> {
-    let drafts: Vec<_> = audio_sources
-        .iter()
-        .map(|audio_source| AudioSourceDraft {
-            label: audio_source.label.clone(),
-            source: audio_source.kind.config_display_value(),
-            gain_db: audio_source.gain_db,
-            muted_in_premix: audio_source.muted_in_premix,
-            included_in_premix: audio_source.included_in_premix,
-        })
-        .collect();
-
-    if drafts.is_empty() {
-        vec![AudioSourceDraft::default()]
-    } else {
-        drafts
-    }
-}
-
-pub(in crate::app) fn clip_post_process_block_reason(record: &ClipRecord) -> Option<String> {
-    match record.post_process_status {
-        PostProcessStatus::Pending => Some(format!(
-            "Clip #{} is still waiting for audio post-processing to finish.",
-            record.id
-        )),
-        PostProcessStatus::Failed => Some(
-            record
-                .post_process_error
-                .clone()
-                .filter(|message| !message.trim().is_empty())
-                .map(|message| format!("Clip #{} audio post-processing failed: {message}", record.id))
-                .unwrap_or_else(|| {
-                    format!(
-                        "Clip #{} audio post-processing failed. Retry it or use the original clip audio.",
-                        record.id
-                    )
-                }),
-        ),
-        PostProcessStatus::NotRequired
-        | PostProcessStatus::Completed
-        | PostProcessStatus::Legacy => None,
-    }
-}
-
-fn output_tracks_to_drafts(
-    tracks: Vec<crate::post_process::OutputAudioTrack>,
-) -> Vec<ClipAudioTrackDraft> {
-    tracks
-        .into_iter()
-        .map(|track| ClipAudioTrackDraft {
-            stream_index: track.stream_index,
-            role: track.role,
-            label: track.label,
-            gain_db: track.gain_db,
-            muted: track.muted,
-            source_kind: track.source_kind,
-            source_value: track.source_value,
-        })
-        .collect()
-}
-
-#[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
-mod tests {
-    use super::*;
-    use crate::rules::{AutoSwitchCondition, AutoSwitchRule, default_rule_profiles};
-    use chrono::{Datelike, Timelike};
-
-    fn sample_app(mut config: Config) -> App {
-        let secure_store = SecureStore::new();
-        let recorder = Recorder::new(config.capture.clone(), config.recorder.clone());
-        let process_watcher = process::default_game_process_watcher();
-        let ffmpeg_capabilities = post_process::probe_ffmpeg_capabilities();
-        let character_name = config
-            .characters
-            .first()
-            .map(|character| character.name.clone())
-            .unwrap_or_else(|| "Example".into());
-        let character_id = config
-            .characters
-            .first()
-            .and_then(|character| character.character_id)
-            .unwrap_or(42);
-        let current_version = update::current_version();
-        let update_state = hydrate_update_state_from_config(
-            &mut config,
-            update::detect_install_channel(),
-            current_version,
-        );
-        App {
-            settings_launch_at_login: config.launch_at_login.enabled,
-            settings_auto_start_monitoring: config.auto_start_monitoring,
-            settings_start_minimized: config.start_minimized,
-            settings_minimize_to_tray: config.minimize_to_tray,
-            settings_update_auto_check: config.updates.auto_check,
-            settings_update_channel: config.updates.channel,
-            settings_update_install_behavior: config.updates.install_behavior,
-            settings_selected_update_action: UpdatePrimaryAction::DownloadUpdate,
-            settings_selected_rollback_release: None,
-            pending_hotkey_binding_label: None,
-            pending_hotkey_success_toast: false,
-            settings_service_id: config.service_id.clone(),
-            settings_capture_backend: config.capture.backend.clone(),
-            settings_capture_source: config.recorder.gsr().capture_source.clone(),
-            settings_save_dir: config.recorder.save_directory.to_string_lossy().into(),
-            settings_framerate: config.recorder.gsr().framerate.to_string(),
-            settings_codec: config.recorder.gsr().codec.clone(),
-            settings_quality: config.recorder.gsr().quality.clone(),
-            settings_audio_sources: audio_source_drafts_from_config(&config.recorder.audio_sources),
-            settings_discovered_audio_sources: Vec::new(),
-            settings_selected_device_audio_source: None,
-            settings_selected_application_audio_source: None,
-            settings_audio_discovery_running: false,
-            settings_audio_discovery_error: None,
-            settings_container: config.recorder.gsr().container.clone(),
-            settings_obs_websocket_url: config.recorder.obs().websocket_url.clone(),
-            settings_obs_password_input: String::new(),
-            settings_obs_password_present: config.recorder.obs().websocket_password.is_some(),
-            settings_obs_management_mode: config.recorder.obs().management_mode,
-            settings_buffer_secs: config.recorder.replay_buffer_secs.to_string(),
-            settings_save_delay_secs: config.recorder.save_delay_secs.to_string(),
-            settings_clip_saved_notifications: config.recorder.clip_saved_notifications,
-            settings_clip_naming_template: config.clip_naming_template.clone(),
-            settings_manual_clip_enabled: config.manual_clip.enabled,
-            settings_manual_clip_hotkey: config.manual_clip.hotkey.clone(),
-            settings_hotkey_capture_active: false,
-            settings_manual_clip_duration_secs: config.manual_clip.duration_secs.to_string(),
-            settings_storage_tiering_enabled: config.storage_tiering.enabled,
-            settings_storage_tier_directory: config
-                .storage_tiering
-                .tier_directory
-                .to_string_lossy()
-                .into(),
-            settings_storage_min_age_days: config.storage_tiering.min_age_days.to_string(),
-            settings_storage_max_score: config.storage_tiering.max_score.to_string(),
-            settings_copyparty_enabled: config.uploads.copyparty.enabled,
-            settings_copyparty_upload_url: config.uploads.copyparty.upload_url.clone(),
-            settings_copyparty_public_base_url: config.uploads.copyparty.public_base_url.clone(),
-            settings_copyparty_username: config.uploads.copyparty.username.clone(),
-            settings_copyparty_password_input: String::new(),
-            settings_copyparty_password_present: false,
-            settings_youtube_enabled: config.uploads.youtube.enabled,
-            settings_youtube_client_id: config.uploads.youtube.client_id.clone(),
-            settings_youtube_client_secret_input: String::new(),
-            settings_youtube_client_secret_present: false,
-            settings_youtube_refresh_token_present: false,
-            settings_youtube_oauth_in_flight: false,
-            settings_youtube_privacy_status: config.uploads.youtube.privacy_status,
-            settings_discord_enabled: config.discord_webhook.enabled,
-            settings_discord_min_score: config.discord_webhook.min_score.to_string(),
-            settings_discord_include_thumbnail: config.discord_webhook.include_thumbnail,
-            settings_discord_webhook_input: String::new(),
-            settings_discord_webhook_present: false,
-            settings_secure_store_backend_label: secure_store.backend().label().into(),
-            montage_selection: Vec::new(),
-            selected_montage_clip_id: None,
-            clip_montage_modal_open: false,
-            rule_engine: RuleEngine::new(
-                config.rule_definitions.clone(),
-                config.rule_profiles.clone(),
-                config.active_profile_id.clone(),
-            ),
-            config,
-            view: View::Status,
-            state: AppState::Monitoring {
-                character_name: character_name.clone(),
-                character_id,
-            },
-            recorder,
-            notifications: NotificationCenter::new(),
-            toasts: ToastStack::new(),
-            process_watcher,
-            hotkeys: HotkeyManager::disabled(),
-            tray: None,
-            main_window_id: None,
-            clip_store: None,
-            clip_store_notice: None,
-            event_log: EventLog::new(300),
-            rule_vehicle_options: Vec::new(),
-            rule_vehicle_browse_categories: BTreeMap::new(),
-            rule_weapon_options: Vec::new(),
-            rule_weapon_browse_groups: BTreeMap::new(),
-            rule_weapon_browse_categories: BTreeMap::new(),
-            rule_weapon_browse_factions: BTreeMap::new(),
-            rule_filter_text_drafts: BTreeMap::new(),
-            rule_drag_state: None,
-            recent_clips: Vec::new(),
-            clip_history_source: Vec::new(),
-            clip_history: Vec::new(),
-            clip_filter_options: ClipFilterOptions::default(),
-            selected_clip_id: None,
-            selected_clip_detail: None,
-            clip_detail_loading: false,
-            clip_filters: ClipFilters::default(),
-            clip_query_revision: 0,
-            stats_snapshot: None,
-            stats_loading: false,
-            stats_error: None,
-            stats_revision: 0,
-            stats_time_range: tabs::stats::StatsTimeRange::default(),
-            stats_collapsed_sections: vec![tabs::stats::StatsSection::RawEventKinds],
-            stats_last_refreshed_at: None,
-            clip_sort_column: tabs::clips::ClipSortColumn::When,
-            clip_sort_descending: true,
-            clip_history_page: 0,
-            clip_history_page_size: tabs::clips::DEFAULT_PAGE_SIZE,
-            clip_history_viewport: None,
-            clip_advanced_filters_open: false,
-            clip_search_revision: 0,
-            clip_raw_event_filter: String::new(),
-            clip_collapsed_detail_sections: Vec::new(),
-            pending_clip_delete: None,
-            deleting_clip_id: None,
-            clip_error: None,
-            clip_error_expires_at: None,
-            clip_filter_feedback: None,
-            clip_filter_feedback_expires_at: None,
-            next_clip_sequence: 0,
-            pending_save_sequences: VecDeque::new(),
-            pending_clip_links: BTreeMap::new(),
-            tracked_alerts: BTreeMap::new(),
-            hotkey_config_generation: 0,
-            settings_feedback: None,
-            settings_feedback_expires_at: None,
-            status_feedback: None,
-            status_feedback_expires_at: None,
-            rules_feedback: None,
-            rules_feedback_expires_at: None,
-            pending_profile_import: None,
-            pending_profile_import_shake_started_at: None,
-            pending_rule_import: None,
-            pending_rule_import_shake_started_at: None,
-            resolving_characters: BTreeSet::new(),
-            resolving_lookups: BTreeSet::new(),
-            selected_rule_id: None,
-            rules_sub_view: tabs::rules::RulesSubView::default(),
-            settings_sub_view: tabs::settings::SettingsSubView::default(),
-            rules_expanded_events: HashSet::new(),
-            rules_expanded_filters: HashSet::new(),
-            honu_client: HonuClient::new(),
-            secure_store,
-            background_jobs: BackgroundJobManager::new(),
-            honu_session_id: None,
-            active_clip_capture: None,
-            manual_profile_override_profile_id: None,
-            last_auto_switch_rule_id: None,
-            active_session: Some(MonitoringSession {
-                id: format!("{character_id}-1"),
-                started_at: Utc::now(),
-                character_id,
-                character_name,
-            }),
-            last_session_summary: None,
-            portal_capture_recovery_notified: false,
-            startup_probe_due_at: None,
-            startup_probe_pending_result: false,
-            startup_probe_resolution: None,
-            ffmpeg_capabilities,
-            obs_connection_status: None,
-            pending_recorder_start: None,
-            next_recorder_start_id: 0,
-            obs_restart_requires_manual_restart: false,
-            update_state,
-            update_details_modal_open: false,
-            update_details_log_text: None,
-            update_details_log_error: None,
-            update_details_log_loading: false,
-            new_character_name: String::new(),
-            clip_date_range_preset: tabs::clips::DateRangePreset::AllTime,
-            clip_date_range_start: String::new(),
-            clip_date_range_end: String::new(),
-            active_clip_calendar: None,
-            clip_calendar_month: tabs::clips::today_local_date(),
-        }
-    }
-
-    fn sample_clip() -> ClipDraft {
-        let event_at = chrono::DateTime::<Utc>::from_timestamp(1_710_000_000, 0).unwrap();
-        ClipDraft {
-            trigger_event_at: event_at,
-            clip_start_at: event_at - chrono::Duration::seconds(30),
-            clip_end_at: event_at,
-            saved_at: event_at,
-            origin: ClipOrigin::Rule,
-            profile_id: "profile_1".into(),
-            rule_id: "rule_kill_streak".into(),
-            clip_duration_secs: 30,
-            session_id: Some("session-1".into()),
-            character_id: 42,
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: Some(1234),
-            score: 9,
-            honu_session_id: None,
-            path: None,
-            events: vec![ClipEventContribution {
-                event_kind: "Kill".into(),
-                occurrences: 3,
-                points: 6,
-            }],
-            raw_events: Vec::new(),
-            alert_keys: Vec::new(),
-        }
-    }
-
-    fn sample_prepared_update(asset_path: PathBuf) -> update::PreparedUpdate {
-        sample_prepared_update_with_version(asset_path, "9.9.9")
-    }
-
-    fn sample_prepared_update_with_version(
-        asset_path: PathBuf,
-        version: &str,
-    ) -> update::PreparedUpdate {
-        update::PreparedUpdate {
-            version: version.into(),
-            tag_name: format!("v{version}"),
-            install_channel: update::InstallChannel::WindowsPortable,
-            asset_kind: update::types::UpdateAssetKind::Exe,
-            asset_name: "nanite-clip.exe".into(),
-            asset_path,
-            release_notes_url: format!("https://example.invalid/releases/v{version}"),
-            release_name: Some(format!("NaniteClip {version}")),
-            changelog_markdown: Some("## Highlights\n\n- Sample release".into()),
-            published_at: None,
-            signature: update::types::UpdateSignatureInfo::default(),
-            policy: update::UpdateReleasePolicy::default(),
-        }
-    }
-
-    fn sample_available_release(
-        install_channel: update::InstallChannel,
-        policy: update::UpdateReleasePolicy,
-        with_asset: bool,
-    ) -> update::AvailableRelease {
-        update::AvailableRelease {
-            version: Version::parse("9.9.9").unwrap(),
-            tag_name: "v9.9.9".into(),
-            release_name: "NaniteClip 9.9.9".into(),
-            html_url: "https://example.invalid/releases/v9.9.9".into(),
-            changelog_markdown: "## Highlights".into(),
-            published_at: None,
-            signature: update::types::UpdateSignatureInfo::default(),
-            policy,
-            asset: with_asset.then_some(update::types::ManifestAsset {
-                channel: install_channel,
-                kind: update::types::UpdateAssetKind::Exe,
-                filename: "nanite-clip.exe".into(),
-                download_url: "https://example.invalid/nanite-clip.exe".into(),
-                sha256: "abc123".into(),
-                size: Some(42),
-            }),
-            install_channel,
-            skipped: false,
-        }
-    }
-
-    #[tokio::test]
-    async fn deleting_clip_without_saved_file_still_removes_row() {
-        let store = ClipStore::open_in_memory().await.unwrap();
-        let clip_id = store.insert_clip(sample_clip()).await.unwrap();
-
-        delete_clip_file_and_unlink(store.clone(), clip_id, None)
-            .await
-            .unwrap();
-
-        let clips = store.recent_clips(10).await.unwrap();
-        assert!(clips.is_empty());
-    }
-
-    #[test]
-    fn auto_start_monitoring_uses_waiting_for_game_initial_state() {
-        let mut config = Config::default();
-        config.auto_start_monitoring = true;
-
-        assert!(matches!(
-            initial_runtime_state(&config),
-            AppState::WaitingForGame
-        ));
-    }
-
-    #[test]
-    fn non_auto_dismiss_feedback_still_gets_a_timeout() {
-        let mut app = sample_app(Config::default());
-
-        app.set_settings_feedback("Needs attention", false);
-
-        assert!(app.settings_feedback_expires_at.is_some());
-        assert_eq!(app.toasts.len(), 1);
-        assert_eq!(
-            app.toasts.toasts()[0].duration,
-            Some(App::EXTENDED_MESSAGE_TIMEOUT)
-        );
-    }
-
-    #[test]
-    fn hotkey_feedback_ignores_unchanged_binding_labels() {
-        assert_eq!(
-            hotkey_configuration_feedback(true, Some("Ctrl+Shift+F8"), Some("Ctrl+Shift+F8"), None),
-            None
-        );
-    }
-
-    #[test]
-    fn hotkey_feedback_ignores_success_when_not_requested() {
-        assert_eq!(
-            hotkey_configuration_feedback(false, Some("Ctrl+Shift+F8"), Some("Alt+F8"), None),
-            None
-        );
-    }
-
-    #[test]
-    fn hotkey_feedback_reports_changed_binding_labels() {
-        assert_eq!(
-            hotkey_configuration_feedback(true, Some("Ctrl+Shift+F8"), Some("Alt+F8"), None),
-            Some(HotkeyConfigurationFeedback::Success(
-                "Manual clip hotkey active: Alt+F8".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn hotkey_feedback_reports_configuration_notes_when_requested() {
-        assert_eq!(
-            hotkey_configuration_feedback(
-                true,
-                None,
-                None,
-                Some("Assign a shortcut in the portal.")
-            ),
-            Some(HotkeyConfigurationFeedback::Note(
-                "Assign a shortcut in the portal.".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn hydrate_update_state_restores_staged_update_when_asset_exists() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "nanite-clip-update-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let asset_path = temp_root.join("nanite-clip.exe");
-        std::fs::write(&asset_path, b"updater").unwrap();
-
-        let mut config = Config::default();
-        config.updates.prepared_update = Some(sample_prepared_update(asset_path.clone()));
-        let update_state = hydrate_update_state_from_config(
-            &mut config,
-            update::InstallChannel::WindowsPortable,
-            update::current_version(),
-        );
-
-        assert!(matches!(update_state.phase, UpdatePhase::ReadyToInstall));
-        assert_eq!(
-            update_state
-                .prepared_update
-                .as_ref()
-                .map(|prepared| &prepared.asset_path),
-            Some(&asset_path)
-        );
-        assert!(config.updates.prepared_update.is_some());
-
-        let _ = std::fs::remove_file(&asset_path);
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[test]
-    fn hydrate_update_state_keeps_staged_rollback_target() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "nanite-clip-rollback-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let asset_path = temp_root.join("nanite-clip.exe");
-        std::fs::write(&asset_path, b"rollback").unwrap();
-
-        let mut config = Config::default();
-        let rollback_version = "0.1.0";
-        config.updates.prepared_update = Some(sample_prepared_update_with_version(
-            asset_path.clone(),
-            rollback_version,
-        ));
-        let update_state = hydrate_update_state_from_config(
-            &mut config,
-            update::InstallChannel::WindowsPortable,
-            update::current_version(),
-        );
-
-        assert!(matches!(update_state.phase, UpdatePhase::ReadyToInstall));
-        assert_eq!(
-            update_state
-                .prepared_update
-                .as_ref()
-                .map(|prepared| prepared.version.as_str()),
-            Some(rollback_version)
-        );
-
-        let _ = std::fs::remove_file(&asset_path);
-        let _ = std::fs::remove_dir_all(&temp_root);
-    }
-
-    #[test]
-    fn record_running_version_tracks_previous_install_history() {
-        let current_version = update::current_version();
-        let next_version = semver::Version::new(
-            current_version.major,
-            current_version.minor,
-            current_version.patch.saturating_add(1),
-        );
-        let mut config = Config::default();
-        config.updates.current_version = Some(next_version.to_string());
-
-        record_running_version(&mut config, &current_version);
-        let current_version_label = current_version.to_string();
-
-        assert_eq!(
-            config.updates.current_version.as_deref(),
-            Some(current_version_label.as_str())
-        );
-        assert_eq!(
-            config.updates.installed_version_history.first(),
-            Some(&next_version.to_string())
-        );
-    }
-
-    #[test]
-    fn when_idle_updates_only_auto_apply_after_monitoring_stops() {
-        let mut config = Config::default();
-        config.updates.install_behavior = UpdateInstallBehavior::WhenIdle;
-
-        let mut app = sample_app(config);
-        app.update_state.prepared_update =
-            Some(sample_prepared_update(PathBuf::from("staged.exe")));
-        app.update_state.phase = UpdatePhase::ReadyToInstall;
-
-        assert!(!app.should_auto_apply_staged_update());
-
-        app.state = AppState::Idle;
-        app.active_session = None;
-
-        assert!(app.should_auto_apply_staged_update());
-    }
-
-    #[test]
-    fn next_automatic_update_check_uses_last_check_timestamp() {
-        let mut app = sample_app(Config::default());
-        let last_check = Utc::now() - chrono::Duration::hours(3);
-        app.update_state.last_checked_at = Some(last_check);
-
-        let next_check = next_automatic_update_check_at(&app).unwrap();
-
-        assert_eq!(next_check, last_check + chrono::Duration::hours(12));
-    }
-
-    #[test]
-    fn mandatory_package_managed_release_prefers_system_updater_action() {
-        let mut app = sample_app(Config::default());
-        app.state = AppState::Idle;
-        app.active_session = None;
-        app.update_state.latest_release = Some(sample_available_release(
-            update::InstallChannel::LinuxDeb,
-            update::UpdateReleasePolicy {
-                mandatory: true,
-                ..Default::default()
-            },
-            false,
-        ));
-        app.update_state.system_update_plan = Some(update::SystemUpdatePlan {
-            label: "PackageKit".into(),
-            detail: "Launch PackageKit.".into(),
-            command_display: Some("pkcon update".into()),
-            command_program: Some("pkcon".into()),
-            command_args: vec!["update".into()],
-        });
-
-        assert_eq!(
-            update_action_options(&app),
-            &[UpdatePrimaryAction::OpenSystemUpdater]
-        );
-        assert_eq!(
-            selected_update_action(&app),
-            UpdatePrimaryAction::OpenSystemUpdater
-        );
-        assert!(can_run_selected_update_action(&app));
-    }
-
-    #[test]
-    fn classify_update_error_prefers_verification_and_install_context() {
-        assert_eq!(
-            classify_update_error(
-                "downloaded update checksum mismatch",
-                UpdatePhase::Downloading
-            ),
-            UpdateErrorKind::Verification
-        );
-        assert_eq!(
-            classify_update_error("failed to launch updater helper", UpdatePhase::Applying),
-            UpdateErrorKind::Install
-        );
-        assert_eq!(
-            classify_update_error("GitHub request timed out", UpdatePhase::Checking),
-            UpdateErrorKind::Network
-        );
-    }
-
-    #[tokio::test]
-    async fn stats_day_navigation_updates_clip_date_filter_and_triggers_reload() {
-        let mut config = Config::default();
-        config.characters.push(crate::config::CharacterConfig {
-            name: "Example".into(),
-            character_id: Some(42),
-            world_id: None,
-            faction_id: None,
-        });
-
-        let mut app = sample_app(config);
-        app.clip_store = Some(ClipStore::open_in_memory().await.unwrap());
-
-        let _task = tabs::stats::update(
-            &mut app,
-            tabs::stats::Message::NavigateToClipsOnDay("2026-04-05".into()),
-        );
-
-        assert_eq!(
-            app.clip_date_range_preset,
-            tabs::clips::DateRangePreset::Custom
-        );
-        assert_eq!(app.clip_date_range_start, "2026-04-05");
-        assert_eq!(app.clip_date_range_end, "2026-04-05");
-        assert!(app.clip_filters.event_after_ts.is_some());
-        assert!(app.clip_filters.event_before_ts.is_some());
-        assert_eq!(app.clip_query_revision, 1);
-    }
-
-    #[test]
-    fn storage_retry_target_infers_archive_and_primary() {
-        let now = Utc::now();
-        let archive_job = BackgroundJobRecord {
-            id: BackgroundJobId(1),
-            kind: BackgroundJobKind::StorageTiering,
-            label: "Move clip #42 to archive".into(),
-            state: crate::background_jobs::BackgroundJobState::Failed,
-            related_clip_ids: vec![42],
-            progress: None,
-            started_at: now,
-            updated_at: now,
-            finished_at: Some(now),
-            detail: Some("Move failed.".into()),
-            cancellable: false,
-        };
-        let primary_job = BackgroundJobRecord {
-            label: "Move clip #42 to primary".into(),
-            ..archive_job.clone()
-        };
-
-        assert_eq!(
-            infer_storage_move_retry_target(&archive_job).unwrap(),
-            StorageTier::Archive
-        );
-        assert_eq!(
-            infer_storage_move_retry_target(&primary_job).unwrap(),
-            StorageTier::Primary
-        );
-    }
-
-    #[test]
-    fn manual_clip_naming_context_uses_manual_origin() {
-        let mut config = Config::default();
-        config.characters.push(crate::config::CharacterConfig {
-            name: "Example".into(),
-            character_id: Some(42),
-            world_id: None,
-            faction_id: None,
-        });
-        let app = sample_app(config);
-
-        let context = app.build_clip_naming_context(&ClipSaveRequest {
-            origin: ClipOrigin::Manual,
-            profile_id: "profile_1".into(),
-            rule_id: "manual_clip".into(),
-            duration: ClipLength::Seconds(30),
-            clip_duration_secs: 30,
-            trigger_score: 0,
-            score_breakdown: Vec::new(),
-            trigger_at: Utc::now(),
-            clip_start_at: Utc::now() - chrono::Duration::seconds(30),
-            clip_end_at: Utc::now(),
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: None,
-            character_id: 42,
-            honu_session_id: None,
-            session_id: Some("42-1".into()),
-        });
-
-        assert_eq!(context.source, "manual");
-        assert_eq!(context.character, "Example");
-        assert_eq!(context.rule, "manual_clip");
-    }
-
-    #[test]
-    fn alert_window_matching_returns_only_overlapping_same_zone_alerts() {
-        let mut app = sample_app(Config::default());
-        let clip_start_at = Utc::now();
-        let clip_end_at = clip_start_at + chrono::Duration::seconds(30);
-
-        app.tracked_alerts.insert(
-            "matching-a".into(),
-            AlertInstanceRecord {
-                alert_key: "matching-a".into(),
-                label: "Indar Alert A".into(),
-                world_id: 17,
-                zone_id: 2,
-                metagame_event_id: 1,
-                started_at: clip_start_at - chrono::Duration::minutes(5),
-                ended_at: None,
-                state_name: "started".into(),
-                winner_faction: None,
-                faction_nc: 33.0,
-                faction_tr: 33.0,
-                faction_vs: 34.0,
-            },
-        );
-        app.tracked_alerts.insert(
-            "matching-b".into(),
-            AlertInstanceRecord {
-                alert_key: "matching-b".into(),
-                label: "Indar Alert B".into(),
-                world_id: 17,
-                zone_id: 2,
-                metagame_event_id: 2,
-                started_at: clip_start_at - chrono::Duration::seconds(10),
-                ended_at: Some(clip_end_at + chrono::Duration::seconds(5)),
-                state_name: "started".into(),
-                winner_faction: None,
-                faction_nc: 20.0,
-                faction_tr: 30.0,
-                faction_vs: 50.0,
-            },
-        );
-        app.tracked_alerts.insert(
-            "different-zone".into(),
-            AlertInstanceRecord {
-                alert_key: "different-zone".into(),
-                label: "Esamir Alert".into(),
-                world_id: 17,
-                zone_id: 8,
-                metagame_event_id: 3,
-                started_at: clip_start_at - chrono::Duration::minutes(1),
-                ended_at: None,
-                state_name: "started".into(),
-                winner_faction: None,
-                faction_nc: 0.0,
-                faction_tr: 0.0,
-                faction_vs: 100.0,
-            },
-        );
-
-        let alert_keys = app.alert_keys_for_clip_window(17, Some(2), clip_start_at, clip_end_at);
-
-        assert_eq!(
-            alert_keys,
-            vec!["matching-a".to_string(), "matching-b".to_string()]
-        );
-    }
-
-    #[test]
-    fn manual_override_blocks_auto_switch_until_resumed() {
-        let mut config = Config::default();
-        config.rule_profiles = default_rule_profiles();
-        config.active_profile_id = "profile_1".into();
-        config.auto_switch_rules = vec![AutoSwitchRule {
-            id: "time-rule".into(),
-            name: "Time Rule".into(),
-            enabled: true,
-            target_profile_id: "profile_2".into(),
-            condition: AutoSwitchCondition::LocalTimeRange {
-                start_hour: 0,
-                end_hour: 24,
-            },
-        }];
-
-        let mut app = sample_app(config);
-        let now = Utc::now();
-        app.manual_profile_override_profile_id = Some("profile_1".into());
-
-        let _ = app.evaluate_runtime_auto_switch(now, Some(42));
-        assert_eq!(app.config.active_profile_id, "profile_1");
-        assert_eq!(app.last_auto_switch_rule_id, None);
-
-        app.resume_auto_switching();
-        let _ = app.evaluate_runtime_auto_switch(now, Some(42));
-        assert_eq!(app.config.active_profile_id, "profile_2");
-        assert_eq!(app.last_auto_switch_rule_id.as_deref(), Some("time-rule"));
-    }
-
-    #[test]
-    fn active_character_auto_switch_changes_profile_only_for_matching_character() {
-        let mut config = Config::default();
-        config.rule_profiles = default_rule_profiles();
-        config.active_profile_id = "profile_1".into();
-        config.auto_switch_rules = vec![AutoSwitchRule {
-            id: "character-switch".into(),
-            name: "Character Switch".into(),
-            enabled: true,
-            target_profile_id: "profile_2".into(),
-            condition: AutoSwitchCondition::ActiveCharacter {
-                character_ids: vec![99, 123],
-                character_id: None,
-            },
-        }];
-
-        let mut app = sample_app(config);
-
-        let _ = app.evaluate_runtime_auto_switch(Utc::now(), Some(42));
-        assert_eq!(app.config.active_profile_id, "profile_1");
-
-        let _ = app.evaluate_runtime_auto_switch(Utc::now(), Some(99));
-        assert_eq!(app.config.active_profile_id, "profile_2");
-        assert_eq!(
-            app.last_auto_switch_rule_id.as_deref(),
-            Some("character-switch")
-        );
-    }
-
-    #[test]
-    fn local_schedule_auto_switch_changes_profile_when_schedule_matches() {
-        let mut config = Config::default();
-        config.rule_profiles = default_rule_profiles();
-        config.active_profile_id = "profile_1".into();
-        let local = chrono::Local::now();
-        config.auto_switch_rules = vec![AutoSwitchRule {
-            id: "schedule-switch".into(),
-            name: "Schedule Switch".into(),
-            enabled: true,
-            target_profile_id: "profile_2".into(),
-            condition: AutoSwitchCondition::LocalSchedule {
-                weekdays: vec![crate::rules::schedule::ScheduleWeekday::from_chrono(
-                    local.weekday(),
-                )],
-                start_hour: local.hour() as u8,
-                start_minute: 0,
-                end_hour: ((local.hour() + 1) % 24) as u8,
-                end_minute: 0,
-            },
-        }];
-
-        let mut app = sample_app(config);
-
-        let _ = app.evaluate_runtime_auto_switch(local.with_timezone(&Utc), Some(42));
-
-        assert_eq!(app.config.active_profile_id, "profile_2");
-        assert_eq!(
-            app.last_auto_switch_rule_id.as_deref(),
-            Some("schedule-switch")
-        );
-    }
-
-    #[test]
-    fn local_schedule_auto_switch_runs_during_idle_tick() {
-        let mut config = Config::default();
-        config.rule_profiles = default_rule_profiles();
-        config.active_profile_id = "profile_1".into();
-        let local = chrono::Local::now();
-        config.auto_switch_rules = vec![AutoSwitchRule {
-            id: "schedule-switch".into(),
-            name: "Schedule Switch".into(),
-            enabled: true,
-            target_profile_id: "profile_2".into(),
-            condition: AutoSwitchCondition::LocalSchedule {
-                weekdays: vec![crate::rules::schedule::ScheduleWeekday::from_chrono(
-                    local.weekday(),
-                )],
-                start_hour: local.hour() as u8,
-                start_minute: if local.minute() < 30 { 0 } else { 30 },
-                end_hour: if local.minute() < 30 {
-                    local.hour() as u8
-                } else {
-                    ((local.hour() + 1) % 24) as u8
-                },
-                end_minute: if local.minute() < 30 { 30 } else { 0 },
-            },
-        }];
-
-        let mut app = sample_app(config);
-        app.state = AppState::Idle;
-        app.active_session = None;
-
-        let _ = app.update(Message::Tick);
-
-        assert_eq!(app.config.active_profile_id, "profile_2");
-        assert_eq!(
-            app.last_auto_switch_rule_id.as_deref(),
-            Some("schedule-switch")
-        );
-    }
-
-    #[test]
-    fn tray_snapshot_lists_profiles_and_active_selection() {
-        let mut config = Config::default();
-        config.rule_profiles = vec![
-            RuleProfile {
-                id: "profile_1".into(),
-                name: "Default".into(),
-                enabled_rule_ids: Vec::new(),
-            },
-            RuleProfile {
-                id: "profile_2".into(),
-                name: "Highlights".into(),
-                enabled_rule_ids: Vec::new(),
-            },
-        ];
-        config.active_profile_id = "profile_2".into();
-        let app = sample_app(config);
-
-        let snapshot = app.tray_snapshot();
-
-        assert_eq!(snapshot.profile_options.len(), 2);
-        assert_eq!(snapshot.profile_options[0].name, "Default");
-        assert!(!snapshot.profile_options[0].selected);
-        assert_eq!(snapshot.profile_options[1].name, "Highlights");
-        assert!(snapshot.profile_options[1].selected);
-    }
-
-    #[test]
-    fn obs_reconnect_status_updates_tray_snapshot_and_clears_on_reconnect() {
-        let mut config = Config::default();
-        config.capture.backend = "obs".into();
-        let mut app = sample_app(config);
-
-        assert!(
-            app.apply_backend_runtime_event(capture::BackendRuntimeEvent::ObsConnection(
-                capture::ObsConnectionStatus::Reconnecting {
-                    attempt: 2,
-                    next_retry_in_secs: 5,
-                },
-            ))
-        );
-        assert_eq!(
-            app.tray_snapshot().status_label,
-            "OBS reconnecting (attempt 2, retry in 5s)"
-        );
-
-        assert!(
-            app.apply_backend_runtime_event(capture::BackendRuntimeEvent::ObsConnection(
-                capture::ObsConnectionStatus::Connected,
-            ))
-        );
-        assert!(!app.obs_restart_requires_manual_restart);
-        assert_eq!(app.tray_snapshot().status_label, "Monitoring Example");
-    }
-
-    #[test]
-    fn obs_failed_status_requires_manual_restart() {
-        let mut config = Config::default();
-        config.capture.backend = "obs".into();
-        let mut app = sample_app(config);
-
-        assert!(
-            app.apply_backend_runtime_event(capture::BackendRuntimeEvent::ObsConnection(
-                capture::ObsConnectionStatus::Failed {
-                    reason: "socket closed".into(),
-                },
-            ))
-        );
-
-        assert!(app.obs_restart_requires_manual_restart);
-        assert_eq!(
-            app.tray_snapshot().status_label,
-            "OBS reconnect failed: socket closed"
-        );
-    }
-
-    #[test]
-    fn minimize_to_tray_close_request_clears_main_window_id() {
-        let mut config = Config::default();
-        config.minimize_to_tray = true;
-        let mut app = sample_app(config);
-        let window_id = window::Id::unique();
-        app.main_window_id = Some(window_id);
-
-        let _ = app.update(Message::WindowCloseRequested(window_id));
-
-        assert_eq!(app.main_window_id, None);
-    }
-
-    #[test]
-    fn open_main_window_task_reserves_window_id_immediately() {
-        let mut app = sample_app(Config::default());
-
-        let _ = app.open_main_window_task();
-
-        assert!(app.main_window_id.is_some());
-    }
-
-    #[test]
-    fn repeated_open_main_window_task_reuses_reserved_window_id() {
-        let mut app = sample_app(Config::default());
-
-        let _ = app.open_main_window_task();
-        let reserved_id = app.main_window_id;
-        let _ = app.open_main_window_task();
-
-        assert_eq!(app.main_window_id, reserved_id);
-    }
-
-    #[test]
-    fn raw_event_harvest_uses_computed_clip_window() {
-        let trigger_at = Utc::now();
-        let mut event_log = EventLog::new(120);
-        event_log.append(crate::rules::ClassifiedEvent {
-            kind: crate::rules::EventKind::Kill,
-            timestamp: trigger_at - chrono::Duration::seconds(15),
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: Some(1234),
-            actor_character_id: Some(42),
-            other_character_id: Some(100),
-            other_character_outfit_id: None,
-            characters_killed: 1,
-            attacker_weapon_id: Some(80),
-            attacker_vehicle_id: None,
-            vehicle_killed_id: None,
-            is_headshot: false,
-            actor_class: Some(crate::rules::CharacterClass::HeavyAssault),
-            experience_id: None,
-        });
-        event_log.append(crate::rules::ClassifiedEvent {
-            kind: crate::rules::EventKind::Headshot,
-            timestamp: trigger_at + chrono::Duration::seconds(4),
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: Some(1234),
-            actor_character_id: Some(42),
-            other_character_id: Some(101),
-            other_character_outfit_id: None,
-            characters_killed: 1,
-            attacker_weapon_id: Some(81),
-            attacker_vehicle_id: None,
-            vehicle_killed_id: None,
-            is_headshot: true,
-            actor_class: Some(crate::rules::CharacterClass::HeavyAssault),
-            experience_id: None,
-        });
-        event_log.append(crate::rules::ClassifiedEvent {
-            kind: crate::rules::EventKind::Revive,
-            timestamp: trigger_at - chrono::Duration::seconds(40),
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: Some(1234),
-            actor_character_id: Some(42),
-            other_character_id: Some(102),
-            other_character_outfit_id: None,
-            characters_killed: 0,
-            attacker_weapon_id: None,
-            attacker_vehicle_id: None,
-            vehicle_killed_id: None,
-            is_headshot: false,
-            actor_class: Some(crate::rules::CharacterClass::Medic),
-            experience_id: Some(7),
-        });
-
-        let request = ClipSaveRequest {
-            origin: ClipOrigin::Rule,
-            profile_id: "profile_1".into(),
-            rule_id: "rule_1".into(),
-            duration: ClipLength::Seconds(20),
-            clip_duration_secs: 20,
-            trigger_score: 5,
-            score_breakdown: Vec::new(),
-            trigger_at,
-            clip_start_at: trigger_at - chrono::Duration::seconds(15),
-            clip_end_at: trigger_at + chrono::Duration::seconds(5),
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: Some(1234),
-            character_id: 42,
-            honu_session_id: None,
-            session_id: Some("session-1".into()),
-        };
-
-        let raw_events = raw_events_from_log(&event_log, &request);
-        assert_eq!(raw_events.len(), 2);
-        assert_eq!(raw_events[0].event_kind, "Kill");
-        assert_eq!(raw_events[1].event_kind, "Headshot");
-    }
-
-    #[test]
-    fn recompute_capture_window_clamps_to_replay_buffer() {
-        let trigger_at = chrono::DateTime::<Utc>::from_timestamp(1_710_000_000, 0).unwrap();
-        let mut request = ClipSaveRequest {
-            origin: ClipOrigin::Rule,
-            profile_id: "profile_1".into(),
-            rule_id: "rule_1".into(),
-            duration: ClipLength::Seconds(20),
-            clip_duration_secs: 20,
-            trigger_score: 5,
-            score_breakdown: Vec::new(),
-            trigger_at,
-            clip_start_at: trigger_at - chrono::Duration::seconds(20),
-            clip_end_at: trigger_at + chrono::Duration::seconds(40),
-            world_id: 17,
-            zone_id: Some(2),
-            facility_id: Some(1234),
-            character_id: 42,
-            honu_session_id: None,
-            session_id: Some("session-1".into()),
-        };
-
-        recompute_capture_window(&mut request, trigger_at - chrono::Duration::seconds(20), 30);
-
-        assert_eq!(request.clip_duration_secs, 30);
-        assert_eq!(
-            request.clip_start_at,
-            request.clip_end_at - chrono::Duration::seconds(30)
-        );
-        assert_eq!(request.duration, ClipLength::Seconds(30));
-    }
-
-    #[test]
-    fn clip_log_retention_includes_extension_window() {
-        let mut config = Config::default();
-        config.recorder.replay_buffer_secs = 120;
-        config.recorder.save_delay_secs = 3;
-        config.manual_clip.duration_secs = 45;
-        config.rule_definitions[0].extension.mode = crate::rules::ClipExtensionMode::HoldUntilQuiet;
-        config.rule_definitions[0].extension.window_secs = 9;
-
-        assert_eq!(clip_log_retention_secs(&config), 132);
     }
 }

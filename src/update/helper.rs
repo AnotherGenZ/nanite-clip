@@ -4,6 +4,7 @@ use std::process::Command;
 use super::download;
 use super::helper_shared::{ApplyKind, ApplyPlan, ApplyResult};
 use super::types::{InstallChannel, PreparedUpdate, UpdateAssetKind};
+use crate::command_runner;
 
 pub fn spawn_apply_helper(prepared: &PreparedUpdate) -> Result<(), String> {
     let current_exe = std::env::current_exe()
@@ -28,10 +29,9 @@ pub fn spawn_apply_helper(prepared: &PreparedUpdate) -> Result<(), String> {
     };
     let plan_path = write_apply_plan(&plan)?;
 
-    Command::new(&helper_path)
-        .arg("--apply-plan")
-        .arg(&plan_path)
-        .spawn()
+    let mut command = Command::new(&helper_path);
+    command.arg("--apply-plan").arg(&plan_path);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| {
             format!(

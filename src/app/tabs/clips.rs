@@ -1,3 +1,5 @@
+mod library;
+
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
@@ -26,9 +28,14 @@ use crate::ui::overlay::modal::modal;
 use crate::ui::pickers::date::date_picker;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::theme;
+use library::*;
 
 use super::super::shared::{ButtonTone, styled_button, with_tooltip};
-use super::super::{App, AppState, Message as AppMessage};
+use super::super::{App, AppState, Message as AppMessage, RuntimeMessage};
+
+pub(in crate::app) use library::{
+    format_timestamp, rebuild_history, subscription_event_handler, today_local_date,
+};
 
 // ---------------------------------------------------------------------------
 // Constants and lightweight types
@@ -273,9 +280,9 @@ pub(in crate::app) fn refresh_history(app: &mut App) -> Task<AppMessage> {
         return Task::none();
     };
 
-    app.clip_query_revision += 1;
-    let revision = app.clip_query_revision;
-    let filters = app.clip_filters.clone();
+    app.clips.query_revision += 1;
+    let revision = app.clips.query_revision;
+    let filters = app.clips.filters.clone();
 
     Task::perform(
         async move { store.search_clips(&filters, 1_000).await },
@@ -292,15 +299,15 @@ pub(in crate::app) fn refresh_history(app: &mut App) -> Task<AppMessage> {
 pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage> {
     match message {
         Message::Loaded(revision, result) => {
-            if revision != app.clip_query_revision {
+            if revision != app.clips.query_revision {
                 return Task::none();
             }
             match result {
                 Ok(clips) => {
-                    app.clip_history_source = clips;
+                    app.clips.history_source = clips;
                     rebuild_history(app);
                     app.clear_clip_error();
-                    let lookup_clips = app.clip_history_source.clone();
+                    let lookup_clips = app.clips.history_source.clone();
                     return app.schedule_clip_record_lookup_resolutions(&lookup_clips);
                 }
                 Err(error) => {
@@ -312,9 +319,9 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         }
 
         Message::SearchChanged(value) => {
-            app.clip_filters.search = value;
-            app.clip_search_revision = app.clip_search_revision.wrapping_add(1);
-            let revision = app.clip_search_revision;
+            app.clips.filters.search = value;
+            app.clips.search_revision = app.clips.search_revision.wrapping_add(1);
+            let revision = app.clips.search_revision;
             Task::perform(
                 async move {
                     tokio::time::sleep(StdDuration::from_millis(SEARCH_DEBOUNCE_MS)).await;
@@ -324,82 +331,82 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             )
         }
         Message::SearchDebounceFired(revision) => {
-            if revision == app.clip_search_revision {
+            if revision == app.clips.search_revision {
                 rebuild_history(app);
             }
             Task::none()
         }
 
         Message::TargetFilterChanged(value) => {
-            app.clip_filters.target = filter_value_from_selection(value, ALL_TARGETS_LABEL);
+            app.clips.filters.target = filter_value_from_selection(value, ALL_TARGETS_LABEL);
             refresh_history(app)
         }
         Message::WeaponFilterChanged(value) => {
-            app.clip_filters.weapon = filter_value_from_selection(value, ALL_WEAPONS_LABEL);
+            app.clips.filters.weapon = filter_value_from_selection(value, ALL_WEAPONS_LABEL);
             refresh_history(app)
         }
         Message::AlertFilterChanged(value) => {
-            app.clip_filters.alert = filter_value_from_selection(value, ALL_ALERTS_LABEL);
+            app.clips.filters.alert = filter_value_from_selection(value, ALL_ALERTS_LABEL);
             refresh_history(app)
         }
         Message::OverlapFilterChanged(value) => {
-            app.clip_filters.overlap_state = value.into_state();
+            app.clips.filters.overlap_state = value.into_state();
             refresh_history(app)
         }
 
         Message::ProfileFilterChanged(value) => {
-            app.clip_filters.profile = filter_value_from_selection(value, ALL_PROFILES_LABEL);
+            app.clips.filters.profile = filter_value_from_selection(value, ALL_PROFILES_LABEL);
             rebuild_history(app);
             Task::none()
         }
         Message::RuleFilterChanged(value) => {
-            app.clip_filters.rule = filter_value_from_selection(value, ALL_RULES_LABEL);
+            app.clips.filters.rule = filter_value_from_selection(value, ALL_RULES_LABEL);
             rebuild_history(app);
             Task::none()
         }
         Message::CharacterFilterChanged(value) => {
-            app.clip_filters.character = filter_value_from_selection(value, ALL_CHARACTERS_LABEL);
+            app.clips.filters.character = filter_value_from_selection(value, ALL_CHARACTERS_LABEL);
             rebuild_history(app);
             Task::none()
         }
         Message::ServerFilterChanged(value) => {
-            app.clip_filters.server = filter_value_from_selection(value, ALL_SERVERS_LABEL);
+            app.clips.filters.server = filter_value_from_selection(value, ALL_SERVERS_LABEL);
             rebuild_history(app);
             Task::none()
         }
         Message::ContinentFilterChanged(value) => {
-            app.clip_filters.continent = filter_value_from_selection(value, ALL_CONTINENTS_LABEL);
+            app.clips.filters.continent = filter_value_from_selection(value, ALL_CONTINENTS_LABEL);
             rebuild_history(app);
             Task::none()
         }
         Message::BaseFilterChanged(value) => {
-            app.clip_filters.base = filter_value_from_selection(value, ALL_BASES_LABEL);
+            app.clips.filters.base = filter_value_from_selection(value, ALL_BASES_LABEL);
             rebuild_history(app);
             Task::none()
         }
 
         Message::ClearFilters => {
-            app.clip_filters = crate::db::ClipFilters::default();
-            app.clip_date_range_preset = DateRangePreset::AllTime;
-            app.clip_date_range_start.clear();
-            app.clip_date_range_end.clear();
-            app.active_clip_calendar = None;
+            app.clips.filters = crate::db::ClipFilters::default();
+            app.clips.date_range_preset = DateRangePreset::AllTime;
+            app.clips.date_range_start.clear();
+            app.clips.date_range_end.clear();
+            app.clips.active_calendar = None;
             app.clear_clip_filter_feedback();
             refresh_history(app)
         }
         Message::ToggleAdvancedFilters => {
-            app.clip_advanced_filters_open = !app.clip_advanced_filters_open;
+            app.clips.advanced_filters_open = !app.clips.advanced_filters_open;
             Task::none()
         }
 
         Message::DateRangePresetChanged(preset) => set_date_range_preset(app, preset),
         Message::DateRangeStartChanged(value) => {
-            app.clip_date_range_start = value;
+            app.clips.date_range_start = value;
             app.clear_clip_filter_feedback();
             Task::none()
         }
         Message::DateRangeEndChanged(value) => {
-            app.clip_date_range_end = value;
+            app.clips.date_range_end = value;
             app.clear_clip_filter_feedback();
             Task::none()
         }
@@ -409,11 +416,11 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             Task::none()
         }
         Message::DismissCalendar => {
-            app.active_clip_calendar = None;
+            app.clips.active_calendar = None;
             Task::none()
         }
         Message::CalendarMonthChanged(month) => {
-            app.clip_calendar_month = month.with_day(1).unwrap_or(month);
+            app.clips.calendar_month = month.with_day(1).unwrap_or(month);
             Task::none()
         }
         Message::CalendarDaySelected(date) => {
@@ -422,11 +429,11 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         }
 
         Message::SortColumnClicked(column) => {
-            if app.clip_sort_column == column {
-                app.clip_sort_descending = !app.clip_sort_descending;
+            if app.clips.sort_column == column {
+                app.clips.sort_descending = !app.clips.sort_descending;
             } else {
-                app.clip_sort_column = column;
-                app.clip_sort_descending = matches!(
+                app.clips.sort_column = column;
+                app.clips.sort_descending = matches!(
                     column,
                     ClipSortColumn::When | ClipSortColumn::Score | ClipSortColumn::Duration
                 );
@@ -436,31 +443,31 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         }
         Message::PageChanged(page) => {
             let total_pages = total_pages(app);
-            app.clip_history_page = page.saturating_sub(1).min(total_pages.saturating_sub(1));
-            app.clip_history_viewport = None;
+            app.clips.history_page = page.saturating_sub(1).min(total_pages.saturating_sub(1));
+            app.clips.history_viewport = None;
             scroll_history_to_top()
         }
         Message::PageSizeChanged(size) => {
-            app.clip_history_page_size = size.max(1);
-            app.clip_history_page = 0;
-            app.clip_history_viewport = None;
+            app.clips.history_page_size = size.max(1);
+            app.clips.history_page = 0;
+            app.clips.history_viewport = None;
             scroll_history_to_top()
         }
         Message::HistoryScrolled(viewport) => {
-            app.clip_history_viewport = Some(viewport);
+            app.clips.history_viewport = Some(viewport);
             Task::none()
         }
 
         Message::RowSelected(clip_id) => {
             app.clear_clip_error();
-            if app.selected_clip_id == Some(clip_id) {
+            if app.clips.selected_id == Some(clip_id) {
                 app.load_clip_detail(None)
             } else {
                 app.load_clip_detail(Some(clip_id))
             }
         }
         Message::OpenRequested(clip_id) => {
-            let Some(record) = app.clip_history.iter().find(|record| record.id == clip_id) else {
+            let Some(record) = app.clips.history.iter().find(|record| record.id == clip_id) else {
                 app.set_clip_error(format!("Clip #{clip_id} is no longer available."));
                 return Task::none();
             };
@@ -497,7 +504,8 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         }),
         Message::RetryPostProcessRequested(clip_id) => {
             let Some(record) = app
-                .clip_history_source
+                .clips
+                .history_source
                 .iter()
                 .find(|record| record.id == clip_id)
             else {
@@ -514,26 +522,29 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         }
         Message::UseOriginalAudioRequested(clip_id) => app.use_original_clip_audio(clip_id),
         Message::OpenUploadUrl(url) => {
-            Task::perform(async move { crate::launcher::open_url(&url) }, |result| {
+            let platform = app.platform.clone();
+            Task::perform(async move { platform.open_url(&url) }, |result| {
                 if let Err(error) = result {
                     tracing::warn!("Failed to open uploaded clip URL: {error}");
                 }
-                AppMessage::Tick
+                AppMessage::runtime(RuntimeMessage::Tick)
             })
         }
         Message::OpenHonuSession(session_id) => {
             let url = format!("https://wt.honu.pw/s/{session_id}");
-            Task::perform(async move { crate::launcher::open_url(&url) }, |result| {
+            let platform = app.platform.clone();
+            Task::perform(async move { platform.open_url(&url) }, |result| {
                 if let Err(error) = result {
                     tracing::warn!("Failed to open Honu session URL: {error}");
                 }
-                AppMessage::Tick
+                AppMessage::runtime(RuntimeMessage::Tick)
             })
         }
 
         Message::ToggleMontageSelection(clip_id) => {
             if let Some(record) = app
-                .clip_history_source
+                .clips
+                .history_source
                 .iter()
                 .find(|record| record.id == clip_id)
                 && let Some(reason) = super::super::clip_post_process_block_reason(record)
@@ -541,93 +552,107 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 app.set_clip_error(reason);
                 return Task::none();
             }
-            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id) {
-                app.montage_selection.remove(index);
-                if app.selected_montage_clip_id == Some(clip_id) {
-                    app.selected_montage_clip_id = app.montage_selection.first().copied();
+            if let Some(index) = app
+                .clips
+                .montage_selection
+                .iter()
+                .position(|id| *id == clip_id)
+            {
+                app.clips.montage_selection.remove(index);
+                if app.clips.selected_montage_clip_id == Some(clip_id) {
+                    app.clips.selected_montage_clip_id =
+                        app.clips.montage_selection.first().copied();
                 }
             } else {
-                app.montage_selection.push(clip_id);
-                app.selected_montage_clip_id = Some(clip_id);
+                app.clips.montage_selection.push(clip_id);
+                app.clips.selected_montage_clip_id = Some(clip_id);
             }
             Task::none()
         }
         Message::MontageMoveUp(clip_id) => {
-            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id)
+            if let Some(index) = app
+                .clips
+                .montage_selection
+                .iter()
+                .position(|id| *id == clip_id)
                 && index > 0
             {
-                app.montage_selection.swap(index, index - 1);
+                app.clips.montage_selection.swap(index, index - 1);
             }
             Task::none()
         }
         Message::MontageMoveDown(clip_id) => {
-            if let Some(index) = app.montage_selection.iter().position(|id| *id == clip_id)
-                && index + 1 < app.montage_selection.len()
+            if let Some(index) = app
+                .clips
+                .montage_selection
+                .iter()
+                .position(|id| *id == clip_id)
+                && index + 1 < app.clips.montage_selection.len()
             {
-                app.montage_selection.swap(index, index + 1);
+                app.clips.montage_selection.swap(index, index + 1);
             }
             Task::none()
         }
         Message::MontageRemove(clip_id) => {
-            app.montage_selection.retain(|id| *id != clip_id);
-            if app.selected_montage_clip_id == Some(clip_id) {
-                app.selected_montage_clip_id = app.montage_selection.first().copied();
+            app.clips.montage_selection.retain(|id| *id != clip_id);
+            if app.clips.selected_montage_clip_id == Some(clip_id) {
+                app.clips.selected_montage_clip_id = app.clips.montage_selection.first().copied();
             }
             Task::none()
         }
         Message::ClearMontageSelection => {
-            app.montage_selection.clear();
-            app.selected_montage_clip_id = None;
-            app.clip_montage_modal_open = false;
+            app.clips.montage_selection.clear();
+            app.clips.selected_montage_clip_id = None;
+            app.clips.montage_modal_open = false;
             Task::none()
         }
         Message::CreateMontage => {
-            if app.montage_selection.len() < 2 {
+            if app.clips.montage_selection.len() < 2 {
                 app.set_clip_error("Choose at least two clips for a montage.");
                 return Task::none();
             }
 
-            app.clip_montage_modal_open = true;
-            app.active_clip_calendar = None;
+            app.clips.montage_modal_open = true;
+            app.clips.active_calendar = None;
             app.clear_clip_error();
             Task::none()
         }
         Message::CancelMontageModal => {
-            app.clip_montage_modal_open = false;
+            app.clips.montage_modal_open = false;
             Task::none()
         }
         Message::ConfirmMontageCreation => {
-            if app.montage_selection.len() < 2 {
+            if app.clips.montage_selection.len() < 2 {
                 app.set_clip_error("Choose at least two clips for a montage.");
                 return Task::none();
             }
 
-            app.clip_montage_modal_open = false;
+            app.clips.montage_modal_open = false;
             Task::done(AppMessage::CreateMontageRequested)
         }
 
         Message::DeleteRequested(clip_id) => {
-            let Some(record) = app.clip_history.iter().find(|record| record.id == clip_id) else {
+            let Some(record) = app.clips.history.iter().find(|record| record.id == clip_id) else {
                 app.set_clip_error(format!("Clip #{clip_id} is no longer available."));
                 return Task::none();
             };
 
-            app.pending_clip_delete = Some(crate::app::PendingClipDelete {
+            app.clips.pending_delete = Some(crate::app::PendingClipDelete {
                 clip_id,
                 path: record.path.as_ref().map(PathBuf::from),
                 file_size_bytes: record.file_size_bytes,
             });
-            app.active_clip_calendar = None;
-            app.clip_montage_modal_open = false;
+            app.clips.active_calendar = None;
+            app.clips.montage_modal_open = false;
             app.clear_clip_error();
             Task::none()
         }
         Message::DeleteCanceled => {
-            app.pending_clip_delete = None;
+            app.clips.pending_delete = None;
             Task::none()
         }
         Message::DeleteConfirmed => {
-            let Some(pending) = app.pending_clip_delete.take() else {
+            let Some(pending) = app.clips.pending_delete.take() else {
                 return Task::none();
             };
 
@@ -638,14 +663,16 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         }
 
         Message::RawEventFilterChanged(value) => {
-            app.clip_raw_event_filter = value;
+            app.clips.raw_event_filter = value;
             Task::none()
         }
         Message::ToggleDetailSection(section) => {
-            if app.clip_collapsed_detail_sections.contains(&section) {
-                app.clip_collapsed_detail_sections.retain(|s| *s != section);
+            if app.clips.collapsed_detail_sections.contains(&section) {
+                app.clips
+                    .collapsed_detail_sections
+                    .retain(|s| *s != section);
             } else {
-                app.clip_collapsed_detail_sections.push(section);
+                app.clips.collapsed_detail_sections.push(section);
             }
             Task::none()
         }
@@ -657,13 +684,13 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
 fn handle_key_nav(app: &mut App, action: KeyNav) -> Task<AppMessage> {
     match action {
         KeyNav::Escape => {
-            if app.pending_clip_delete.is_some() {
-                app.pending_clip_delete = None;
-            } else if app.clip_montage_modal_open {
-                app.clip_montage_modal_open = false;
-            } else if app.active_clip_calendar.is_some() {
-                app.active_clip_calendar = None;
-            } else if app.selected_clip_id.is_some() {
+            if app.clips.pending_delete.is_some() {
+                app.clips.pending_delete = None;
+            } else if app.clips.montage_modal_open {
+                app.clips.montage_modal_open = false;
+            } else if app.clips.active_calendar.is_some() {
+                app.clips.active_calendar = None;
+            } else if app.clips.selected_id.is_some() {
                 return app.load_clip_detail(None);
             }
             Task::none()
@@ -672,36 +699,36 @@ fn handle_key_nav(app: &mut App, action: KeyNav) -> Task<AppMessage> {
         KeyNav::SelectPrevious => move_selection(app, -1),
         KeyNav::First => select_at_offset(app, 0, true),
         KeyNav::Last => {
-            let last = app.clip_history.len().saturating_sub(1);
+            let last = app.clips.history.len().saturating_sub(1);
             select_at_offset(app, last as isize, true)
         }
         KeyNav::NextPage => {
             let total = total_pages(app);
-            if app.clip_history_page + 1 < total {
-                app.clip_history_page += 1;
+            if app.clips.history_page + 1 < total {
+                app.clips.history_page += 1;
             }
             scroll_history_to_top()
         }
         KeyNav::PreviousPage => {
-            if app.clip_history_page > 0 {
-                app.clip_history_page -= 1;
+            if app.clips.history_page > 0 {
+                app.clips.history_page -= 1;
             }
             scroll_history_to_top()
         }
         KeyNav::OpenSelected => {
-            let Some(clip_id) = app.selected_clip_id else {
+            let Some(clip_id) = app.clips.selected_id else {
                 return Task::none();
             };
             update(app, Message::OpenRequested(clip_id))
         }
         KeyNav::DeleteSelected => {
-            let Some(clip_id) = app.selected_clip_id else {
+            let Some(clip_id) = app.clips.selected_id else {
                 return Task::none();
             };
             update(app, Message::DeleteRequested(clip_id))
         }
         KeyNav::ToggleMontageSelected => {
-            let Some(clip_id) = app.selected_clip_id else {
+            let Some(clip_id) = app.clips.selected_id else {
                 return Task::none();
             };
             update(app, Message::ToggleMontageSelection(clip_id))
@@ -710,22 +737,23 @@ fn handle_key_nav(app: &mut App, action: KeyNav) -> Task<AppMessage> {
 }
 
 fn move_selection(app: &mut App, delta: isize) -> Task<AppMessage> {
-    if app.clip_history.is_empty() {
+    if app.clips.history.is_empty() {
         return Task::none();
     }
     let current_index = app
-        .selected_clip_id
-        .and_then(|id| app.clip_history.iter().position(|r| r.id == id));
+        .clips
+        .selected_id
+        .and_then(|id| app.clips.history.iter().position(|r| r.id == id));
 
     let target = match current_index {
         Some(idx) => (idx as isize + delta)
             .max(0)
-            .min(app.clip_history.len() as isize - 1),
+            .min(app.clips.history.len() as isize - 1),
         None => {
             if delta >= 0 {
                 0
             } else {
-                app.clip_history.len() as isize - 1
+                app.clips.history.len() as isize - 1
             }
         }
     };
@@ -734,30 +762,30 @@ fn move_selection(app: &mut App, delta: isize) -> Task<AppMessage> {
 }
 
 fn select_at_offset(app: &mut App, index: isize, force: bool) -> Task<AppMessage> {
-    if app.clip_history.is_empty() || index < 0 {
+    if app.clips.history.is_empty() || index < 0 {
         return Task::none();
     }
     let index = index as usize;
-    if index >= app.clip_history.len() {
+    if index >= app.clips.history.len() {
         return Task::none();
     }
 
-    let page_size = app.clip_history_page_size.max(1);
+    let page_size = app.clips.history_page_size.max(1);
     let target_page = index / page_size;
-    let page_changed = target_page != app.clip_history_page;
+    let page_changed = target_page != app.clips.history_page;
     if page_changed {
-        app.clip_history_page = target_page;
-        app.clip_history_viewport = None;
+        app.clips.history_page = target_page;
+        app.clips.history_viewport = None;
     }
 
-    let clip_id = app.clip_history[index].id;
+    let clip_id = app.clips.history[index].id;
     let scroll_task = if force || page_changed || !history_row_is_visible(app, index) {
         scroll_history_to_index(app, index)
     } else {
         Task::none()
     };
 
-    if force || app.selected_clip_id != Some(clip_id) {
+    if force || app.clips.selected_id != Some(clip_id) {
         Task::batch([app.load_clip_detail(Some(clip_id)), scroll_task])
     } else {
         scroll_task
@@ -765,9 +793,9 @@ fn select_at_offset(app: &mut App, index: isize, force: bool) -> Task<AppMessage
 }
 
 fn scroll_history_to_index(app: &App, index: usize) -> Task<AppMessage> {
-    let page_size = app.clip_history_page_size.max(1);
-    let page_start = app.clip_history_page * page_size;
-    let page_end = (page_start + page_size).min(app.clip_history.len());
+    let page_size = app.clips.history_page_size.max(1);
+    let page_start = app.clips.history_page * page_size;
+    let page_end = (page_start + page_size).min(app.clips.history.len());
     let page_row_count = page_end.saturating_sub(page_start);
     let page_row_index = index.saturating_sub(page_start);
 
@@ -808,13 +836,13 @@ fn history_scroll_ratio(row_index: usize, row_count: usize) -> Option<f32> {
 }
 
 fn history_row_is_visible(app: &App, index: usize) -> bool {
-    let Some(viewport) = app.clip_history_viewport else {
+    let Some(viewport) = app.clips.history_viewport else {
         return false;
     };
 
-    let page_size = app.clip_history_page_size.max(1);
-    let page_start = app.clip_history_page * page_size;
-    let page_end = (page_start + page_size).min(app.clip_history.len());
+    let page_size = app.clips.history_page_size.max(1);
+    let page_start = app.clips.history_page * page_size;
+    let page_end = (page_start + page_size).min(app.clips.history.len());
     let page_row_count = page_end.saturating_sub(page_start);
     if page_row_count == 0 || index < page_start || index >= page_end {
         return false;
@@ -853,23 +881,23 @@ fn history_page_row_is_visible(
 }
 
 fn set_date_range_preset(app: &mut App, preset: DateRangePreset) -> Task<AppMessage> {
-    app.clip_date_range_preset = preset;
+    app.clips.date_range_preset = preset;
     app.clear_clip_filter_feedback();
     if preset != DateRangePreset::Custom {
-        app.active_clip_calendar = None;
+        app.clips.active_calendar = None;
     }
 
     match preset {
         DateRangePreset::AllTime => {
-            app.clip_filters.event_after_ts = None;
-            app.clip_filters.event_before_ts = None;
+            app.clips.filters.event_after_ts = None;
+            app.clips.filters.event_before_ts = None;
             refresh_history(app)
         }
         DateRangePreset::Custom => Task::none(),
         _ => match preset.bounds(Local::now()) {
             Some((start, end)) => {
-                app.clip_filters.event_after_ts = Some(start.timestamp_millis());
-                app.clip_filters.event_before_ts = Some(end.timestamp_millis());
+                app.clips.filters.event_after_ts = Some(start.timestamp_millis());
+                app.clips.filters.event_before_ts = Some(end.timestamp_millis());
                 refresh_history(app)
             }
             None => Task::none(),
@@ -878,7 +906,7 @@ fn set_date_range_preset(app: &mut App, preset: DateRangePreset) -> Task<AppMess
 }
 
 fn apply_date_range(app: &mut App) -> Task<AppMessage> {
-    let start = match parse_range_input(&app.clip_date_range_start, false) {
+    let start = match parse_range_input(&app.clips.date_range_start, false) {
         Ok(value) => value,
         Err(error) => {
             app.set_clip_filter_feedback(error, true);
@@ -886,7 +914,7 @@ fn apply_date_range(app: &mut App) -> Task<AppMessage> {
         }
     };
 
-    let end = match parse_range_input(&app.clip_date_range_end, true) {
+    let end = match parse_range_input(&app.clips.date_range_end, true) {
         Ok(value) => value,
         Err(error) => {
             app.set_clip_filter_feedback(error, true);
@@ -901,9 +929,9 @@ fn apply_date_range(app: &mut App) -> Task<AppMessage> {
         return Task::none();
     }
 
-    app.clip_filters.event_after_ts = start.map(|value| value.timestamp_millis());
-    app.clip_filters.event_before_ts = end.map(|value| value.timestamp_millis());
-    app.active_clip_calendar = None;
+    app.clips.filters.event_after_ts = start.map(|value| value.timestamp_millis());
+    app.clips.filters.event_before_ts = end.map(|value| value.timestamp_millis());
+    app.clips.active_calendar = None;
     app.set_clip_filter_feedback(
         match (start, end) {
             (Some(start), Some(end)) => format!(
@@ -923,36 +951,36 @@ fn apply_date_range(app: &mut App) -> Task<AppMessage> {
 }
 
 fn toggle_calendar(app: &mut App, field: CalendarField) {
-    if app.active_clip_calendar == Some(field) {
-        app.active_clip_calendar = None;
+    if app.clips.active_calendar == Some(field) {
+        app.clips.active_calendar = None;
         return;
     }
 
-    app.active_clip_calendar = Some(field);
-    app.clip_calendar_month =
+    app.clips.active_calendar = Some(field);
+    app.clips.calendar_month =
         calendar_seed_date(calendar_input(app, field)).unwrap_or_else(today_local_date);
 }
 
 fn select_calendar_day(app: &mut App, date: NaiveDate) {
-    let Some(field) = app.active_clip_calendar else {
+    let Some(field) = app.clips.active_calendar else {
         return;
     };
 
     let next_value = merge_calendar_date(calendar_input(app, field), date);
 
     match field {
-        CalendarField::Start => app.clip_date_range_start = next_value,
-        CalendarField::End => app.clip_date_range_end = next_value,
+        CalendarField::Start => app.clips.date_range_start = next_value,
+        CalendarField::End => app.clips.date_range_end = next_value,
     }
 
     app.clear_clip_filter_feedback();
-    app.active_clip_calendar = None;
+    app.clips.active_calendar = None;
 }
 
 fn calendar_input(app: &App, field: CalendarField) -> &str {
     match field {
-        CalendarField::Start => &app.clip_date_range_start,
-        CalendarField::End => &app.clip_date_range_end,
+        CalendarField::Start => &app.clips.date_range_start,
+        CalendarField::End => &app.clips.date_range_end,
     }
 }
 
@@ -984,7 +1012,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill)
         .into();
 
-    let with_calendar = if let Some(field) = app.active_clip_calendar {
+    let with_calendar = if let Some(field) = app.clips.active_calendar {
         modal(
             base,
             calendar_dropdown(app, field),
@@ -994,7 +1022,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         base
     };
 
-    let with_montage = if app.clip_montage_modal_open {
+    let with_montage = if app.clips.montage_modal_open {
         modal(
             with_calendar,
             montage_queue_dialog(app),
@@ -1004,7 +1032,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         with_calendar
     };
 
-    if let Some(pending) = &app.pending_clip_delete {
+    if let Some(pending) = &app.clips.pending_delete {
         modal(
             with_montage,
             delete_dialog(pending),
@@ -1032,20 +1060,20 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
     let basic_row = row![
         text_input(
             "Search profiles, rules, characters, servers, bases, events...",
-            &app.clip_filters.search,
+            &app.clips.filters.search,
         )
         .on_input(Message::SearchChanged)
         .width(Length::FillPortion(3)),
         pick_list(
             &DateRangePreset::ALL[..],
-            Some(app.clip_date_range_preset),
+            Some(app.clips.date_range_preset),
             Message::DateRangePresetChanged,
         )
         .width(Length::FillPortion(1)),
         pick_list(
             profile_options,
             Some(selected_filter_option(
-                &app.clip_filters.profile,
+                &app.clips.filters.profile,
                 ALL_PROFILES_LABEL,
             )),
             Message::ProfileFilterChanged,
@@ -1055,7 +1083,7 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
         pick_list(
             rule_options,
             Some(selected_filter_option(
-                &app.clip_filters.rule,
+                &app.clips.filters.rule,
                 ALL_RULES_LABEL
             )),
             Message::RuleFilterChanged,
@@ -1065,7 +1093,7 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
         pick_list(
             character_options,
             Some(selected_filter_option(
-                &app.clip_filters.character,
+                &app.clips.filters.character,
                 ALL_CHARACTERS_LABEL,
             )),
             Message::CharacterFilterChanged,
@@ -1076,7 +1104,7 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
     .spacing(8)
     .align_y(Alignment::Center);
 
-    let advanced_label = if app.clip_advanced_filters_open {
+    let advanced_label = if app.clips.advanced_filters_open {
         "Hide advanced filters"
     } else {
         "Show advanced filters"
@@ -1120,15 +1148,15 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
     ]
     .spacing(8);
 
-    if app.clip_advanced_filters_open {
+    if app.clips.advanced_filters_open {
         content = content.push(advanced_filters_row(app, &filter_options));
     }
 
-    if app.clip_date_range_preset == DateRangePreset::Custom {
+    if app.clips.date_range_preset == DateRangePreset::Custom {
         content = content.push(custom_range_row(app));
     }
 
-    if let Some(feedback) = app.clip_filter_feedback.as_ref() {
+    if let Some(feedback) = app.clips.filter_feedback.as_ref() {
         content = content.push(
             container(text(feedback.clone()).size(12))
                 .padding([6, 10])
@@ -1169,7 +1197,7 @@ fn advanced_filters_row(
             pick_list(
                 target_options,
                 Some(selected_filter_option(
-                    &app.clip_filters.target,
+                    &app.clips.filters.target,
                     ALL_TARGETS_LABEL,
                 )),
                 Message::TargetFilterChanged,
@@ -1179,7 +1207,7 @@ fn advanced_filters_row(
             pick_list(
                 weapon_options,
                 Some(selected_filter_option(
-                    &app.clip_filters.weapon,
+                    &app.clips.filters.weapon,
                     ALL_WEAPONS_LABEL,
                 )),
                 Message::WeaponFilterChanged,
@@ -1189,7 +1217,7 @@ fn advanced_filters_row(
             pick_list(
                 alert_options,
                 Some(selected_filter_option(
-                    &app.clip_filters.alert,
+                    &app.clips.filters.alert,
                     ALL_ALERTS_LABEL
                 )),
                 Message::AlertFilterChanged,
@@ -1199,7 +1227,7 @@ fn advanced_filters_row(
             pick_list(
                 &OverlapFilterChoice::ALL[..],
                 Some(OverlapFilterChoice::from_state(
-                    app.clip_filters.overlap_state
+                    app.clips.filters.overlap_state
                 )),
                 Message::OverlapFilterChanged,
             )
@@ -1211,7 +1239,7 @@ fn advanced_filters_row(
             pick_list(
                 server_options,
                 Some(selected_filter_option(
-                    &app.clip_filters.server,
+                    &app.clips.filters.server,
                     ALL_SERVERS_LABEL
                 )),
                 Message::ServerFilterChanged,
@@ -1221,7 +1249,7 @@ fn advanced_filters_row(
             pick_list(
                 continent_options,
                 Some(selected_filter_option(
-                    &app.clip_filters.continent,
+                    &app.clips.filters.continent,
                     ALL_CONTINENTS_LABEL,
                 )),
                 Message::ContinentFilterChanged,
@@ -1231,7 +1259,7 @@ fn advanced_filters_row(
             pick_list(
                 base_options,
                 Some(selected_filter_option(
-                    &app.clip_filters.base,
+                    &app.clips.filters.base,
                     ALL_BASES_LABEL
                 )),
                 Message::BaseFilterChanged,
@@ -1250,7 +1278,7 @@ fn advanced_filters_row(
 fn custom_range_row(app: &App) -> Element<'static, Message> {
     row![
         with_tooltip(
-            text_input("Start: 2026-04-05 18:30", &app.clip_date_range_start)
+            text_input("Start: 2026-04-05 18:30", &app.clips.date_range_start)
                 .on_input(Message::DateRangeStartChanged)
                 .width(Length::Fill)
                 .into(),
@@ -1259,7 +1287,7 @@ fn custom_range_row(app: &App) -> Element<'static, Message> {
         styled_button("Pick start", ButtonTone::Secondary)
             .on_press(Message::ToggleCalendar(CalendarField::Start)),
         with_tooltip(
-            text_input("End: 2026-04-06 01:15", &app.clip_date_range_end)
+            text_input("End: 2026-04-06 01:15", &app.clips.date_range_end)
                 .on_input(Message::DateRangeEndChanged)
                 .width(Length::Fill)
                 .into(),
@@ -1293,24 +1321,24 @@ fn clip_workspace(app: &App) -> Element<'static, Message> {
 }
 
 fn clip_history_panel(app: &App) -> Element<'static, Message> {
-    let visible = app.clip_history.len();
-    let total = app.clip_history_source.len();
-    let page = app.clip_history_page;
-    let page_size = app.clip_history_page_size.max(1);
+    let visible = app.clips.history.len();
+    let total = app.clips.history_source.len();
+    let page = app.clips.history_page;
+    let page_size = app.clips.history_page_size.max(1);
     let total_pages = total_pages(app);
 
     let status_row = {
-        let montage_count = app.montage_selection.len();
-        let detail_label: &'static str = if app.clip_detail_loading {
+        let montage_count = app.clips.montage_selection.len();
+        let detail_label: &'static str = if app.clips.detail_loading {
             "Detail loading"
-        } else if app.selected_clip_id.is_some() {
+        } else if app.clips.selected_id.is_some() {
             "Detail ready"
         } else {
             "No clip selected"
         };
-        let detail_tone = if app.clip_detail_loading {
+        let detail_tone = if app.clips.detail_loading {
             BadgeTone::Warning
-        } else if app.selected_clip_id.is_some() {
+        } else if app.clips.selected_id.is_some() {
             BadgeTone::Info
         } else {
             BadgeTone::Neutral
@@ -1377,8 +1405,8 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
 }
 
 fn history_header_row(app: &App) -> Element<'static, Message> {
-    let current = app.clip_sort_column;
-    let desc = app.clip_sort_descending;
+    let current = app.clips.sort_column;
+    let desc = app.clips.sort_descending;
 
     container(
         row![
@@ -1498,7 +1526,7 @@ fn header_sort_cell(
 }
 
 fn history_body_rows(app: &App, page: usize, page_size: usize) -> Element<'static, Message> {
-    if app.clip_history.is_empty() {
+    if app.clips.history.is_empty() {
         return empty_state("No matching clips")
             .description("Adjust the search, widen the range, or clear filters.")
             .build()
@@ -1506,12 +1534,12 @@ fn history_body_rows(app: &App, page: usize, page_size: usize) -> Element<'stati
     }
 
     let start = page * page_size;
-    let end = (start + page_size).min(app.clip_history.len());
-    let slice = &app.clip_history[start..end];
+    let end = (start + page_size).min(app.clips.history.len());
+    let slice = &app.clips.history[start..end];
 
     let rows: Vec<Element<'static, Message>> = slice
         .iter()
-        .map(|record| dense_history_row(app, record, app.selected_clip_id == Some(record.id)))
+        .map(|record| dense_history_row(app, record, app.clips.selected_id == Some(record.id)))
         .collect();
 
     scrollable(Column::with_children(rows).spacing(2))
@@ -1527,7 +1555,7 @@ fn history_footer_row(
     page_size: usize,
     total_pages: usize,
 ) -> Element<'static, Message> {
-    let visible = app.clip_history.len();
+    let visible = app.clips.history.len();
     let start = if visible == 0 {
         0
     } else {
@@ -1549,7 +1577,7 @@ fn history_footer_row(
     let size_picker = with_tooltip(
         pick_list(
             &PAGE_SIZE_OPTIONS[..],
-            Some(app.clip_history_page_size),
+            Some(app.clips.history_page_size),
             Message::PageSizeChanged,
         )
         .width(Length::Fixed(88.0))
@@ -1566,7 +1594,7 @@ fn history_footer_row(
 
 fn dense_history_row(app: &App, record: &ClipRecord, selected: bool) -> Element<'static, Message> {
     let clip_id = record.id;
-    let montage_selected = app.montage_selection.contains(&clip_id);
+    let montage_selected = app.clips.montage_selection.contains(&clip_id);
     let post_process_block = super::super::clip_post_process_block_reason(record);
 
     let checkbox_cell = container(montage_selection_checkbox(
@@ -1764,9 +1792,9 @@ fn flag_badges(record: &ClipRecord) -> Element<'static, Message> {
 // ---------------------------------------------------------------------------
 
 fn clip_detail_workspace(app: &App) -> Element<'static, Message> {
-    if let Some(detail) = app.selected_clip_detail.as_ref() {
+    if let Some(detail) = app.clips.selected_detail.as_ref() {
         clip_detail_panel(app, detail)
-    } else if app.clip_detail_loading {
+    } else if app.clips.detail_loading {
         panel("Clip detail")
             .push(
                 empty_state("Loading clip detail")
@@ -1804,7 +1832,7 @@ fn clip_detail_panel(app: &App, detail: &ClipDetailRecord) -> Element<'static, M
         post_process_block.as_deref(),
         can_export_timeline,
         detail,
-        app.deleting_clip_id == Some(record.id),
+        app.clips.deleting_id == Some(record.id),
     ));
 
     if matches!(
@@ -2176,7 +2204,7 @@ fn upload_action_state(
 // ---------------------------------------------------------------------------
 
 fn section_is_collapsed(app: &App, section: DetailSection) -> bool {
-    app.clip_collapsed_detail_sections.contains(&section)
+    app.clips.collapsed_detail_sections.contains(&section)
 }
 
 fn collapsible_header(
@@ -2489,7 +2517,7 @@ fn overlaps_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Me
 
 fn raw_events_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Message> {
     let record = &detail.clip;
-    let filter = app.clip_raw_event_filter.trim().to_lowercase();
+    let filter = app.clips.raw_event_filter.trim().to_lowercase();
     let filtered: Vec<&crate::db::ClipRawEventRecord> = detail
         .raw_events
         .iter()
@@ -2541,7 +2569,7 @@ fn raw_events_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, 
                     with_tooltip(
                         text_input(
                             "Filter event kind, target, weapon",
-                            &app.clip_raw_event_filter
+                            &app.clips.raw_event_filter
                         )
                         .on_input(Message::RawEventFilterChanged)
                         .width(Length::Fill)
@@ -2607,7 +2635,7 @@ fn calendar_dropdown(app: &App, field: CalendarField) -> Element<'static, Messag
     };
     let selected = calendar_seed_date(calendar_input(app, field));
     let picker = date_picker(
-        app.clip_calendar_month,
+        app.clips.calendar_month,
         selected,
         Message::CalendarDaySelected,
         Message::CalendarMonthChanged,
@@ -2625,7 +2653,7 @@ fn calendar_dropdown(app: &App, field: CalendarField) -> Element<'static, Messag
 }
 
 fn montage_queue_dialog(app: &App) -> Element<'static, Message> {
-    let confirm_button: Element<'static, Message> = if app.montage_selection.len() >= 2 {
+    let confirm_button: Element<'static, Message> = if app.clips.montage_selection.len() >= 2 {
         styled_button("Confirm montage", ButtonTone::Primary)
             .on_press(Message::ConfirmMontageCreation)
             .into()
@@ -2645,8 +2673,8 @@ fn montage_queue_dialog(app: &App) -> Element<'static, Message> {
             }),
         row![
             clips_badge(
-                format!("{} selected", app.montage_selection.len()),
-                if app.montage_selection.len() >= 2 {
+                format!("{} selected", app.clips.montage_selection.len()),
+                if app.clips.montage_selection.len() >= 2 {
                     BadgeTone::Success
                 } else {
                     BadgeTone::Warning
@@ -2659,18 +2687,19 @@ fn montage_queue_dialog(app: &App) -> Element<'static, Message> {
     ]
     .spacing(12);
 
-    if app.montage_selection.is_empty() {
+    if app.clips.montage_selection.is_empty() {
         content = content.push(
             empty_state("No clips selected")
                 .description("Select clips in the history table first.")
                 .build(),
         );
     } else {
-        let last_index = app.montage_selection.len().saturating_sub(1);
+        let last_index = app.clips.montage_selection.len().saturating_sub(1);
         let mut queue = column![].spacing(8);
-        for (index, clip_id) in app.montage_selection.iter().enumerate() {
+        for (index, clip_id) in app.clips.montage_selection.iter().enumerate() {
             let maybe_record = app
-                .clip_history_source
+                .clips
+                .history_source
                 .iter()
                 .find(|record| record.id == *clip_id);
 
@@ -2825,741 +2854,3 @@ fn delete_dialog(pending: &crate::app::PendingClipDelete) -> Element<'static, Me
 // ---------------------------------------------------------------------------
 // Helpers: badges, filter options, sorting, labels
 // ---------------------------------------------------------------------------
-
-fn clips_badge(label: impl Into<String>, tone: BadgeTone) -> Element<'static, Message> {
-    badge(label.into()).tone(tone).build().into()
-}
-
-fn active_filter_count(app: &App) -> usize {
-    let filters = &app.clip_filters;
-
-    usize::from(!filters.search.trim().is_empty())
-        + usize::from(filters.event_after_ts.is_some() || filters.event_before_ts.is_some())
-        + usize::from(!filters.target.trim().is_empty())
-        + usize::from(!filters.weapon.trim().is_empty())
-        + usize::from(!filters.alert.trim().is_empty())
-        + usize::from(filters.overlap_state != OverlapFilterState::All)
-        + usize::from(!filters.profile.trim().is_empty())
-        + usize::from(!filters.rule.trim().is_empty())
-        + usize::from(!filters.character.trim().is_empty())
-        + usize::from(!filters.server.trim().is_empty())
-        + usize::from(!filters.continent.trim().is_empty())
-        + usize::from(!filters.base.trim().is_empty())
-}
-
-fn total_pages(app: &App) -> usize {
-    let len = app.clip_history.len();
-    let size = app.clip_history_page_size.max(1);
-    if len == 0 { 1 } else { len.div_ceil(size) }
-}
-
-pub(in crate::app) fn rebuild_history(app: &mut App) {
-    let mut filtered: Vec<ClipRecord> = app
-        .clip_history_source
-        .iter()
-        .filter(|record| clip_matches_filters(app, record))
-        .cloned()
-        .collect();
-
-    sort_clip_history(
-        &mut filtered,
-        app.clip_sort_column,
-        app.clip_sort_descending,
-        &app.config,
-        &app.state,
-    );
-
-    app.clip_history = filtered;
-    app.clip_history_viewport = None;
-
-    // Clamp page to valid range after filtering.
-    let pages = total_pages(app);
-    if app.clip_history_page >= pages {
-        app.clip_history_page = pages.saturating_sub(1);
-    }
-}
-
-fn sort_clip_history(
-    records: &mut [ClipRecord],
-    column: ClipSortColumn,
-    descending: bool,
-    config: &crate::config::Config,
-    state: &AppState,
-) {
-    records.sort_by(|a, b| {
-        let order = match column {
-            ClipSortColumn::When => a.trigger_event_at.cmp(&b.trigger_event_at),
-            ClipSortColumn::Rule => rule_label_from(config, a).cmp(&rule_label_from(config, b)),
-            ClipSortColumn::Character => {
-                character_label_from(config, state, a).cmp(&character_label_from(config, state, b))
-            }
-            ClipSortColumn::Score => a.score.cmp(&b.score),
-            ClipSortColumn::Duration => a.clip_duration_secs.cmp(&b.clip_duration_secs),
-        };
-        if descending { order.reverse() } else { order }
-    });
-}
-
-fn location_summary(record: &ClipRecord) -> String {
-    record
-        .facility_name
-        .clone()
-        .or_else(|| census::base_name(record.facility_id))
-        .unwrap_or_else(|| "Unknown".into())
-}
-
-fn build_filter_options(app: &App) -> ClipFilterOptions {
-    let mut profiles = std::collections::BTreeSet::new();
-    let mut rules = std::collections::BTreeSet::new();
-    let mut characters = std::collections::BTreeSet::new();
-    let mut servers = std::collections::BTreeSet::new();
-    let mut continents = std::collections::BTreeSet::new();
-    let mut bases = std::collections::BTreeSet::new();
-    let mut targets = std::collections::BTreeSet::new();
-    let mut weapons = std::collections::BTreeSet::new();
-    let mut alerts = std::collections::BTreeSet::new();
-
-    for profile in &app.config.rule_profiles {
-        profiles.insert(profile.name.clone());
-    }
-    for rule in &app.config.rule_definitions {
-        rules.insert(rule.name.clone());
-    }
-    for character in &app.config.characters {
-        characters.insert(character.name.clone());
-    }
-
-    for record in &app.clip_history_source {
-        profiles.insert(profile_label(app, record));
-        rules.insert(rule_label(app, record));
-        characters.insert(character_label(app, record));
-        servers.insert(server_label(record));
-        continents.insert(continent_label(record));
-        let base = location_summary(record);
-        if base != "Unknown" {
-            bases.insert(base);
-        }
-    }
-    for target in &app.clip_filter_options.targets {
-        targets.insert(target.clone());
-    }
-    for weapon in &app.clip_filter_options.weapons {
-        weapons.insert(weapon.clone());
-    }
-    for alert in &app.clip_filter_options.alerts {
-        alerts.insert(alert.clone());
-    }
-
-    ClipFilterOptions {
-        profiles: profiles
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        rules: rules
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        characters: characters
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        servers: servers
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        continents: continents
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        bases: bases.into_iter().collect(),
-        targets: targets
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        weapons: weapons
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-        alerts: alerts
-            .into_iter()
-            .filter(|value| !value.is_empty())
-            .collect(),
-    }
-}
-
-fn clip_matches_filters(app: &App, record: &ClipRecord) -> bool {
-    let profile = profile_label(app, record);
-    let rule = rule_label(app, record);
-    let character = character_label(app, record);
-    let server = server_label(record);
-    let continent = continent_label(record);
-    let location = location_summary(record);
-
-    exact_filter_matches(&app.clip_filters.profile, &profile)
-        && exact_filter_matches(&app.clip_filters.rule, &rule)
-        && exact_filter_matches(&app.clip_filters.character, &character)
-        && exact_filter_matches(&app.clip_filters.server, &server)
-        && exact_filter_matches(&app.clip_filters.continent, &continent)
-        && exact_filter_matches(&app.clip_filters.base, &location)
-        && quick_search_matches(
-            &app.clip_filters.search,
-            record,
-            &profile,
-            &rule,
-            &character,
-            &server,
-            &continent,
-            &location,
-        )
-}
-
-fn exact_filter_matches(filter: &str, value: &str) -> bool {
-    let filter = normalize(filter);
-    filter.is_empty() || filter == normalize(value)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn quick_search_matches(
-    search: &str,
-    record: &ClipRecord,
-    profile: &str,
-    rule: &str,
-    character: &str,
-    server: &str,
-    continent: &str,
-    location: &str,
-) -> bool {
-    let search = normalize(search);
-    if search.is_empty() {
-        return true;
-    }
-
-    let haystack = [
-        profile.to_string(),
-        rule.to_string(),
-        character.to_string(),
-        server.to_string(),
-        continent.to_string(),
-        location.to_string(),
-        contribution_summary(record),
-        record.profile_id.clone(),
-        record.rule_id.clone(),
-        record.character_id.to_string(),
-        record.world_id.to_string(),
-        record.zone_id.map(|id| id.to_string()).unwrap_or_default(),
-        record
-            .facility_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-    ]
-    .join(" ");
-
-    normalize(&haystack).contains(&search)
-}
-
-fn normalize(value: &str) -> String {
-    value.trim().to_lowercase()
-}
-
-fn profile_label(app: &App, record: &ClipRecord) -> String {
-    profile_label_from(&app.config, record)
-}
-
-fn profile_label_from(config: &crate::config::Config, record: &ClipRecord) -> String {
-    config
-        .rule_profiles
-        .iter()
-        .find(|profile| profile.id == record.profile_id)
-        .map(|profile| profile.name.clone())
-        .unwrap_or_else(|| record.profile_id.clone())
-}
-
-fn rule_label(app: &App, record: &ClipRecord) -> String {
-    rule_label_from(&app.config, record)
-}
-
-fn rule_label_from(config: &crate::config::Config, record: &ClipRecord) -> String {
-    if record.origin == crate::db::ClipOrigin::Manual {
-        return "Manual clip".into();
-    }
-    if record.origin == crate::db::ClipOrigin::Imported {
-        return "Imported clip".into();
-    }
-
-    config
-        .rule_definitions
-        .iter()
-        .find(|rule| rule.id == record.rule_id)
-        .map(|rule| rule.name.clone())
-        .unwrap_or_else(|| record.rule_id.clone())
-}
-
-fn character_label(app: &App, record: &ClipRecord) -> String {
-    character_label_from(&app.config, &app.state, record)
-}
-
-fn character_label_from(
-    config: &crate::config::Config,
-    state: &AppState,
-    record: &ClipRecord,
-) -> String {
-    if record.character_id == 0 {
-        return "Unassigned".into();
-    }
-
-    config
-        .characters
-        .iter()
-        .find(|character| character.character_id == Some(record.character_id))
-        .map(|character| character.name.clone())
-        .or_else(|| match state {
-            AppState::Monitoring {
-                character_name,
-                character_id,
-            } if *character_id == record.character_id => Some(character_name.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| format!("Character {}", record.character_id))
-}
-
-fn server_label(record: &ClipRecord) -> String {
-    if record.world_id == 0 {
-        return "Unknown".into();
-    }
-    census::world_name(record.world_id)
-}
-
-fn continent_label(record: &ClipRecord) -> String {
-    record
-        .zone_name
-        .clone()
-        .unwrap_or_else(|| census::continent_name(record.zone_id))
-}
-
-fn duration_label(record: &ClipRecord) -> String {
-    format!("{} seconds", record.clip_duration_secs)
-}
-
-fn overlap_label(record: &ClipRecord) -> String {
-    match record.overlap_count {
-        0 => "None".into(),
-        1 => "1 clip".into(),
-        count => format!("{count} clips"),
-    }
-}
-
-fn alert_label(record: &ClipRecord) -> String {
-    match record.alert_count {
-        0 => "None".into(),
-        1 => "1 alert".into(),
-        count => format!("{count} alerts"),
-    }
-}
-
-fn size_label(record: &ClipRecord) -> String {
-    record
-        .file_size_bytes
-        .map(format_file_size)
-        .unwrap_or_else(|| "\u{2013}".into())
-}
-
-fn post_process_status_label(record: &ClipRecord) -> String {
-    match record.post_process_status {
-        crate::db::PostProcessStatus::NotRequired => "Audio: not required".into(),
-        crate::db::PostProcessStatus::Pending => "Audio: pending".into(),
-        crate::db::PostProcessStatus::Completed => "Audio: ok".into(),
-        crate::db::PostProcessStatus::Failed => record
-            .post_process_error
-            .as_ref()
-            .filter(|message| !message.trim().is_empty())
-            .map(|message| format!("Audio failed | {message}"))
-            .unwrap_or_else(|| "Audio failed".into()),
-        crate::db::PostProcessStatus::Legacy => "Audio: legacy layout".into(),
-    }
-}
-
-fn contribution_summary(record: &ClipRecord) -> String {
-    if record.events.is_empty() {
-        return "No contributions".into();
-    }
-
-    record
-        .events
-        .iter()
-        .map(|event| {
-            format!(
-                "{} x{} = {}",
-                event.event_kind, event.occurrences, event.points
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn short_duration_label(record: &ClipRecord) -> String {
-    format!("{}s", record.clip_duration_secs)
-}
-
-fn format_smart_timestamp(timestamp: chrono::DateTime<Utc>) -> String {
-    let local = timestamp.with_timezone(&Local);
-    let now = Local::now();
-    if local.year() == now.year() {
-        local.format("%m-%d %H:%M").to_string()
-    } else {
-        local.format("%Y-%m-%d %H:%M").to_string()
-    }
-}
-
-fn timeline_line(record: &ClipRecord, event: &crate::db::ClipRawEventRecord) -> String {
-    let offset = event
-        .event_at
-        .signed_duration_since(record.clip_start_at)
-        .num_milliseconds()
-        .max(0);
-    let seconds = offset as f64 / 1000.0;
-    let target = event
-        .other_character_name
-        .clone()
-        .unwrap_or_else(|| format_optional_id("Character", event.other_character_id));
-    let weapon = event
-        .attacker_weapon_name
-        .clone()
-        .unwrap_or_else(|| format_optional_id("Weapon", event.attacker_weapon_id.map(u64::from)));
-
-    let mut parts = vec![format!("+{seconds:.1}s"), event.event_kind.clone()];
-    if event.is_headshot {
-        parts.push("headshot".into());
-    }
-    if event.other_character_id.is_some() {
-        parts.push(format!("target {target}"));
-    }
-    if event.attacker_weapon_id.is_some() {
-        parts.push(format!("weapon {weapon}"));
-    }
-    parts.join("  |  ")
-}
-
-fn format_optional_id(prefix: &str, value: Option<u64>) -> String {
-    value
-        .map(|id| format!("{prefix} #{id}"))
-        .unwrap_or_else(|| "\u{2013}".into())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlapFilterChoice {
-    All,
-    Overlapping,
-    UniqueOnly,
-}
-
-impl OverlapFilterChoice {
-    const ALL: [Self; 3] = [Self::All, Self::Overlapping, Self::UniqueOnly];
-
-    fn from_state(state: OverlapFilterState) -> Self {
-        match state {
-            OverlapFilterState::All => Self::All,
-            OverlapFilterState::Overlapping => Self::Overlapping,
-            OverlapFilterState::UniqueOnly => Self::UniqueOnly,
-        }
-    }
-
-    fn into_state(self) -> OverlapFilterState {
-        match self {
-            Self::All => OverlapFilterState::All,
-            Self::Overlapping => OverlapFilterState::Overlapping,
-            Self::UniqueOnly => OverlapFilterState::UniqueOnly,
-        }
-    }
-}
-
-impl std::fmt::Display for OverlapFilterChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::All => "All clips",
-            Self::Overlapping => "Only overlaps",
-            Self::UniqueOnly => "Only unique",
-        })
-    }
-}
-
-fn filter_pick_list_options(all_label: &str, values: &[String]) -> Vec<String> {
-    let mut options = Vec::with_capacity(values.len() + 1);
-    options.push(all_label.to_string());
-    options.extend(values.iter().cloned());
-    options
-}
-
-fn selected_filter_option(current: &str, all_label: &str) -> String {
-    if current.trim().is_empty() {
-        all_label.to_string()
-    } else {
-        current.to_string()
-    }
-}
-
-fn filter_value_from_selection(selection: String, all_label: &str) -> String {
-    if selection == all_label {
-        String::new()
-    } else {
-        selection
-    }
-}
-
-pub(in crate::app) fn format_timestamp(timestamp: chrono::DateTime<Utc>) -> String {
-    timestamp
-        .with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
-}
-
-fn format_file_size(size_bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-
-    let mut value = size_bytes as f64;
-    let mut unit_index = 0usize;
-    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{size_bytes} {}", UNITS[unit_index])
-    } else {
-        format!("{value:.1} {}", UNITS[unit_index])
-    }
-}
-
-fn format_duration_ms(duration_ms: i64) -> String {
-    if duration_ms <= 0 {
-        return "0.0s".into();
-    }
-    format!("{:.1}s", duration_ms as f64 / 1000.0)
-}
-
-// ---------------------------------------------------------------------------
-// Date parsing helpers
-// ---------------------------------------------------------------------------
-
-fn date_range_summary(app: &App) -> String {
-    match app.clip_date_range_preset {
-        DateRangePreset::AllTime => "All saved clips".into(),
-        DateRangePreset::Custom => {
-            let start = if app.clip_date_range_start.trim().is_empty() {
-                "any start"
-            } else {
-                app.clip_date_range_start.trim()
-            };
-            let end = if app.clip_date_range_end.trim().is_empty() {
-                "any end"
-            } else {
-                app.clip_date_range_end.trim()
-            };
-            format!("Custom: {start} \u{2192} {end}")
-        }
-        preset => format!("{preset}"),
-    }
-}
-
-fn parse_range_input(value: &str, is_end: bool) -> Result<Option<chrono::DateTime<Utc>>, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(trimmed) {
-        return Ok(Some(datetime.with_timezone(&Utc)));
-    }
-
-    for format in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
-        if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
-            return local_naive_to_utc(naive).map(Some);
-        }
-    }
-
-    if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-        let naive = if is_end {
-            date.and_hms_milli_opt(23, 59, 59, 999)
-        } else {
-            date.and_hms_opt(0, 0, 0)
-        }
-        .ok_or_else(|| format!("Invalid date value: {trimmed}"))?;
-
-        return local_naive_to_utc(naive).map(Some);
-    }
-
-    Err(format!(
-        "Invalid date/time `{trimmed}`. Use YYYY-MM-DD, YYYY-MM-DD HH:MM, YYYY-MM-DD HH:MM:SS, or RFC3339."
-    ))
-}
-
-fn calendar_seed_date(value: &str) -> Option<NaiveDate> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(trimmed) {
-        return Some(datetime.with_timezone(&Local).date_naive());
-    }
-
-    for format in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
-        if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
-            return Some(naive.date());
-        }
-    }
-
-    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").ok()
-}
-
-pub(in crate::app) fn today_local_date() -> NaiveDate {
-    Local::now()
-        .date_naive()
-        .with_day(1)
-        .unwrap_or_else(|| Local::now().date_naive())
-}
-
-fn merge_calendar_date(existing: &str, date: NaiveDate) -> String {
-    let trimmed = existing.trim();
-    let date_text = date.format("%Y-%m-%d").to_string();
-
-    if trimmed.is_empty() {
-        return date_text;
-    }
-
-    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(trimmed) {
-        let time = datetime.time();
-        let offset = datetime.offset().to_string();
-        return format!(
-            "{}T{:02}:{:02}:{:02}{}",
-            date_text,
-            time.hour(),
-            time.minute(),
-            time.second(),
-            offset
-        );
-    }
-
-    if let Some((_, time)) = trimmed.split_once(' ') {
-        return format!("{date_text} {}", time.trim());
-    }
-
-    date_text
-}
-
-fn local_day_start(date: NaiveDate) -> Option<chrono::DateTime<Utc>> {
-    local_naive_to_utc(date.and_hms_opt(0, 0, 0)?).ok()
-}
-
-fn local_naive_to_utc(naive: NaiveDateTime) -> Result<chrono::DateTime<Utc>, String> {
-    Local
-        .from_local_datetime(&naive)
-        .single()
-        .or_else(|| Local.from_local_datetime(&naive).earliest())
-        .map(|value| value.with_timezone(&Utc))
-        .ok_or_else(|| format!("Local date/time `{}` is ambiguous or invalid.", naive))
-}
-
-// ---------------------------------------------------------------------------
-// Keyboard subscription router
-// ---------------------------------------------------------------------------
-
-pub(in crate::app) fn subscription_event_handler(
-    event: iced::Event,
-    status: iced::event::Status,
-) -> Option<Message> {
-    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else {
-        return None;
-    };
-
-    use iced::keyboard::Key;
-    use iced::keyboard::key::Named;
-
-    let captured = matches!(status, iced::event::Status::Captured);
-
-    let action = match (&key, captured) {
-        (Key::Named(Named::ArrowDown), _) => KeyNav::SelectNext,
-        (Key::Named(Named::ArrowUp), _) => KeyNav::SelectPrevious,
-        (Key::Named(Named::PageDown), false) => KeyNav::NextPage,
-        (Key::Named(Named::PageUp), false) => KeyNav::PreviousPage,
-        (Key::Named(Named::Home), false) => KeyNav::First,
-        (Key::Named(Named::End), false) => KeyNav::Last,
-        (Key::Named(Named::Enter), false) => KeyNav::OpenSelected,
-        (Key::Named(Named::Delete), false) => KeyNav::DeleteSelected,
-        (Key::Named(Named::Escape), _) => KeyNav::Escape,
-        (Key::Character(c), false) if c.as_str() == " " => KeyNav::ToggleMontageSelected,
-        _ => return None,
-    };
-
-    Some(Message::KeyNav(action))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{HistoryViewportState, history_page_row_is_visible, history_scroll_ratio};
-
-    #[test]
-    fn history_scroll_ratio_returns_none_for_empty_pages() {
-        assert_eq!(history_scroll_ratio(0, 0), None);
-    }
-
-    #[test]
-    fn history_scroll_ratio_keeps_single_row_pages_at_top() {
-        assert_eq!(history_scroll_ratio(0, 1), Some(0.0));
-    }
-
-    #[test]
-    fn history_scroll_ratio_maps_first_middle_and_last_rows() {
-        assert_eq!(history_scroll_ratio(0, 5), Some(0.0));
-        assert_eq!(history_scroll_ratio(2, 5), Some(0.5));
-        assert_eq!(history_scroll_ratio(4, 5), Some(1.0));
-    }
-
-    #[test]
-    fn history_scroll_ratio_clamps_rows_past_the_end() {
-        assert_eq!(history_scroll_ratio(9, 5), Some(1.0));
-    }
-
-    #[test]
-    fn visible_history_row_does_not_require_scroll() {
-        let viewport = HistoryViewportState {
-            offset_y: 64.0,
-            viewport_height: 96.0,
-            content_height: 238.0,
-        };
-
-        assert!(history_page_row_is_visible(viewport, 2, 7));
-    }
-
-    #[test]
-    fn row_above_viewport_requires_scroll() {
-        let viewport = HistoryViewportState {
-            offset_y: 96.0,
-            viewport_height: 96.0,
-            content_height: 238.0,
-        };
-
-        assert!(!history_page_row_is_visible(viewport, 1, 7));
-    }
-
-    #[test]
-    fn row_below_viewport_requires_scroll() {
-        let viewport = HistoryViewportState {
-            offset_y: 0.0,
-            viewport_height: 96.0,
-            content_height: 238.0,
-        };
-
-        assert!(!history_page_row_is_visible(viewport, 4, 7));
-    }
-
-    #[test]
-    fn non_scrollable_history_always_keeps_rows_visible() {
-        let viewport = HistoryViewportState {
-            offset_y: 0.0,
-            viewport_height: 220.0,
-            content_height: 180.0,
-        };
-
-        assert!(history_page_row_is_visible(viewport, 3, 5));
-    }
-}

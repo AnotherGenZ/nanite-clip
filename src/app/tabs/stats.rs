@@ -106,20 +106,20 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
     match message {
         Message::Refresh => app.load_stats(),
         Message::TimeRangeChanged(range) => {
-            app.stats_time_range = range;
+            app.stats.time_range = range;
             app.load_stats()
         }
         Message::ToggleSection(section) => {
-            if app.stats_collapsed_sections.contains(&section) {
-                app.stats_collapsed_sections.retain(|s| *s != section);
+            if app.stats.collapsed_sections.contains(&section) {
+                app.stats.collapsed_sections.retain(|s| *s != section);
             } else {
-                app.stats_collapsed_sections.push(section);
+                app.stats.collapsed_sections.push(section);
             }
             Task::none()
         }
         Message::ExportStats => {
-            if let Some(snapshot) = &app.stats_snapshot {
-                let md = export_stats_markdown(snapshot, app.stats_time_range);
+            if let Some(snapshot) = &app.stats.snapshot {
+                let md = export_stats_markdown(snapshot, app.stats.time_range);
                 let save_dir = app.config.recorder.save_directory.clone();
                 Task::perform(
                     async move {
@@ -140,19 +140,19 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             }
         }
         Message::NavigateToClipsWithRule(rule) => {
-            app.clip_filters.rule = rule;
+            app.clips.filters.rule = rule;
             navigate_to_filtered_clips(app)
         }
         Message::NavigateToClipsWithBase(base) => {
-            app.clip_filters.base = base;
+            app.clips.filters.base = base;
             navigate_to_filtered_clips(app)
         }
         Message::NavigateToClipsWithTarget(target) => {
-            app.clip_filters.target = target;
+            app.clips.filters.target = target;
             navigate_to_filtered_clips(app)
         }
         Message::NavigateToClipsWithWeapon(weapon) => {
-            app.clip_filters.weapon = weapon;
+            app.clips.filters.weapon = weapon;
             navigate_to_filtered_clips(app)
         }
         Message::NavigateToClipsOnDay(day_label) => {
@@ -168,12 +168,12 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                     .and_hms_opt(23, 59, 59)
                     .and_then(|dt| dt.and_local_timezone(local_tz).single())
                     .map(|dt| dt.timestamp_millis());
-                app.clip_filters.event_after_ts = start;
-                app.clip_filters.event_before_ts = end;
-                app.clip_date_range_preset = super::clips::DateRangePreset::Custom;
-                app.clip_date_range_start = day_label.clone();
-                app.clip_date_range_end = day_label;
-                app.active_clip_calendar = None;
+                app.clips.filters.event_after_ts = start;
+                app.clips.filters.event_before_ts = end;
+                app.clips.date_range_preset = super::clips::DateRangePreset::Custom;
+                app.clips.date_range_start = day_label.clone();
+                app.clips.date_range_end = day_label;
+                app.clips.active_calendar = None;
             }
             navigate_to_filtered_clips(app)
         }
@@ -209,7 +209,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     // Time-range toolbar
     let mut time_bar = toolbar();
     for &range in StatsTimeRange::ALL {
-        let tone = if app.stats_time_range == range {
+        let tone = if app.stats.time_range == range {
             ButtonTone::Primary
         } else {
             ButtonTone::Secondary
@@ -219,8 +219,8 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     }
 
     // Staleness indicator
-    let staleness_badge = staleness_indicator(app.stats_last_refreshed_at);
-    let loading_badge: Option<Element<'_, Message>> = if app.stats_loading {
+    let staleness_badge = staleness_indicator(app.stats.last_refreshed_at);
+    let loading_badge: Option<Element<'_, Message>> = if app.stats.loading {
         Some(badge("Loading...").tone(BadgeTone::Info).build().into())
     } else {
         None
@@ -235,7 +235,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let mut content = column![header, time_bar.build()].spacing(12);
 
     // Error state
-    if let Some(error) = &app.stats_error {
+    if let Some(error) = &app.stats.error {
         content = content.push(
             banner(format!("Failed to load stats: {error}"))
                 .error()
@@ -243,9 +243,9 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if app.stats_loading && app.stats_snapshot.is_none() {
+    if app.stats.loading && app.stats.snapshot.is_none() {
         content = content.push(text("Loading stats...").size(13));
-    } else if let Some(snapshot) = &app.stats_snapshot {
+    } else if let Some(snapshot) = &app.stats.snapshot {
         content = content.push(summary_row(snapshot));
 
         // Clips per day — chronological order
@@ -409,7 +409,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 StatsSection::RawEventKinds,
             ));
         }
-    } else if !app.stats_loading {
+    } else if !app.stats.loading {
         content = content.push(
             empty_state("No stats yet.")
                 .description("Save a few clips to build a dataset.")
@@ -477,7 +477,7 @@ fn summary_card(label: impl Into<String>, value: impl Into<String>) -> Element<'
 // ---------------------------------------------------------------------------
 
 fn section_is_collapsed(app: &App, section: StatsSection) -> bool {
-    app.stats_collapsed_sections.contains(&section)
+    app.stats.collapsed_sections.contains(&section)
 }
 
 fn collapsed_panel_header(title: &str, section: StatsSection) -> Element<'static, Message> {

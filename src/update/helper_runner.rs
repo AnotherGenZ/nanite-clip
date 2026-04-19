@@ -6,6 +6,7 @@ use std::process::Command;
 use chrono::Utc;
 
 use super::helper_shared::{ApplyKind, ApplyPlan, ApplyResult, ApplyResultStatus};
+use crate::command_runner;
 
 pub fn run_apply_plan(plan_path: &Path) -> Result<(), String> {
     let plan_bytes = fs::read(plan_path).map_err(|error| {
@@ -95,20 +96,21 @@ pub fn run_apply_plan(plan_path: &Path) -> Result<(), String> {
 }
 
 fn relaunch(executable: &Path, args: &[String]) -> Result<(), String> {
-    Command::new(executable)
-        .args(args)
-        .spawn()
+    let mut command = Command::new(executable);
+    command.args(args);
+    command_runner::spawn(&mut command)
         .map(|_| ())
         .map_err(|error| format!("failed to relaunch {}: {error}", executable.display()))
 }
 
 #[cfg(target_os = "windows")]
 fn apply_windows_msi(plan: &ApplyPlan) -> Result<(), String> {
-    let status = Command::new("msiexec")
+    let mut command = Command::new("msiexec");
+    command
         .args(["/i"])
         .arg(&plan.staged_asset)
-        .args(["/passive", "/norestart"])
-        .status()
+        .args(["/passive", "/norestart"]);
+    let status = command_runner::status(&mut command)
         .map_err(|error| format!("failed to launch msiexec: {error}"))?;
     if status.success() {
         Ok(())

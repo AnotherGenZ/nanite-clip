@@ -8,7 +8,8 @@ use crate::capture::{
     AudioSourceError, CaptureBackend, CaptureCapabilities, CaptureError, CaptureRequest,
     CaptureSession, DiscoveredAudioSource, RecoveryHint, ResolvedAudioSource,
 };
-use crate::config::{CaptureConfig, RecorderConfig};
+use crate::command_runner;
+use crate::config::{CaptureBackend as CaptureBackendId, CaptureConfig, RecorderConfig};
 use crate::process::CaptureSourcePlan;
 use crate::rules::ClipLength;
 #[cfg(target_os = "linux")]
@@ -251,22 +252,16 @@ pub fn clear_portal_session_token() -> Result<bool, String> {
 }
 
 fn create_backend(capture: &CaptureConfig, config: &RecorderConfig) -> Arc<dyn CaptureBackend> {
-    match capture.backend.as_str() {
+    match capture.backend {
         #[cfg(target_os = "linux")]
-        "gsr" | "" => Arc::new(GsrBackend::new()),
-        "obs" => Arc::new(ObsBackend::new(config.obs().clone())),
-        other => {
-            tracing::warn!(
-                "Unknown capture backend '{other}', falling back to the platform default"
-            );
+        CaptureBackendId::Gsr => Arc::new(GsrBackend::new()),
+        CaptureBackendId::Obs => Arc::new(ObsBackend::new(config.obs().clone())),
+        #[cfg(not(target_os = "linux"))]
+        CaptureBackendId::Gsr => {
+            tracing::warn!("GSR capture backend is not supported on this platform");
             default_backend_for_platform()
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn default_backend_for_platform() -> Arc<dyn CaptureBackend> {
-    Arc::new(GsrBackend::new())
 }
 
 #[cfg(target_os = "windows")]
@@ -275,12 +270,12 @@ fn default_backend_for_platform() -> Arc<dyn CaptureBackend> {
 }
 
 fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-version")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .stderr(Stdio::null());
+    command_runner::status(&mut command).is_ok_and(|status| status.success())
 }
 
 fn portal_session_token_path() -> Option<PathBuf> {
@@ -289,7 +284,8 @@ fn portal_session_token_path() -> Option<PathBuf> {
 }
 
 fn probe_video_resolution_blocking(path: &Path) -> Result<Option<VideoResolution>, String> {
-    let output = Command::new("ffprobe")
+    let mut command = Command::new("ffprobe");
+    command
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -300,8 +296,8 @@ fn probe_video_resolution_blocking(path: &Path) -> Result<Option<VideoResolution
         .arg("csv=s=x:p=0")
         .arg(path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+        .stderr(Stdio::piped());
+    let output = command_runner::output(&mut command)
         .map_err(|error| format!("failed to run ffprobe for {}: {error}", path.display()))?;
 
     if !output.status.success() {
@@ -338,7 +334,7 @@ fn probe_video_resolution_blocking(path: &Path) -> Result<Option<VideoResolution
 mod tests {
     use super::*;
     use crate::capture::{MockBackend, SavePollResult};
-    use crate::config::CaptureConfig;
+    use crate::config::{CaptureBackend as CaptureBackendId, CaptureConfig};
     use crate::process::{BackendHints, CaptureSourcePlan, CaptureTarget};
     use std::sync::Arc;
 
@@ -360,7 +356,7 @@ mod tests {
     fn unknown_backend_falls_back_without_panicking() {
         let backend = create_backend(
             &CaptureConfig {
-                backend: "mystery".into(),
+                backend: CaptureBackendId::from_config_value("mystery"),
             },
             &RecorderConfig::default(),
         );
@@ -386,7 +382,7 @@ mod tests {
 
         let mut recorder = Recorder::with_backend(
             CaptureConfig {
-                backend: "mock".into(),
+                backend: CaptureBackendId::Gsr,
             },
             RecorderConfig::default(),
             Arc::new(backend),
@@ -414,7 +410,7 @@ mod tests {
         let backend = Arc::new(MockBackend::new());
         let mut recorder = Recorder::with_backend(
             CaptureConfig {
-                backend: "mock".into(),
+                backend: CaptureBackendId::Gsr,
             },
             RecorderConfig::default(),
             backend.clone(),
@@ -436,7 +432,7 @@ mod tests {
         let backend = Arc::new(MockBackend::new());
         let mut recorder = Recorder::with_backend(
             CaptureConfig {
-                backend: "mock".into(),
+                backend: CaptureBackendId::Gsr,
             },
             RecorderConfig::default(),
             backend.clone(),
@@ -458,7 +454,7 @@ mod tests {
         let backend = Arc::new(MockBackend::new());
         let mut recorder = Recorder::with_backend(
             CaptureConfig {
-                backend: "mock".into(),
+                backend: CaptureBackendId::Gsr,
             },
             RecorderConfig::default(),
             backend.clone(),
@@ -471,7 +467,7 @@ mod tests {
         recorder.start_replay(&capture).unwrap();
         recorder.update_config(
             CaptureConfig {
-                backend: "gsr".into(),
+                backend: CaptureBackendId::Gsr,
             },
             RecorderConfig::default(),
         );
@@ -485,7 +481,7 @@ mod tests {
         *backend.force_spawn_error.lock().unwrap() = Some(CaptureError::SpawnFailed("boom".into()));
         let mut recorder = Recorder::with_backend(
             CaptureConfig {
-                backend: "mock".into(),
+                backend: CaptureBackendId::Gsr,
             },
             RecorderConfig::default(),
             backend,

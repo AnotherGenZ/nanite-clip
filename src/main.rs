@@ -10,6 +10,7 @@ mod background_jobs;
 mod capture;
 mod census;
 mod clip_naming;
+mod command_runner;
 mod config;
 mod db;
 mod discord;
@@ -19,8 +20,7 @@ mod hotkey;
 mod launcher;
 mod montage;
 mod notifications;
-#[cfg(target_os = "linux")]
-mod platform_service;
+mod platform;
 mod post_process;
 mod process;
 mod profile_transfer;

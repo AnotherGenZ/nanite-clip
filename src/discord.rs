@@ -7,6 +7,7 @@ use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::background_jobs::BackgroundJobContext;
+use crate::command_runner;
 
 #[derive(Debug, Clone)]
 pub struct DiscordWebhookRequest {
@@ -140,7 +141,8 @@ async fn post_webhook_with_retries(
 
 fn extract_thumbnail(path: &Path) -> Result<Option<PathBuf>, String> {
     let output_path = path.with_extension("discord-thumb.png");
-    let status = Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-y")
         .arg("-ss")
         .arg("00:00:01")
@@ -148,8 +150,8 @@ fn extract_thumbnail(path: &Path) -> Result<Option<PathBuf>, String> {
         .arg(path)
         .arg("-frames:v")
         .arg("1")
-        .arg(&output_path)
-        .status()
+        .arg(&output_path);
+    let status = command_runner::status(&mut command)
         .map_err(|error| format!("failed to launch ffmpeg thumbnail extraction: {error}"))?;
 
     if status.success() && output_path.exists() {

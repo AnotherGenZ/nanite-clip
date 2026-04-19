@@ -13,7 +13,7 @@ use crate::ui::theme::{self, Tokens};
 use crate::update::{UpdatePhase, UpdatePrimaryAction};
 
 use super::super::shared::{ButtonTone, styled_button, with_tooltip};
-use super::super::{App, AppState, Message};
+use super::super::{App, AppState, Message, RuntimeMessage, UpdateMessage};
 
 const JOB_TABLE_ID_WIDTH: f32 = 78.0;
 const JOB_TABLE_KIND_WIDTH: f32 = 116.0;
@@ -45,7 +45,9 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
                 let button =
                     styled_button(selected_action.label(), update_action_tone(selected_action));
                 if super::super::can_run_selected_update_action(app) {
-                    button.on_press(Message::RunSelectedUpdateAction).into()
+                    button
+                        .on_press(Message::updates(UpdateMessage::RunSelectedUpdateAction))
+                        .into()
                 } else {
                     button.into()
                 }
@@ -55,17 +57,19 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
         pick_list(
             super::super::update_action_options(app),
             Some(selected_action),
-            Message::UpdatePrimaryActionSelected,
+            |action| Message::updates(UpdateMessage::UpdatePrimaryActionSelected(action)),
         )
         .width(220),
         with_tooltip(
             {
                 let button = styled_button("View Changelog", ButtonTone::Secondary);
-                if app.update_state.latest_release.is_some()
-                    || app.update_state.prepared_update.is_some()
-                    || app.settings_selected_rollback_release.is_some()
+                if app.updates.state.latest_release.is_some()
+                    || app.updates.state.prepared_update.is_some()
+                    || app.settings.selected_rollback_release.is_some()
                 {
-                    button.on_press(Message::ShowUpdateDetails).into()
+                    button
+                        .on_press(Message::updates(UpdateMessage::ShowUpdateDetails))
+                        .into()
                 } else {
                     button.into()
                 }
@@ -79,23 +83,23 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
 }
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
-    let (state_text, state_tone) = match &app.state {
+    let (state_text, state_tone) = match &app.runtime.lifecycle {
         AppState::Idle => ("Idle", BadgeTone::Neutral),
         AppState::WaitingForGame => ("Waiting for PS2", BadgeTone::Warning),
         AppState::WaitingForLogin => ("Waiting for login", BadgeTone::Warning),
         AppState::Monitoring { .. } => ("Monitoring", BadgeTone::Success),
     };
 
-    let action_button = match &app.state {
+    let action_button = match &app.runtime.lifecycle {
         AppState::Idle => with_tooltip(
             styled_button("Start Monitoring", ButtonTone::Success)
-                .on_press(Message::StartMonitoring)
+                .on_press(Message::runtime(RuntimeMessage::StartMonitoring))
                 .into(),
             "Watch for PlanetSide 2 and start the recorder.",
         ),
         _ => with_tooltip(
             styled_button("Stop Monitoring", ButtonTone::Danger)
-                .on_press(Message::StopMonitoring)
+                .on_press(Message::runtime(RuntimeMessage::StopMonitoring))
                 .into(),
             "Stop monitoring and the recorder.",
         ),
@@ -123,14 +127,14 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         .push(status_badge(
             if app.clip_store.is_some() {
                 "Database ready"
-            } else if app.clip_error.is_some() {
+            } else if app.clips.error.is_some() {
                 "Database unavailable"
             } else {
                 "Database starting"
             },
             if app.clip_store.is_some() {
                 BadgeTone::Success
-            } else if app.clip_error.is_some() {
+            } else if app.clips.error.is_some() {
                 BadgeTone::Destructive
             } else {
                 BadgeTone::Warning
@@ -149,7 +153,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     // System overview panel
     let mut system_panel = panel("System");
 
-    if let Some(status) = &app.obs_connection_status {
+    if let Some(status) = &app.runtime.obs_connection_status {
         system_panel = system_panel.push(match status {
             crate::capture::ObsConnectionStatus::Connected => banner("OBS reconnected")
                 .description("The websocket session was restored and monitoring is running again.")
@@ -172,7 +176,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     }
 
     // Monitoring state detail
-    match &app.state {
+    match &app.runtime.lifecycle {
         AppState::Monitoring {
             character_name,
             character_id,
@@ -185,7 +189,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         }
         AppState::Idle => {}
         _ => {
-            let detail = match &app.state {
+            let detail = match &app.runtime.lifecycle {
                 AppState::WaitingForGame => "Waiting for PlanetSide 2 to launch...",
                 AppState::WaitingForLogin => {
                     "PlanetSide 2 detected \u{2014} waiting for character login..."
@@ -215,7 +219,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if let Some(previous_version) = &app.update_state.previous_installed_version {
+    if let Some(previous_version) = &app.updates.state.previous_installed_version {
         system_panel = system_panel.push(
             row![
                 status_badge(
@@ -224,7 +228,9 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 ),
                 with_tooltip(
                     styled_button("Rollback Previous", ButtonTone::Warning)
-                        .on_press(Message::RollbackToPreviousInstalledVersion)
+                        .on_press(Message::updates(
+                            UpdateMessage::RollbackToPreviousInstalledVersion,
+                        ))
                         .into(),
                     "Download the last installed version and stage it as a rollback target.",
                 ),
@@ -234,11 +240,11 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if let Some(prepared) = &app.update_state.prepared_update {
+    if let Some(prepared) = &app.updates.state.prepared_update {
         let prepared_version = prepared
             .parsed_version()
-            .unwrap_or_else(|| app.update_state.current_version.clone());
-        let staged_title = if prepared_version < app.update_state.current_version {
+            .unwrap_or_else(|| app.updates.state.current_version.clone());
+        let staged_title = if prepared_version < app.updates.state.current_version {
             format!("Rollback {} is staged", prepared.version)
         } else {
             format!("Update {} is staged", prepared.version)
@@ -262,23 +268,25 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
         system_panel = system_panel.push(text(status_update_detail_summary(app)).size(12));
         system_panel = system_panel.push(update_action_controls(app));
-    } else if let Some(release) = &app.update_state.latest_release {
+    } else if let Some(release) = &app.updates.state.latest_release {
         let next_check_label = super::super::next_automatic_update_check_at(app)
             .map(|next_check| format!("Next check {}", super::clips::format_timestamp(next_check)))
             .unwrap_or_else(|| "Automatic checks off".into());
 
-        let phase_description = match app.update_state.phase {
+        let phase_description = match app.updates.state.phase {
             UpdatePhase::Checking
             | UpdatePhase::Downloading
             | UpdatePhase::Verifying
             | UpdatePhase::Applying => app
-                .update_state
+                .updates
+                .state
                 .progress
                 .as_ref()
                 .map(|progress| progress.detail.clone())
-                .unwrap_or_else(|| app.update_state.phase.label().into()),
+                .unwrap_or_else(|| app.updates.state.phase.label().into()),
             UpdatePhase::ReadyToInstall => app
-                .update_state
+                .updates
+                .state
                 .prepared_update
                 .as_ref()
                 .map(|prepared| format!("{} is downloaded and ready to install.", prepared.version))
@@ -287,8 +295,8 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 "{}. {}.",
                 super::super::release_policy_summary(
                     release,
-                    &app.update_state.current_version,
-                    app.update_state.system_update_plan.as_ref(),
+                    &app.updates.state.current_version,
+                    app.updates.state.system_update_plan.as_ref(),
                 ),
                 next_check_label
             ),
@@ -297,7 +305,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         system_panel = system_panel.push(
             banner(super::super::release_banner_title(
                 release,
-                &app.update_state.current_version,
+                &app.updates.state.current_version,
             ))
             .warning()
             .description(phase_description)
@@ -312,7 +320,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
         system_panel = system_panel.push(text(status_update_detail_summary(app)).size(12));
         system_panel = system_panel.push(update_action_controls(app));
-    } else if let Some(error) = &app.update_state.last_error {
+    } else if let Some(error) = &app.updates.state.last_error {
         system_panel = system_panel.push(
             banner("Update check failed")
                 .warning()
@@ -321,7 +329,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if let Some(session) = &app.active_session {
+    if let Some(session) = &app.runtime.active_session {
         system_panel = system_panel.push(
             card()
                 .title("Active Session")
@@ -351,7 +359,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let mut body = column![system_panel.build()].spacing(16);
 
     // Session summary panel
-    if let Some(summary) = &app.last_session_summary {
+    if let Some(summary) = &app.runtime.last_session_summary {
         let mut summary_panel = panel("Last Session Summary");
 
         summary_panel = summary_panel.push(
@@ -451,23 +459,27 @@ fn status_badge<'a>(label: impl Into<String>, tone: BadgeTone) -> Element<'a, Me
 fn status_update_detail_summary(app: &App) -> String {
     let verifier_key_count = crate::update::update_public_keys().len();
     let signature = app
-        .settings_selected_rollback_release
+        .settings
+        .selected_rollback_release
         .as_ref()
         .map(|release| &release.signature)
         .or_else(|| {
-            app.update_state
+            app.updates
+                .state
                 .latest_release
                 .as_ref()
                 .map(|release| &release.signature)
         })
         .or_else(|| {
-            app.update_state
+            app.updates
+                .state
                 .prepared_update
                 .as_ref()
                 .map(|prepared| &prepared.signature)
         });
     let apply_summary = app
-        .update_state
+        .updates
+        .state
         .last_apply_report
         .as_ref()
         .map(|report| {
@@ -483,18 +495,20 @@ fn status_update_detail_summary(app: &App) -> String {
         .unwrap_or_else(|| "No apply result recorded yet.".into());
 
     let release_summary = app
-        .update_state
+        .updates
+        .state
         .latest_release
         .as_ref()
         .map(|release| {
             super::super::release_policy_summary(
                 release,
-                &app.update_state.current_version,
-                app.update_state.system_update_plan.as_ref(),
+                &app.updates.state.current_version,
+                app.updates.state.system_update_plan.as_ref(),
             )
         })
         .or_else(|| {
-            app.update_state
+            app.updates
+                .state
                 .system_update_plan
                 .as_ref()
                 .map(super::super::system_update_plan_summary)
@@ -522,11 +536,11 @@ fn status_update_detail_summary(app: &App) -> String {
 }
 
 fn ffmpeg_status_label(app: &App) -> &'static str {
-    if !app.ffmpeg_capabilities.present {
+    if !app.runtime.ffmpeg_capabilities.present {
         "ffmpeg missing"
-    } else if !app.ffmpeg_capabilities.meets_floor {
+    } else if !app.runtime.ffmpeg_capabilities.meets_floor {
         "ffmpeg too old"
-    } else if app.ffmpeg_capabilities.warning.is_some() {
+    } else if app.runtime.ffmpeg_capabilities.warning.is_some() {
         "ffmpeg warning"
     } else {
         "ffmpeg ready"
@@ -534,11 +548,11 @@ fn ffmpeg_status_label(app: &App) -> &'static str {
 }
 
 fn ffmpeg_status_tone(app: &App) -> BadgeTone {
-    if !app.ffmpeg_capabilities.present {
+    if !app.runtime.ffmpeg_capabilities.present {
         BadgeTone::Neutral
-    } else if !app.ffmpeg_capabilities.meets_floor {
+    } else if !app.runtime.ffmpeg_capabilities.meets_floor {
         BadgeTone::Destructive
-    } else if app.ffmpeg_capabilities.warning.is_some() {
+    } else if app.runtime.ffmpeg_capabilities.warning.is_some() {
         BadgeTone::Warning
     } else {
         BadgeTone::Success

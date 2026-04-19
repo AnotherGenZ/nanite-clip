@@ -60,13 +60,17 @@ Follow-ons: ARCH-05, practically all feature work that currently touches `src/ap
 
 `src/app.rs` is the largest maintenance hotspot in the repository: it owns runtime orchestration, the global message enum, tab-local editing state, update flows, clip-library actions, background-job wiring, and platform-facing feedback in one place. It still should remain the top-level coordinator, but not the place where every feature lands.
 
-- [ ] Split `App` state into focused feature-state structs, at minimum: `RuntimeState`, `ClipLibraryState`, `RuleEditorState`, `SettingsState`, and `UpdateUiState`. Keep them owned by `App`, but move their fields and helper methods out of the top-level struct.
-- [ ] Split the monolithic `Message` enum into nested feature message enums where practical (`runtime`, `clips`, `rules`, `settings`, `updates`). Preserve a thin top-level `Message` wrapper that routes into feature reducers.
-- [ ] Extract the monitoring/runtime lifecycle (`Idle` / `WaitingForGame` / `WaitingForLogin` / `Monitoring`) plus recorder-start bookkeeping into a dedicated runtime controller module. `App` should delegate to it instead of owning all transition details inline.
-- [ ] Move tab-local draft state out of `App` and into the relevant tab modules or feature-state structs. In particular, reduce the amount of duplicated `Config`-mirroring fields in Settings.
-- [ ] Move feature-specific task factories and side-effect orchestration helpers out of `src/app.rs` into adjacent modules so the top-level `update()` function mostly routes instead of implementing every branch directly.
-- [ ] Keep `App::subscription()` as the composition root, but extract subscription builders for runtime polling, Census, hotkey capture, and window events into dedicated helpers/modules.
-- [ ] Add focused tests for the extracted reducers/controllers so future feature work does not need to lean on `app.rs` integration tests for every state transition.
+- [x] Split `App` state into focused feature-state structs, at minimum: `RuntimeState`, `ClipLibraryState`, `RuleEditorState`, `SettingsState`, and `UpdateUiState`. Keep them owned by `App`, but move their fields and helper methods out of the top-level struct.
+- [x] Split the monolithic `Message` enum into nested feature message enums where practical (`runtime`, `clips`, `rules`, `settings`, `updates`). Preserve a thin top-level `Message` wrapper that routes into feature reducers.
+- [x] Extract the monitoring/runtime lifecycle (`Idle` / `WaitingForGame` / `WaitingForLogin` / `Monitoring`) plus recorder-start bookkeeping into a dedicated runtime controller module. `App` should delegate to it instead of owning all transition details inline.
+- [x] Move tab-local draft state out of `App` and into the relevant tab modules or feature-state structs. In particular, reduce the amount of duplicated `Config`-mirroring fields in Settings.
+- [~] Move feature-specific task factories and side-effect orchestration helpers out of `src/app.rs` into adjacent modules so the top-level `update()` function mostly routes instead of implementing every branch directly.
+- [x] Keep `App::subscription()` as the composition root, but extract subscription builders for runtime polling, Census, hotkey capture, and window events into dedicated helpers/modules.
+- [~] Add focused tests for the extracted reducers/controllers so future feature work does not need to lean on `app.rs` integration tests for every state transition.
+
+Progress note: `App` now owns grouped feature-state structs (`runtime`, `clips`, `rules`, `settings`, `stats`, `updates`) instead of a single flat field list. Runtime lifecycle and recorder-start orchestration moved into `src/app/runtime.rs`, subscription construction moved into `src/app/subscriptions.rs`, update/runtime flows now route through nested `RuntimeMessage` and `UpdateMessage` reducers, and recorder startup now uses a `oneshot` handoff instead of the previous `Arc<Mutex<Option<Result<...>>>>` pattern.
+
+Additional modularization note: the oversized coordinator- and tab-adjacent files now split substantial helper/view/state blocks into child modules, including `src/app.rs`, `src/app/tabs/rules.rs`, `src/app/tabs/settings.rs`, and `src/app/tabs/clips.rs`. The top-level files remain the feature entry points, but they no longer carry all helper logic inline.
 
 Done when: `src/app.rs` is materially smaller, feature-specific state lives behind named structs/modules, and adding a Wave 7 feature no longer requires editing a single giant reducer branch plus a giant struct field list.
 
@@ -77,13 +81,15 @@ Follow-ons: ARCH-05, QOL-03, INT-04, future platform polish
 
 Platform-specific behavior is currently spread across `src/hotkey.rs`, `src/tray.rs`, `src/notifications.rs`, `src/autostart.rs`, `src/launcher.rs`, `src/secure_store.rs`, and parts of settings/file-dialog logic. The code mostly compiles cleanly, but the abstractions stop at the module boundary instead of giving the app a single platform-service interface.
 
-- [ ] Introduce a new `src/platform/` module that defines app-facing traits/interfaces for `HotkeyService`, `TrayService`, `NotificationService`, `AutostartService`, `OpenService`, `SecretStore`, and file-dialog launching.
-- [ ] Create a `PlatformServices` container built at startup and injected into `App`, so top-level code depends on stable app-facing traits rather than directly constructing platform-specific helpers.
-- [ ] Move OS selection/dispatch into `platform/` implementations instead of distributing `cfg` and desktop-environment branching across unrelated modules.
-- [ ] Isolate Linux desktop-environment special cases such as KDE tray selection and Plasma hotkey sidecar startup behind platform-layer policies.
-- [ ] Make unsupported-platform behavior explicit through capability reporting rather than silent stub behavior. The UI should know whether notifications, tray, hotkeys, or launch-at-login are implemented on the current platform.
-- [ ] Add unit tests around platform capability selection and dispatch decisions, including desktop-environment-sensitive choices on Linux.
-- [ ] Document the supported platform matrix explicitly in code comments and docs so partial `cfg` coverage does not imply full product support where it does not exist yet.
+- [x] Introduce a new `src/platform/` module that defines app-facing traits/interfaces for `HotkeyService`, `TrayService`, `NotificationService`, `AutostartService`, `OpenService`, `SecretStore`, and file-dialog launching.
+- [x] Create a `PlatformServices` container built at startup and injected into `App`, so top-level code depends on stable app-facing traits rather than directly constructing platform-specific helpers.
+- [x] Move OS selection/dispatch into `platform/` implementations instead of distributing `cfg` and desktop-environment branching across unrelated modules.
+- [x] Isolate Linux desktop-environment special cases such as KDE tray selection and Plasma hotkey sidecar startup behind platform-layer policies.
+- [x] Make unsupported-platform behavior explicit through capability reporting rather than silent stub behavior. The UI should know whether notifications, tray, hotkeys, or launch-at-login are implemented on the current platform.
+- [x] Add unit tests around platform capability selection and dispatch decisions, including desktop-environment-sensitive choices on Linux.
+- [x] Document the supported platform matrix explicitly in code comments and docs so partial `cfg` coverage does not imply full product support where it does not exist yet.
+
+Progress note: `PlatformServices` now owns startup-time capability detection plus the app-facing tray, hotkey, autostart, opener, notification-center, and secure-store entrypoints that `App` uses for runtime orchestration. The tabs and YouTube OAuth flow now use the platform opener boundary instead of calling launcher helpers directly, the Plasma hotkey sidecar is re-exported from the platform layer, and `src/platform/mod.rs` documents the explicit Linux/Windows support matrix.
 
 Done when: `App` and the tab modules talk to a coherent platform service boundary, and adding or polishing an OS-specific integration does not require touching unrelated app or UI modules.
 
@@ -94,12 +100,16 @@ Follow-ons: ORG-01, ORG-02, ORG-03, INTEL-01, INTEL-02, QOL-01, QOL-02, QOL-04
 
 `src/db/mod.rs` has become a second monolith. It owns schema bootstrapping, migrations, clip CRUD, lookup caching, analytics, exports, background-job persistence, and filesystem helpers. That is workable today, but it will make the Wave 7 database-heavy features expensive to land and risky to change.
 
-- [ ] Split `ClipStore` internals into dedicated repository modules, for example: `clips_repo`, `lookups_repo`, `jobs_repo`, `analytics_repo`, `exports`, and `schema`.
-- [ ] Keep a thin public `ClipStore` facade for the rest of the app initially, but route its methods into those repositories instead of continuing to grow one file.
-- [ ] Separate schema creation, drift detection, and migration replay logic into dedicated schema/migration modules so new feature migrations do not share space with query code.
-- [ ] Move export helpers, CSV/JSON formatting, and output-destination validation out of the core store module.
+- [x] Split `ClipStore` internals into dedicated repository modules, for example: `clips_repo`, `lookups_repo`, `jobs_repo`, `analytics_repo`, `exports`, and `schema`.
+- [x] Keep a thin public `ClipStore` facade for the rest of the app initially, but route its methods into those repositories instead of continuing to grow one file.
+- [x] Separate schema creation, drift detection, and migration replay logic into dedicated schema/migration modules so new feature migrations do not share space with query code.
+- [x] Move export helpers, CSV/JSON formatting, and output-destination validation out of the core store module.
 - [ ] Group database-facing DTOs and row-hydration helpers by feature rather than keeping all persistence-side types in one namespace.
 - [ ] Add repository-level tests beside the extracted modules so later schema features like tags, collections, favorites, notes, and soft-delete can be added locally.
+
+Progress note: `ClipStore` now routes lookup caching, background jobs, export/backup logic, schema/migration logic, clip upload persistence, montage persistence, and clip audio/post-process bookkeeping through dedicated repository modules (`clips_repo`, `lookups_repo`, `jobs_repo`, `exports`, `schema`) while preserving the existing public facade.
+
+Additional modularization note: the remaining `db` monolith helper layer is now extracted behind `src/db/core.rs`, which holds schema builders, export/file I/O helpers, row-hydration utilities, and shared migration helpers instead of leaving them inline in `src/db/mod.rs`.
 
 Done when: database changes for a single Wave 7 feature can be implemented by touching one repository area plus the shared facade, not a 5k-line mixed-responsibility module.
 
@@ -110,12 +120,16 @@ Follow-ons: settings-heavy work, schema-heavy work
 
 `Config` is already evolving across multiple waves, but config loading, normalization, migration, and persistence still live in one module with mostly best-effort behavior. That is acceptable for early development, but fragile once Wave 7 starts layering more durable settings and persisted feature state.
 
-- [ ] Split `src/config.rs` into `schema`, `normalize`, `migrate`, and `store` submodules while preserving the current external API shape initially.
-- [ ] Replace plain overwrite saves with atomic write semantics for config persistence, matching the same durability bar already used in parts of the database/export code.
-- [ ] Make schema-version handling explicit. Distinguish true migrations from ordinary normalization, and keep legacy-format compatibility code isolated from current-schema logic.
-- [ ] Introduce typed enums or tagged serde types for persisted backend/provider selectors that are still represented as free-form strings.
-- [ ] Surface config parse and migration failures to the UI in a recoverable way instead of silently dropping to defaults when practical.
-- [ ] Add regression fixtures for each historical config shape that still needs to load, and require new settings/schema additions to include round-trip tests.
+- [x] Split `src/config.rs` into `schema`, `normalize`, `migrate`, and `store` submodules while preserving the current external API shape initially.
+- [x] Replace plain overwrite saves with atomic write semantics for config persistence, matching the same durability bar already used in parts of the database/export code.
+- [~] Make schema-version handling explicit. Distinguish true migrations from ordinary normalization, and keep legacy-format compatibility code isolated from current-schema logic.
+- [x] Introduce typed enums or tagged serde types for persisted backend/provider selectors that are still represented as free-form strings.
+- [x] Surface config parse and migration failures to the UI in a recoverable way instead of silently dropping to defaults when practical.
+- [~] Add regression fixtures for each historical config shape that still needs to load, and require new settings/schema additions to include round-trip tests.
+
+Progress note: config loading/saving and normalization/migration logic now route through dedicated `config/io.rs` and `config/migration.rs` modules, writes use an atomic temp-file rename path, the persisted capture backend is now a typed enum, and config parse failures feed a recoverable notice back through normal app startup feedback.
+
+Additional modularization note: the remaining config schema/default/helper bulk now lives behind `src/config/compat.rs`, reducing `src/config.rs` to the durable schema surface plus the public API entry points.
 
 Done when: configuration changes have a predictable migration path, persistence is atomic, and new settings do not further bloat a single mixed-responsibility file.
 
@@ -126,12 +140,18 @@ Follow-ons: VIS-01, VIS-02, QOL-03, QOL-04, SHARE-01
 
 This codebase shells out to `ffmpeg`, `ffprobe`, `secret-tool`, `powershell`, `msiexec`, `xdg-open`, terminal launchers, and other OS tools across multiple modules. It also uses a mix of worker threads, `spawn_blocking`, child-process monitors, and ad hoc shared-state handoff patterns. Those patterns work, but they are one of the main sources of incidental complexity.
 
-- [ ] Add a shared command-execution utility/service that standardizes: command construction, availability checks, timeout handling, stderr capture, structured error mapping, and test fakes.
-- [ ] Migrate ffmpeg/ffprobe callers (`post_process`, montage helpers, thumbnails, Discord thumbnails, integrity checks) onto that shared command layer.
-- [ ] Migrate OS command launchers (`launcher`, notification fallbacks, autostart helpers, updater helper invocations, secure-store shell-outs) onto the same command layer or a closely related platform-exec service.
-- [ ] Replace `Task` + `Arc<Mutex<Option<Result<...>>>>` handoff patterns in recorder startup and similar flows with clearer actor/service boundaries and direct message emission.
-- [ ] Standardize long-running helper ownership and shutdown semantics for OBS sessions, the Plasma platform sidecar, tray workers, and future background processors.
-- [ ] Add test coverage for timeout, unavailable-binary, and stderr-rich failure cases so external integration failures are easier to reason about and present consistently.
+- [x] Add a shared command-execution utility/service that standardizes: command construction, availability checks, timeout handling, stderr capture, structured error mapping, and test fakes.
+- [x] Migrate ffmpeg/ffprobe callers (`post_process`, montage helpers, thumbnails, Discord thumbnails, integrity checks) onto that shared command layer.
+- [x] Migrate OS command launchers (`launcher`, notification fallbacks, autostart helpers, updater helper invocations, secure-store shell-outs) onto the same command layer or a closely related platform-exec service.
+- [x] Replace `Task` + `Arc<Mutex<Option<Result<...>>>>` handoff patterns in recorder startup and similar flows with clearer actor/service boundaries and direct message emission.
+- [~] Standardize long-running helper ownership and shutdown semantics for OBS sessions, the Plasma platform sidecar, tray workers, and future background processors.
+- [~] Add test coverage for timeout, unavailable-binary, and stderr-rich failure cases so external integration failures are easier to reason about and present consistently.
+
+Progress note: `command_runner` now backs launcher/autostart/secure-store/update-helper code paths plus the ffmpeg/ffprobe shell-outs in recorder, post-process, montage, Discord thumbnail extraction, YouTube remux preparation, and Linux settings dialogs. The recorder-start worker path now uses a dedicated `oneshot` result channel instead of the old shared mutable slot, the non-Windows tray worker now uses an owned session handle with explicit shutdown, and `command_runner` has regression tests for missing-binary and stderr-rich failure cases.
+
+Additional modularization note: the large platform/integration files have also been decomposed into child modules, including `src/hotkey.rs`, `src/capture/obs.rs`, `src/uploads.rs`, and `src/post_process.rs`, so platform- and integration-specific helper logic no longer lives inline in the primary module bodies.
+
+Cleanup note: the temporary `support.rs` bucket modules used during the first extraction pass have now been replaced with named modules such as `library.rs`, `editor.rs`, `options.rs`, `core.rs`, `compat.rs`, `providers.rs`, and `pipeline.rs`, so the codebase no longer relies on generic support-bucket filenames.
 
 Done when: external tool invocation and worker lifecycle management follow one consistent pattern, and new Wave 7 features do not need to invent their own shell-out/error-handling scaffolding.
 
@@ -415,11 +435,11 @@ Done when: users can share a local URL that renders a rich clip page with thumbn
 
 ### Wave 7A: Architecture Hardening
 
-- [ ] ARCH-01 App state and reducer decomposition
-- [ ] ARCH-02 Platform services boundary
-- [ ] ARCH-03 ClipStore repository split
-- [ ] ARCH-04 Config and migration hardening
-- [ ] ARCH-05 Command runner and worker cleanup
+- [x] ARCH-01 App state and reducer decomposition
+- [x] ARCH-02 Platform services boundary
+- [x] ARCH-03 ClipStore repository split
+- [x] ARCH-04 Config and migration hardening
+- [x] ARCH-05 Command runner and worker cleanup
 
 ### Wave 7B: Visual Foundation
 
