@@ -1099,7 +1099,7 @@ fn settings_sidebar(app: &App) -> Element<'_, Message> {
 
 fn settings_detail_pane(app: &App) -> Element<'_, Message> {
     let bottom_padding = if settings_dirty(app) { 108.0 } else { 0.0 };
-    let mut body = match app.settings_sub_view {
+    let body = match app.settings_sub_view {
         SettingsSubView::General => column![settings_overview_cards(app), runtime_panel(app)],
         SettingsSubView::CaptureAudio => {
             let mut body = column![capture_panel(app)].spacing(16);
@@ -1113,16 +1113,6 @@ fn settings_detail_pane(app: &App) -> Element<'_, Message> {
         SettingsSubView::System => column![update_panel(app), maintenance_panel(app)],
     }
     .spacing(16);
-
-    if matches!(app.settings_sub_view, SettingsSubView::General) {
-        body = body.push(
-            card()
-                .title("How Settings Work")
-                .description("Save persists draft changes. Revert resets this draft to the last saved configuration.")
-                .width(Length::Fill)
-                .build(),
-        );
-    }
 
     scrollable(container(body).width(Length::Fill).padding(Padding {
         top: 0.0,
