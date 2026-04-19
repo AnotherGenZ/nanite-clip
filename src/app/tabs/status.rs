@@ -84,6 +84,10 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             ffmpeg_status_label(app),
             ffmpeg_status_tone(app),
         ))
+        .push(status_badge(
+            format!("v{}", crate::update::current_version_label()),
+            BadgeTone::Outline,
+        ))
         .build();
 
     // System overview panel
@@ -152,6 +156,76 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 .map(|note| status_badge(*note, BadgeTone::Info)))
             .spacing(8)
             .align_y(iced::Alignment::Center),
+        );
+    }
+
+    if let Some(release) = &app.update_state.latest_release {
+        let mut actions = row![
+            with_tooltip(
+                styled_button("Release Notes", ButtonTone::Secondary)
+                    .on_press(Message::OpenUpdateReleaseNotes)
+                    .into(),
+                "Open the GitHub release page for the latest detected version.",
+            ),
+            with_tooltip(
+                styled_button("Skip", ButtonTone::Danger)
+                    .on_press(Message::SkipAvailableUpdate)
+                    .into(),
+                "Suppress automatic reminders for this release.",
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        if release.supports_download() {
+            actions = actions.push(with_tooltip(
+                styled_button(
+                    if app.update_state.has_downloaded_update() {
+                        "Install and Restart"
+                    } else {
+                        "Download Update"
+                    },
+                    if app.update_state.has_downloaded_update() {
+                        ButtonTone::Success
+                    } else {
+                        ButtonTone::Primary
+                    },
+                )
+                .on_press(if app.update_state.has_downloaded_update() {
+                    Message::ApplyDownloadedUpdate
+                } else {
+                    Message::DownloadAvailableUpdate
+                })
+                .into(),
+                if app.update_state.has_downloaded_update() {
+                    "Apply the downloaded update and relaunch NaniteClip."
+                } else {
+                    "Download the release asset for this installation."
+                },
+            ));
+        }
+
+        system_panel = system_panel.push(
+            banner(format!("Update {} is available", release.version))
+                .warning()
+                .description(if release.install_channel.supports_self_update() {
+                    format!(
+                        "{}. Install channel: {}.",
+                        release.release_name,
+                        release.install_channel.label()
+                    )
+                } else {
+                    release.install_channel.update_instructions().to_string()
+                })
+                .build(),
+        );
+        system_panel = system_panel.push(actions);
+    } else if let Some(error) = &app.update_state.last_error {
+        system_panel = system_panel.push(
+            banner("Update check failed")
+                .warning()
+                .description(error.clone())
+                .build(),
         );
     }
 

@@ -32,6 +32,7 @@ mod storage_tiering;
 mod timeline_export;
 mod tray;
 mod ui;
+mod update;
 mod uploads;
 
 use app::App;
@@ -42,6 +43,19 @@ fn daemon_view(app: &App, _window: window::Id) -> Element<'_, app::Message> {
 }
 
 fn main() -> iced::Result {
+    let mut args = std::env::args_os();
+    let _ = args.next();
+    if let (Some(flag), Some(plan_path)) = (args.next(), args.next())
+        && flag == "--apply-plan"
+    {
+        if let Err(error) = update::helper_runner::run_apply_plan(std::path::Path::new(&plan_path))
+        {
+            eprintln!("NaniteClip updater error: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     if let Err(error) = notifications::configure_windows_notifications() {
         eprintln!("NaniteClip warning: {error}");

@@ -5,6 +5,7 @@ APP_BINARY=${1:-}
 PLATFORM_SERVICE_BINARY=${2:-}
 VERSION_TAG=${3:-}
 OUTPUT_DIR=${4:-dist}
+UPDATER_BINARY="$(dirname "$APP_BINARY")/nanite-clip-updater"
 
 die() {
     echo "error: $*" >&2
@@ -28,7 +29,11 @@ rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 
 install -m755 "$APP_BINARY" "$STAGING_DIR/nanite-clip"
+if [[ -f "$UPDATER_BINARY" ]]; then
+    install -m755 "$UPDATER_BINARY" "$STAGING_DIR/nanite-clip-updater"
+fi
 install -m755 "$PLATFORM_SERVICE_BINARY" "$STAGING_DIR/nanite-clip-platform-service"
+printf 'linux_portable\n' > "$STAGING_DIR/install-channel.txt"
 install -m644 LICENSE "$STAGING_DIR/LICENSE"
 install -Dm644 assets/NaniteClips.png \
     "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/nanite-clip.png"
