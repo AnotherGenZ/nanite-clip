@@ -37,6 +37,7 @@ if [[ -n "$PLATFORM_SERVICE_BINARY" ]]; then
     install -Dm755 "$PLATFORM_SERVICE_BINARY" \
         "$STAGING_DIR/usr/lib/$PACKAGE_NAME/nanite-clip-platform-service"
 fi
+printf 'linux_deb\n' > "$STAGING_DIR/usr/lib/$PACKAGE_NAME/install-channel.txt"
 install -Dm644 "$PACKAGE_ICON" \
     "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/$PACKAGE_NAME.png"
 install -Dm644 assets/linux/nanite-clip.desktop \

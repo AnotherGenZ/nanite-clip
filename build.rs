@@ -11,6 +11,10 @@ fn main() {
     println!("cargo:rerun-if-changed=native/platform_service/main.cpp");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLASMA_HELPER_BUILD");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLATFORM_SERVICE_BUILD");
+    println!("cargo:rerun-if-env-changed=NANITE_CLIP_UPDATE_PUBLIC_KEY");
+
+    let update_public_key = env::var("NANITE_CLIP_UPDATE_PUBLIC_KEY").unwrap_or_default();
+    println!("cargo:rustc-env=NANITE_CLIP_UPDATE_PUBLIC_KEY={update_public_key}");
 
     if let Err(error) = embed_windows_resources() {
         println!("cargo:warning={error}");
@@ -79,6 +83,10 @@ fn embed_windows_resources() -> Result<(), String> {
 
     println!(
         "cargo:rustc-link-arg-bin=nanite-clip={}",
+        res_path.display()
+    );
+    println!(
+        "cargo:rustc-link-arg-bin=nanite-clip-updater={}",
         res_path.display()
     );
 

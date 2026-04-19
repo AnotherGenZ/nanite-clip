@@ -15,7 +15,7 @@
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="NaniteClip">
           <Component Id="MainExecutableComponent" Guid="95BF55D7-07C6-41BE-BEC4-D9127AC1AB7A">
             <File
@@ -23,6 +23,19 @@
               Source="$(var.CargoTargetBinDir)\nanite-clip.exe"
               KeyPath="yes"
               Checksum="yes" />
+          </Component>
+          <Component Id="UpdaterExecutableComponent" Guid="5A2C64C0-2B26-4FC3-9848-5D0C0FA5B993">
+            <File
+              Id="UpdaterExecutableFile"
+              Source="$(var.CargoTargetBinDir)\nanite-clip-updater.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+          </Component>
+          <Component Id="InstallChannelMarkerComponent" Guid="321D0E30-8895-4A0C-9301-0E17C13D96FB">
+            <File
+              Id="InstallChannelMarkerFile"
+              Source="packaging\windows\wix\install-channel.txt"
+              KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
@@ -55,6 +68,8 @@
 
     <Feature Id="MainFeature" Title="NaniteClip" Level="1">
       <ComponentRef Id="MainExecutableComponent" />
+      <ComponentRef Id="UpdaterExecutableComponent" />
+      <ComponentRef Id="InstallChannelMarkerComponent" />
       <ComponentRef Id="ProgramMenuShortcutComponent" />
     </Feature>
   </Product>

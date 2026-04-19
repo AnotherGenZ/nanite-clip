@@ -16,7 +16,9 @@ use crate::background_jobs::{
 };
 use crate::capture;
 use crate::census::{self, AlertLifecycle, AlertUpdate, StreamEvent};
-use crate::config::{AudioSourceConfig, Config, ObsManagementMode, YouTubePrivacyStatus};
+use crate::config::{
+    AudioSourceConfig, Config, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
+};
 use crate::db::{
     AlertInstanceRecord, CharacterOutfitCacheEntry, ClipAudioTrackDraft, ClipDetailRecord,
     ClipDraft, ClipEventContribution, ClipFilterOptions, ClipFilters, ClipOrigin,
@@ -47,6 +49,7 @@ use crate::tray::{TrayController, TrayEvent, TrayProfileOption, TraySnapshot};
 use crate::ui::app::{column, container, stack};
 use crate::ui::layout::tabs::{Tab as NavTab, tabs as nav_tabs};
 use crate::ui::overlay::toast::{self, ToastId, ToastStack, Tone as ToastTone};
+use crate::update::{self, UpdateState};
 use crate::uploads::{
     self, CopypartyUploadCredentials, YouTubeOAuthClient, YouTubeUploadCredentials,
 };
@@ -148,6 +151,7 @@ pub struct App {
     pending_recorder_start: Option<PendingRecorderStart>,
     next_recorder_start_id: u64,
     obs_restart_requires_manual_restart: bool,
+    update_state: UpdateState,
 
     // UI state
     new_character_name: String,
@@ -155,6 +159,8 @@ pub struct App {
     settings_auto_start_monitoring: bool,
     settings_start_minimized: bool,
     settings_minimize_to_tray: bool,
+    settings_update_auto_check: bool,
+    settings_update_channel: UpdateChannel,
     settings_service_id: String,
     settings_capture_backend: String,
     settings_capture_source: String,
@@ -475,6 +481,18 @@ pub enum Message {
 
     Settings(tabs::settings::Message),
     LaunchAtLoginSynced(Result<(), String>),
+    CheckForUpdates {
+        manual: bool,
+    },
+    UpdateCheckCompleted {
+        manual: bool,
+        result: Result<Option<update::AvailableRelease>, String>,
+    },
+    DownloadAvailableUpdate,
+    ApplyDownloadedUpdate,
+    SkipAvailableUpdate,
+    OpenUpdateReleaseNotes,
+    UpdateReleaseNotesOpened(Result<(), String>),
 
     RuntimePoll,
     Tick,
@@ -516,6 +534,7 @@ pub(crate) enum BackgroundJobRetryPlan {
         clip_id: i64,
         path: PathBuf,
     },
+    UpdateDownload,
 }
 
 impl App {
@@ -556,12 +575,16 @@ impl App {
             config.rule_profiles.clone(),
             config.active_profile_id.clone(),
         );
+        let update_state =
+            UpdateState::new(update::detect_install_channel(), update::current_version());
 
         let mut app = Self {
             settings_launch_at_login: config.launch_at_login.enabled,
             settings_auto_start_monitoring: config.auto_start_monitoring,
             settings_start_minimized: config.start_minimized,
             settings_minimize_to_tray: config.minimize_to_tray,
+            settings_update_auto_check: config.updates.auto_check,
+            settings_update_channel: config.updates.channel,
             settings_service_id: config.service_id.clone(),
             settings_capture_backend: config.capture.backend.clone(),
             settings_capture_source: config.recorder.gsr().capture_source.clone(),
@@ -710,6 +733,7 @@ impl App {
             pending_recorder_start: None,
             next_recorder_start_id: 0,
             obs_restart_requires_manual_restart: false,
+            update_state,
             new_character_name: String::new(),
             clip_date_range_preset: tabs::clips::DateRangePreset::AllTime,
             clip_date_range_start: String::new(),
@@ -745,6 +769,7 @@ impl App {
             app.configure_hotkeys(),
             app.resolve_unresolved_characters(),
             initial_window_task,
+            app.maybe_auto_check_for_updates_task(),
         ]);
 
         (app, task)
@@ -756,6 +781,45 @@ impl App {
 
     pub fn theme(&self) -> Theme {
         crate::ui::theme::Preset::Nanite.iced_theme(crate::ui::theme::Mode::Dark)
+    }
+
+    fn maybe_auto_check_for_updates_task(&mut self) -> Task<Message> {
+        if self.should_auto_check_for_updates() {
+            self.update_state.checking = true;
+            self.check_for_updates_task(false)
+        } else {
+            Task::none()
+        }
+    }
+
+    fn should_auto_check_for_updates(&self) -> bool {
+        if !self.config.updates.auto_check || self.update_state.checking {
+            return false;
+        }
+
+        self.config
+            .updates
+            .last_check_utc
+            .is_none_or(|last_checked| Utc::now() - last_checked >= chrono::Duration::hours(12))
+    }
+
+    fn check_for_updates_task(&self, manual: bool) -> Task<Message> {
+        let channel = self.config.updates.channel;
+        let install_channel = self.update_state.install_channel;
+        let current_version = self.update_state.current_version.clone();
+        let skipped_version = self.config.updates.skipped_version.clone();
+        Task::perform(
+            async move {
+                update::fetch_available_release(
+                    channel,
+                    install_channel,
+                    &current_version,
+                    skipped_version.as_deref(),
+                )
+                .await
+            },
+            move |result| Message::UpdateCheckCompleted { manual, result },
+        )
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -907,6 +971,150 @@ impl App {
                         format!(
                             "Settings were saved, but launch-at-login could not be updated: {error}"
                         ),
+                        false,
+                    );
+                }
+                Task::none()
+            }
+
+            Message::CheckForUpdates { manual } => {
+                if self.update_state.checking {
+                    return Task::none();
+                }
+                self.update_state.checking = true;
+                self.update_state.last_error = None;
+                self.check_for_updates_task(manual)
+            }
+
+            Message::UpdateCheckCompleted { manual, result } => {
+                self.update_state.checking = false;
+                let checked_at = Utc::now();
+                self.update_state.last_checked_at = Some(checked_at);
+                self.config.updates.last_check_utc = Some(checked_at);
+
+                match result {
+                    Ok(latest_release) => {
+                        if let Some(prepared) = &self.update_state.prepared_update
+                            && latest_release.as_ref().is_none_or(|release| {
+                                release.version.to_string() != prepared.version
+                            })
+                        {
+                            self.update_state.prepared_update = None;
+                        }
+                        self.update_state.latest_release = latest_release;
+                        self.update_state.last_error = None;
+
+                        if manual {
+                            if let Some(release) = &self.update_state.latest_release {
+                                self.set_status_feedback(
+                                    format!(
+                                        "Update {} is available for {}.",
+                                        release.version,
+                                        release.install_channel.label()
+                                    ),
+                                    false,
+                                );
+                            } else {
+                                self.set_status_feedback("NaniteClip is up to date.", true);
+                            }
+                        } else if let Some(release) = &self.update_state.latest_release
+                            && !release.skipped
+                        {
+                            self.push_toast(
+                                ToastTone::Info,
+                                "Update",
+                                format!("NaniteClip {} is available.", release.version),
+                                true,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        self.update_state.last_error = Some(error.clone());
+                        if manual {
+                            self.set_status_feedback(
+                                format!("Failed to check for updates: {error}"),
+                                false,
+                            );
+                        } else {
+                            tracing::warn!("Automatic update check failed: {error}");
+                        }
+                    }
+                }
+
+                if let Err(error) = self.config.save() {
+                    tracing::warn!("Failed to persist update-check timestamp: {error}");
+                }
+
+                Task::none()
+            }
+
+            Message::DownloadAvailableUpdate => self.queue_update_download(),
+
+            Message::ApplyDownloadedUpdate => {
+                if matches!(self.state, AppState::Monitoring { .. })
+                    || self.recorder.has_active_session()
+                {
+                    self.set_status_feedback("Stop monitoring before applying an update.", false);
+                    return Task::none();
+                }
+
+                let Some(prepared) = self.update_state.prepared_update.as_ref() else {
+                    self.set_status_feedback("No downloaded update is ready to install.", false);
+                    return Task::none();
+                };
+
+                match update::helper::spawn_apply_helper(prepared) {
+                    Ok(()) => iced::exit(),
+                    Err(error) => {
+                        self.set_status_feedback(
+                            format!("Failed to launch the updater helper: {error}"),
+                            false,
+                        );
+                        Task::none()
+                    }
+                }
+            }
+
+            Message::SkipAvailableUpdate => {
+                let Some(release) = self.update_state.latest_release.as_ref() else {
+                    return Task::none();
+                };
+                self.config.updates.skipped_version = Some(release.version.to_string());
+                if let Err(error) = self.config.save() {
+                    self.set_status_feedback(
+                        format!(
+                            "Skipped {}, but failed to save the preference: {error}",
+                            release.version
+                        ),
+                        false,
+                    );
+                } else {
+                    self.set_status_feedback(
+                        format!("Skipped update {} for this install.", release.version),
+                        true,
+                    );
+                }
+                if let Some(release) = self.update_state.latest_release.as_mut() {
+                    release.skipped = true;
+                }
+                Task::none()
+            }
+
+            Message::OpenUpdateReleaseNotes => {
+                let Some(release) = self.update_state.latest_release.as_ref() else {
+                    return Task::none();
+                };
+                let url = release.html_url.clone();
+                Task::perform(
+                    async move { crate::launcher::open_url(&url) },
+                    Message::UpdateReleaseNotesOpened,
+                )
+            }
+
+            Message::UpdateReleaseNotesOpened(result) => {
+                if let Err(error) = result {
+                    self.set_status_feedback(
+                        format!("Failed to open the release notes: {error}"),
                         false,
                     );
                 }
@@ -1102,6 +1310,10 @@ impl App {
                     _ => None,
                 };
                 tasks.push(self.evaluate_runtime_auto_switch(Utc::now(), active_character_id));
+                if self.should_auto_check_for_updates() {
+                    self.update_state.checking = true;
+                    tasks.push(self.check_for_updates_task(false));
+                }
                 Task::batch(tasks)
             }
 
@@ -3632,6 +3844,10 @@ impl App {
                                 tasks.push(self.load_clip_detail(Some(clip_id)));
                             }
                         }
+                        Some(BackgroundJobSuccess::AppUpdateDownload { prepared, message }) => {
+                            self.update_state.prepared_update = Some(prepared);
+                            self.set_status_feedback(message, false);
+                        }
                         None => {
                             let message = error.unwrap_or_else(|| {
                                 record
@@ -3646,6 +3862,9 @@ impl App {
                                 }) {
                                     tasks.push(self.load_clip_detail(self.selected_clip_id));
                                 }
+                            }
+                            if matches!(record.kind, BackgroundJobKind::AppUpdateDownload) {
+                                self.update_state.last_error = Some(message.clone());
                             }
                             self.set_status_feedback(message, false);
                         }
@@ -3704,6 +3923,12 @@ impl App {
                     Err("montage retries need at least two source clips.".into())
                 };
                 Task::done(Message::BackgroundJobRetryPrepared { job_id, result })
+            }
+            BackgroundJobKind::AppUpdateDownload => {
+                Task::done(Message::BackgroundJobRetryPrepared {
+                    job_id,
+                    result: Ok(BackgroundJobRetryPlan::UpdateDownload),
+                })
             }
             BackgroundJobKind::Upload
             | BackgroundJobKind::DiscordWebhook
@@ -3816,6 +4041,7 @@ impl App {
             BackgroundJobRetryPlan::PostProcess { clip_id, path } => {
                 self.queue_post_process_retry_for_clip(clip_id, path)
             }
+            BackgroundJobRetryPlan::UpdateDownload => self.queue_update_download(),
         }
     }
 
@@ -3834,6 +4060,81 @@ impl App {
         }
 
         self.delete_background_job_record(job_id)
+    }
+
+    fn queue_update_download(&mut self) -> Task<Message> {
+        let Some(release) = self.update_state.latest_release.clone() else {
+            self.set_status_feedback("Check for updates before downloading one.", false);
+            return Task::none();
+        };
+        if !release.supports_download() {
+            self.set_status_feedback(release.install_channel.update_instructions(), false);
+            return Task::none();
+        }
+        if self
+            .update_state
+            .prepared_update
+            .as_ref()
+            .is_some_and(|prepared| prepared.version == release.version.to_string())
+        {
+            self.set_status_feedback(
+                format!("Update {} is already downloaded.", release.version),
+                true,
+            );
+            return Task::none();
+        }
+
+        let release_for_job = release.clone();
+        let version_label = release.version.to_string();
+        let job_id = self.background_jobs.start(
+            BackgroundJobKind::AppUpdateDownload,
+            format!("Download update {}", release.version),
+            Vec::new(),
+            move |ctx| async move {
+                ctx.progress(
+                    0,
+                    100,
+                    format!("Starting update download for {}.", version_label),
+                )?;
+                let prepared =
+                    update::download::download_release_asset(&release_for_job, |progress| {
+                        let message = format!(
+                            "Downloading {} ({}).",
+                            release_for_job
+                                .asset
+                                .as_ref()
+                                .map(|asset| asset.kind.label())
+                                .unwrap_or("asset"),
+                            format_update_download_progress(
+                                progress.downloaded_bytes,
+                                progress.total_bytes,
+                            )
+                        );
+                        let step = progress
+                            .total_bytes
+                            .map(|total| {
+                                (((progress.downloaded_bytes as f64 / total.max(1) as f64) * 100.0)
+                                    .round() as u32)
+                                    .clamp(1, 99)
+                            })
+                            .unwrap_or(50);
+                        ctx.progress(step, 100, message)
+                    })
+                    .await?;
+
+                ctx.progress(100, 100, format!("Downloaded update {}.", prepared.version))?;
+                Ok(BackgroundJobSuccess::AppUpdateDownload {
+                    prepared,
+                    message: format!("Downloaded update {}.", version_label),
+                })
+            },
+        );
+
+        self.set_status_feedback(
+            format!("Queued update download for {}.", release.version),
+            true,
+        );
+        self.persist_background_job_snapshot(job_id)
     }
 
     fn queue_storage_tiering_sweep(&mut self) -> Task<Message> {
@@ -5175,6 +5476,34 @@ fn infer_storage_move_retry_target(record: &BackgroundJobRecord) -> Result<Stora
     }
 }
 
+fn format_update_download_progress(downloaded_bytes: u64, total_bytes: Option<u64>) -> String {
+    match total_bytes {
+        Some(total_bytes) => format!(
+            "{} of {}",
+            format_update_bytes(downloaded_bytes),
+            format_update_bytes(total_bytes)
+        ),
+        None => format!("{} downloaded", format_update_bytes(downloaded_bytes)),
+    }
+}
+
+fn format_update_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let bytes = bytes as f64;
+    if bytes >= GB {
+        format!("{:.1} GiB", bytes / GB)
+    } else if bytes >= MB {
+        format!("{:.1} MiB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{:.1} KiB", bytes / KB)
+    } else {
+        format!("{} B", bytes as u64)
+    }
+}
+
 fn main_window_settings() -> window::Settings {
     #[cfg(target_os = "linux")]
     let mut platform_specific = window::settings::PlatformSpecific::default();
@@ -5276,11 +5605,15 @@ mod tests {
             .first()
             .and_then(|character| character.character_id)
             .unwrap_or(42);
+        let update_state =
+            UpdateState::new(update::detect_install_channel(), update::current_version());
         App {
             settings_launch_at_login: config.launch_at_login.enabled,
             settings_auto_start_monitoring: config.auto_start_monitoring,
             settings_start_minimized: config.start_minimized,
             settings_minimize_to_tray: config.minimize_to_tray,
+            settings_update_auto_check: config.updates.auto_check,
+            settings_update_channel: config.updates.channel,
             settings_service_id: config.service_id.clone(),
             settings_capture_backend: config.capture.backend.clone(),
             settings_capture_source: config.recorder.gsr().capture_source.clone(),
@@ -5441,6 +5774,7 @@ mod tests {
             pending_recorder_start: None,
             next_recorder_start_id: 0,
             obs_restart_requires_manual_restart: false,
+            update_state,
             new_character_name: String::new(),
             clip_date_range_preset: tabs::clips::DateRangePreset::AllTime,
             clip_date_range_start: String::new(),

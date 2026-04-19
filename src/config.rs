@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::rules::schedule::{default_schedule_weekdays, legacy_cron_to_local_schedule};
@@ -39,6 +40,8 @@ pub struct Config {
     pub discord_webhook: DiscordWebhookConfig,
     #[serde(default)]
     pub capture: CaptureConfig,
+    #[serde(default)]
+    pub updates: AppUpdateConfig,
     pub recorder: RecorderConfig,
     #[serde(skip)]
     pub migration_notice: Option<String>,
@@ -289,6 +292,15 @@ impl std::fmt::Display for YouTubePrivacyStatus {
     }
 }
 
+impl std::fmt::Display for UpdateChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Stable => "Stable",
+            Self::Beta => "Beta",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiscordWebhookConfig {
     #[serde(default)]
@@ -307,6 +319,18 @@ pub struct LaunchAtLoginConfig {
     pub provider: LaunchAtLoginProvider,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppUpdateConfig {
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    #[serde(default)]
+    pub channel: UpdateChannel,
+    #[serde(default)]
+    pub skipped_version: Option<String>,
+    #[serde(default)]
+    pub last_check_utc: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LaunchAtLoginProvider {
@@ -318,6 +342,14 @@ pub enum LaunchAtLoginProvider {
     WindowsRegistryRun,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
 impl Default for Config {
     fn default() -> Self {
         let rule_profiles = default_rule_profiles();
@@ -326,7 +358,7 @@ impl Default for Config {
             .map(|profile| profile.id.clone())
             .unwrap_or_default();
         Self {
-            schema_version: 6,
+            schema_version: 7,
             service_id: "s:example".into(),
             characters: Vec::new(),
             rule_definitions: default_rule_definitions(),
@@ -343,6 +375,7 @@ impl Default for Config {
             uploads: UploadsConfig::default(),
             discord_webhook: DiscordWebhookConfig::default(),
             capture: CaptureConfig::default(),
+            updates: AppUpdateConfig::default(),
             recorder: RecorderConfig::default(),
             migration_notice: None,
         }
@@ -492,6 +525,17 @@ impl Default for LaunchAtLoginConfig {
     }
 }
 
+impl Default for AppUpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            channel: UpdateChannel::Stable,
+            skipped_version: None,
+            last_check_utc: None,
+        }
+    }
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
         directories::ProjectDirs::from("", "", "nanite-clip")
@@ -536,7 +580,7 @@ impl Config {
     }
 
     pub fn normalize(&mut self) {
-        self.schema_version = 6;
+        self.schema_version = 7;
 
         if self.recorder.backends.gsr.capture_source.trim().is_empty()
             || self.recorder.backends.gsr.capture_source == "screen"
@@ -555,6 +599,7 @@ impl Config {
         self.discord_webhook.normalize();
         self.launch_at_login.normalize();
         self.capture.normalize();
+        self.updates.normalize();
         self.recorder.backends.normalize();
         self.recorder.post_processing.normalize();
 
@@ -748,6 +793,15 @@ impl Config {
 impl LaunchAtLoginConfig {
     pub fn normalize(&mut self) {
         if !self.enabled && self.provider == LaunchAtLoginProvider::Auto {}
+    }
+}
+
+impl AppUpdateConfig {
+    pub fn normalize(&mut self) {
+        self.skipped_version = self.skipped_version.take().and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
     }
 }
 
@@ -1489,7 +1543,7 @@ mod tests {
 
         config.normalize();
 
-        assert_eq!(config.schema_version, 6);
+        assert_eq!(config.schema_version, 7);
         assert_eq!(
             config.clip_naming_template,
             "{timestamp}_{source}_{character}_{rule}_{score}"
@@ -1510,7 +1564,7 @@ mod tests {
     fn uploads_config_migrates_legacy_streamable_block_to_copyparty() {
         let config: Config = toml::from_str(
             r#"
-            schema_version = 6
+            schema_version = 7
             service_id = "s:example"
             active_profile_id = "default"
             characters = []
@@ -1785,7 +1839,7 @@ mod tests {
     fn config_normalize_converts_legacy_local_cron_auto_switch_rules() {
         let mut config: Config = toml::from_str(
             r#"
-            schema_version = 6
+            schema_version = 7
             service_id = "s:example"
             active_profile_id = "profile_default"
             characters = []

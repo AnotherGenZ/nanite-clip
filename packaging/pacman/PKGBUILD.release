@@ -42,6 +42,7 @@ package() {
         "$pkgdir/usr/bin/$pkgname"
     install -Dm755 "$repo_root/target/pacman-platform-service/nanite-clip-platform-service" \
         "$pkgdir/usr/lib/$pkgname/nanite-clip-platform-service"
+    printf 'linux_pacman\n' > "$pkgdir/usr/lib/$pkgname/install-channel.txt"
     install -Dm644 "$repo_root/assets/NaniteClips-512.png" \
         "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
     install -Dm644 "$repo_root/assets/linux/nanite-clip.desktop" \

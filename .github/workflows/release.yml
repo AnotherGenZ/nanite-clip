@@ -14,6 +14,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_WIX_VERSION: "0.3.9"
   FPM_VERSION: "1.17.0"
+  NANITE_CLIP_UPDATE_PUBLIC_KEY: ${{ vars.NANITE_CLIP_UPDATE_PUBLIC_KEY }}
   RELEASE_REF_NAME: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0test1' }}
 
 jobs:
@@ -47,6 +48,7 @@ jobs:
           mkdir -p dist
           tar -C target -czf dist/linux-build-outputs.tar.gz \
             release/nanite-clip \
+            release/nanite-clip-updater \
             platform-service-release/nanite-clip-platform-service
 
       - name: Upload Linux build outputs artifact
@@ -386,9 +388,41 @@ jobs:
           name: flatpak-package
           path: dist/*.flatpak
 
+  linux-portable:
+    name: Build Linux portable tarball
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Linux build outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build-outputs
+          path: target/reused-build
+
+      - name: Extract Linux build outputs
+        run: |
+          tar -xzf target/reused-build/linux-build-outputs.tar.gz -C target/reused-build
+
+      - name: Package Linux portable tarball
+        run: |
+          chmod +x scripts/package-release-linux.sh
+          scripts/package-release-linux.sh \
+            target/reused-build/release/nanite-clip \
+            target/reused-build/platform-service-release/nanite-clip-platform-service \
+            "${RELEASE_REF_NAME}" \
+            dist
+
+      - name: Upload Linux portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-portable-package
+          path: dist/*.tar.gz
+
   release:
     name: Create GitHub release
-    needs: [build, deb, rpm, windows-build, windows-msi, pacman, flatpak]
+    needs: [build, deb, rpm, windows-build, windows-msi, pacman, flatpak, linux-portable]
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -410,14 +444,32 @@ jobs:
 
       - name: Generate checksums
         run: |
-          find . -type f \( \
-            -name "*.exe" -o \
-            -name "*.msi" -o \
-            -name "*.deb" -o \
-            -name "*.rpm" -o \
-            -name "*.pkg.tar.zst" -o \
-            -name "*.flatpak" \
-          \) -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          sha256sum \
+            nanite-clip-windows-x64/nanite-clip.exe \
+            windows-msi/nanite-clip-${RELEASE_REF_NAME}-x86_64.msi \
+            linux-deb-package/*.deb \
+            linux-rpm-package/*.rpm \
+            pacman-package/*.pkg.tar.zst \
+            flatpak-package/*.flatpak \
+            linux-portable-package/*.tar.gz \
+            > SHA256SUMS.txt
+
+      - name: Generate update manifest
+        run: |
+          python3 scripts/build-update-manifest.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${RELEASE_REF_NAME}" \
+            --checksums SHA256SUMS.txt \
+            --output nanite-clip-update-manifest.json
+
+      - name: Sign update manifest
+        env:
+          NANITE_CLIP_UPDATE_SIGNING_KEY_PEM: ${{ secrets.NANITE_CLIP_UPDATE_SIGNING_KEY_PEM }}
+        run: |
+          [[ -n "${NANITE_CLIP_UPDATE_SIGNING_KEY_PEM}" ]] || { echo "missing NANITE_CLIP_UPDATE_SIGNING_KEY_PEM"; exit 1; }
+          printf '%s\n' "${NANITE_CLIP_UPDATE_SIGNING_KEY_PEM}" > update-signing-key.pem
+          openssl pkeyutl -sign -rawin -inkey update-signing-key.pem -in nanite-clip-update-manifest.json -out nanite-clip-update-manifest.sig.raw
+          base64 -w0 nanite-clip-update-manifest.sig.raw > nanite-clip-update-manifest.sig
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -431,4 +483,7 @@ jobs:
             linux-rpm-package/*.rpm
             pacman-package/*.pkg.tar.zst
             flatpak-package/*.flatpak
+            linux-portable-package/*.tar.gz
+            nanite-clip-update-manifest.json
+            nanite-clip-update-manifest.sig
             SHA256SUMS.txt

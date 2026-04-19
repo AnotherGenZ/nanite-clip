@@ -11,6 +11,7 @@ use tracing::{info, warn};
 
 use crate::db::ClipAudioTrackDraft;
 use crate::post_process::PostProcessPlan;
+use crate::update::PreparedUpdate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BackgroundJobId(pub u64);
@@ -28,6 +29,7 @@ pub enum BackgroundJobKind {
     Montage,
     DiscordWebhook,
     PostProcess,
+    AppUpdateDownload,
 }
 
 impl BackgroundJobKind {
@@ -38,6 +40,7 @@ impl BackgroundJobKind {
             Self::Montage => "montage",
             Self::DiscordWebhook => "discord_webhook",
             Self::PostProcess => "post_process",
+            Self::AppUpdateDownload => "app_update_download",
         }
     }
 
@@ -47,6 +50,7 @@ impl BackgroundJobKind {
             "montage" => Self::Montage,
             "discord_webhook" => Self::DiscordWebhook,
             "post_process" => Self::PostProcess,
+            "app_update_download" => Self::AppUpdateDownload,
             _ => Self::StorageTiering,
         }
     }
@@ -58,6 +62,7 @@ impl BackgroundJobKind {
             Self::Montage => "Montage",
             Self::DiscordWebhook => "Discord Webhook",
             Self::PostProcess => "Post Process",
+            Self::AppUpdateDownload => "App Update",
         }
     }
 }
@@ -153,6 +158,10 @@ pub enum BackgroundJobSuccess {
         final_path: String,
         plan: PostProcessPlan,
         tracks: Vec<ClipAudioTrackDraft>,
+        message: String,
+    },
+    AppUpdateDownload {
+        prepared: PreparedUpdate,
         message: String,
     },
 }
@@ -470,7 +479,10 @@ impl BackgroundJobManager {
                             | BackgroundJobSuccess::Upload { message, .. }
                             | BackgroundJobSuccess::Montage { message, .. }
                             | BackgroundJobSuccess::DiscordWebhook { message, .. }
-                            | BackgroundJobSuccess::PostProcess { message, .. } => message.clone(),
+                            | BackgroundJobSuccess::PostProcess { message, .. }
+                            | BackgroundJobSuccess::AppUpdateDownload { message, .. } => {
+                                message.clone()
+                            }
                         });
                         entry.record.updated_at = Utc::now();
                         entry.record.finished_at = Some(entry.record.updated_at);
@@ -543,6 +555,10 @@ fn default_kind_limits() -> HashMap<BackgroundJobKind, std::sync::Arc<Semaphore>
     kind_limits.insert(
         BackgroundJobKind::DiscordWebhook,
         std::sync::Arc::new(Semaphore::new(4)),
+    );
+    kind_limits.insert(
+        BackgroundJobKind::AppUpdateDownload,
+        std::sync::Arc::new(Semaphore::new(1)),
     );
     kind_limits
 }

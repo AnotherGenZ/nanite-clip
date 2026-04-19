@@ -11,7 +11,8 @@ use super::super::shared::{
 use super::super::{App, AudioSourceDraft, Message as AppMessage};
 use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
 use crate::config::{
-    AudioSourceConfig, ObsManagementMode, YouTubePrivacyStatus, legacy_audio_source_kind_from_value,
+    AudioSourceConfig, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
+    legacy_audio_source_kind_from_value,
 };
 use crate::secure_store::SecretKey;
 use crate::ui::app::{
@@ -48,6 +49,8 @@ pub enum Message {
     AutoStartMonitoringToggled(bool),
     StartMinimizedToggled(bool),
     MinimizeToTrayToggled(bool),
+    UpdateAutoCheckToggled(bool),
+    UpdateChannelSelected(UpdateChannel),
     CaptureSourceChanged(String),
     CaptureSourcePresetSelected(CaptureSourcePreset),
     SaveDirChanged(String),
@@ -114,6 +117,11 @@ pub enum Message {
     ExportCsv,
     BackupCompleted(Result<String, String>),
     ExportCompleted(Result<String, String>),
+    CheckForUpdates,
+    DownloadAvailableUpdate,
+    ApplyDownloadedUpdate,
+    SkipAvailableUpdate,
+    OpenUpdateReleaseNotes,
     Save,
 }
 
@@ -145,6 +153,14 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::MinimizeToTrayToggled(value) => {
             app.settings_minimize_to_tray = value;
+            iced::Task::none()
+        }
+        Message::UpdateAutoCheckToggled(value) => {
+            app.settings_update_auto_check = value;
+            iced::Task::none()
+        }
+        Message::UpdateChannelSelected(value) => {
+            app.settings_update_channel = value;
             iced::Task::none()
         }
         Message::CaptureSourceChanged(value) => {
@@ -661,6 +677,11 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             }
             iced::Task::none()
         }
+        Message::CheckForUpdates => iced::Task::done(AppMessage::CheckForUpdates { manual: true }),
+        Message::DownloadAvailableUpdate => iced::Task::done(AppMessage::DownloadAvailableUpdate),
+        Message::ApplyDownloadedUpdate => iced::Task::done(AppMessage::ApplyDownloadedUpdate),
+        Message::SkipAvailableUpdate => iced::Task::done(AppMessage::SkipAvailableUpdate),
+        Message::OpenUpdateReleaseNotes => iced::Task::done(AppMessage::OpenUpdateReleaseNotes),
         Message::Save => {
             app.settings_hotkey_capture_active = false;
             if let Err(error) =
@@ -675,6 +696,8 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             app.config.auto_start_monitoring = app.settings_auto_start_monitoring;
             app.config.start_minimized = app.settings_start_minimized;
             app.config.minimize_to_tray = app.settings_minimize_to_tray;
+            app.config.updates.auto_check = app.settings_update_auto_check;
+            app.config.updates.channel = app.settings_update_channel;
             app.config.clip_naming_template = non_empty_or_default(
                 app.settings_clip_naming_template.as_str(),
                 "{timestamp}_{source}_{character}_{rule}_{score}",
@@ -934,6 +957,10 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 BadgeTone::Neutral
             },
         ))
+        .push(settings_status_badge(
+            format!("Updates: {}", app.settings_update_channel),
+            BadgeTone::Primary,
+        ))
         .build();
 
     let mut body = column![
@@ -948,6 +975,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     body = body
         .push(clip_output_panel(app))
         .push(delivery_panel(app))
+        .push(update_panel(app))
         .push(maintenance_panel(app));
 
     column![
@@ -1839,6 +1867,128 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center)
+                .into(),
+            ],
+        ))
+        .build()
+        .into()
+}
+
+fn update_panel(app: &App) -> Element<'_, Message> {
+    let latest_release_summary = app
+        .update_state
+        .latest_release
+        .as_ref()
+        .map(|release| {
+            format!(
+                "Latest available: {} ({})",
+                release.version, release.release_name
+            )
+        })
+        .or_else(|| {
+            app.update_state.last_checked_at.map(|checked_at| {
+                format!(
+                    "No newer release found. Last checked {}.",
+                    super::clips::format_timestamp(checked_at)
+                )
+            })
+        })
+        .unwrap_or_else(|| "No update check has completed yet.".into());
+
+    panel("Application Updates")
+        .push(settings_section_block(
+            "Preferences",
+            "How NaniteClip checks GitHub Releases and which release stream it follows.",
+            vec![
+                text(format!(
+                    "Current version: {} · Install channel: {}",
+                    crate::update::current_version_label(),
+                    app.update_state.install_channel.label()
+                ))
+                .size(12)
+                .into(),
+                settings_toggle_row(
+                    "Automatic Update Checks",
+                    "Check GitHub Releases in the background and show an update banner when a newer version is available.",
+                    app.settings_update_auto_check,
+                    Message::UpdateAutoCheckToggled,
+                ),
+                settings_pick_list_field(
+                    "Release Channel",
+                    "Choose which release channel to check. Stable ignores GitHub prereleases. Beta includes them.",
+                    &[UpdateChannel::Stable, UpdateChannel::Beta][..],
+                    Some(app.settings_update_channel),
+                    Message::UpdateChannelSelected,
+                ),
+            ],
+        ))
+        .push(settings_section_block(
+            "Available Release",
+            "Check, download, and apply updates for this installation.",
+            vec![
+                text(latest_release_summary).size(12).into(),
+                row![
+                    with_tooltip(
+                        styled_button("Check for Updates", ButtonTone::Secondary)
+                            .on_press(Message::CheckForUpdates)
+                            .into(),
+                        "Query the latest GitHub Release for the selected channel.",
+                    ),
+                    with_tooltip(
+                        {
+                            let button = styled_button("Download Update", ButtonTone::Primary);
+                            if app
+                                .update_state
+                                .latest_release
+                                .as_ref()
+                                .is_some_and(|release| release.supports_download())
+                            {
+                                button.on_press(Message::DownloadAvailableUpdate).into()
+                            } else {
+                                button.into()
+                            }
+                        },
+                        "Download the release asset into the local update staging area.",
+                    ),
+                    with_tooltip(
+                        {
+                            let button = styled_button("Install and Restart", ButtonTone::Success);
+                            if app.update_state.has_downloaded_update() {
+                                button.on_press(Message::ApplyDownloadedUpdate).into()
+                            } else {
+                                button.into()
+                            }
+                        },
+                        "Apply the downloaded update with the external helper, then relaunch NaniteClip.",
+                    ),
+                ]
+                .spacing(8)
+                .into(),
+                row![
+                    with_tooltip(
+                        {
+                            let button = styled_button("Open Release Notes", ButtonTone::Secondary);
+                            if app.update_state.latest_release.is_some() {
+                                button.on_press(Message::OpenUpdateReleaseNotes).into()
+                            } else {
+                                button.into()
+                            }
+                        },
+                        "Open the GitHub release page for the latest detected version.",
+                    ),
+                    with_tooltip(
+                        {
+                            let button = styled_button("Skip This Version", ButtonTone::Danger);
+                            if app.update_state.latest_release.is_some() {
+                                button.on_press(Message::SkipAvailableUpdate).into()
+                            } else {
+                                button.into()
+                            }
+                        },
+                        "Suppress automatic reminders for the currently detected release.",
+                    ),
+                ]
+                .spacing(8)
                 .into(),
             ],
         ))
