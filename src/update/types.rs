@@ -86,6 +86,96 @@ impl UpdateAssetKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateInstallBehavior {
+    #[default]
+    Manual,
+    WhenIdle,
+    OnNextLaunch,
+}
+
+impl UpdateInstallBehavior {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual",
+            Self::WhenIdle => "When idle",
+            Self::OnNextLaunch => "On next launch",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Manual => "Keep downloaded updates staged until you choose Install and Restart.",
+            Self::WhenIdle => {
+                "Apply downloaded updates automatically once monitoring and recording are idle."
+            }
+            Self::OnNextLaunch => "Keep the update staged and remind you on the next launch.",
+        }
+    }
+}
+
+impl std::fmt::Display for UpdateInstallBehavior {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePhase {
+    Idle,
+    Checking,
+    Downloading,
+    Verifying,
+    ReadyToInstall,
+    Applying,
+    Failed,
+}
+
+impl UpdatePhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::Checking => "Checking",
+            Self::Downloading => "Downloading",
+            Self::Verifying => "Verifying",
+            Self::ReadyToInstall => "Ready to install",
+            Self::Applying => "Applying",
+            Self::Failed => "Failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateErrorKind {
+    Network,
+    Verification,
+    Install,
+    Unknown,
+}
+
+impl UpdateErrorKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Network => "Network",
+            Self::Verification => "Verification",
+            Self::Install => "Install",
+            Self::Unknown => "Updater",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateErrorState {
+    pub kind: UpdateErrorKind,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateProgressState {
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestAsset {
     pub channel: InstallChannel,
@@ -114,7 +204,7 @@ impl AvailableRelease {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedUpdate {
     pub version: String,
     pub tag_name: String,
@@ -125,15 +215,23 @@ pub struct PreparedUpdate {
     pub release_notes_url: String,
 }
 
+impl PreparedUpdate {
+    pub fn parsed_version(&self) -> Option<Version> {
+        Version::parse(&self.version).ok()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdateState {
     pub install_channel: InstallChannel,
     pub current_version: Version,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub checking: bool,
+    pub phase: UpdatePhase,
+    pub progress: Option<UpdateProgressState>,
     pub latest_release: Option<AvailableRelease>,
     pub prepared_update: Option<PreparedUpdate>,
-    pub last_error: Option<String>,
+    pub last_error: Option<UpdateErrorState>,
 }
 
 impl UpdateState {
@@ -143,6 +241,8 @@ impl UpdateState {
             current_version,
             last_checked_at: None,
             checking: false,
+            phase: UpdatePhase::Idle,
+            progress: None,
             latest_release: None,
             prepared_update: None,
             last_error: None,
@@ -154,8 +254,15 @@ impl UpdateState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStep {
+    Downloading,
+    Verifying,
+}
+
 #[derive(Debug, Clone)]
 pub struct DownloadProgress {
+    pub step: DownloadStep,
     pub downloaded_bytes: u64,
     pub total_bytes: Option<u64>,
 }

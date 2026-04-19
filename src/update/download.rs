@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 
 use super::github::client;
-use super::types::{AvailableRelease, DownloadProgress, PreparedUpdate};
+use super::types::{AvailableRelease, DownloadProgress, DownloadStep, PreparedUpdate};
 
 pub fn staging_root() -> PathBuf {
     ProjectDirs::from("", "", "nanite-clip")
@@ -31,6 +31,7 @@ where
     let final_path = staging_root().join(&release.tag_name).join(&asset.filename);
     if file_matches_checksum(&final_path, &asset.sha256).await? {
         on_progress(DownloadProgress {
+            step: DownloadStep::Verifying,
             downloaded_bytes: final_path
                 .metadata()
                 .map(|metadata| metadata.len())
@@ -74,6 +75,7 @@ where
         hasher.update(&chunk);
         downloaded_bytes += chunk.len() as u64;
         on_progress(DownloadProgress {
+            step: DownloadStep::Downloading,
             downloaded_bytes,
             total_bytes,
         })?;
@@ -83,6 +85,12 @@ where
         .await
         .map_err(|error| format!("failed to finalize the staged update file: {error}"))?;
     drop(file);
+
+    on_progress(DownloadProgress {
+        step: DownloadStep::Verifying,
+        downloaded_bytes,
+        total_bytes,
+    })?;
 
     let checksum = format!("{:x}", hasher.finalize());
     if !checksum.eq_ignore_ascii_case(asset.sha256.as_str()) {
