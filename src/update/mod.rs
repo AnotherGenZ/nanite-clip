@@ -13,9 +13,9 @@ use crate::config::UpdateChannel;
 
 pub use channel::detect_install_channel;
 pub use types::{
-    AvailableRelease, DownloadStep, InstallChannel, PreparedUpdate, UpdateErrorKind,
-    UpdateErrorState, UpdateInstallBehavior, UpdatePhase, UpdatePrimaryAction, UpdateProgressState,
-    UpdateState,
+    AvailableRelease, DownloadStep, InstallChannel, PreparedUpdate, UpdateApplyReport,
+    UpdateApplyReportStatus, UpdateErrorKind, UpdateErrorState, UpdateInstallBehavior, UpdatePhase,
+    UpdatePrimaryAction, UpdateProgressState, UpdateState,
 };
 
 pub const GITHUB_REPO: &str = "AnotherGenZ/nanite-clip";
@@ -32,8 +32,34 @@ pub fn current_version_label() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-pub fn update_public_key() -> &'static str {
-    env!("NANITE_CLIP_UPDATE_PUBLIC_KEY")
+pub fn update_public_keys() -> Vec<String> {
+    parse_update_public_keys(
+        option_env!("NANITE_CLIP_UPDATE_PUBLIC_KEYS"),
+        option_env!("NANITE_CLIP_UPDATE_PUBLIC_KEY"),
+    )
+}
+
+fn parse_update_public_keys(rotated: Option<&str>, fallback: Option<&str>) -> Vec<String> {
+    let mut keys = Vec::new();
+
+    for key in rotated
+        .into_iter()
+        .flat_map(|value| value.split([',', ';', '\n']))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.to_string());
+        }
+    }
+
+    if let Some(key) = fallback.map(str::trim).filter(|value| !value.is_empty())
+        && !keys.iter().any(|existing| existing == key)
+    {
+        keys.push(key.to_string());
+    }
+
+    keys
 }
 
 pub async fn fetch_available_release(
@@ -55,7 +81,6 @@ pub async fn fetch_available_release(
         .filter(|value| !value.is_empty())
         .is_some_and(|value| value == manifest.version);
     let asset = manifest.asset_for_channel(install_channel);
-    let release_notes_url = manifest.release_notes_url.clone();
 
     Ok(Some(AvailableRelease {
         version: latest_version,
@@ -63,7 +88,11 @@ pub async fn fetch_available_release(
         release_name: release
             .name
             .unwrap_or_else(|| format!("NaniteClip {}", manifest.version)),
-        html_url: release_notes_url,
+        html_url: release.html_url,
+        changelog_markdown: release.body.unwrap_or_default(),
+        published_at: manifest.published_at.or(release.published_at),
+        minimum_version: manifest.minimum_version.clone(),
+        signature: manifest.signature.clone(),
         asset,
         install_channel,
         skipped,
@@ -85,14 +114,17 @@ pub async fn fetch_release_by_version(
         }
         let asset = manifest.asset_for_channel(install_channel);
         let tag_name = manifest.tag_name.clone();
-        let release_notes_url = manifest.release_notes_url.clone();
         let available = AvailableRelease {
             version: release_version,
             tag_name,
             release_name: release
                 .name
                 .unwrap_or_else(|| format!("NaniteClip {}", manifest.version)),
-            html_url: release_notes_url,
+            html_url: release.html_url,
+            changelog_markdown: release.body.unwrap_or_default(),
+            published_at: manifest.published_at.or(release.published_at),
+            minimum_version: manifest.minimum_version.clone(),
+            signature: manifest.signature.clone(),
             asset,
             install_channel,
             skipped: false,
@@ -118,14 +150,17 @@ pub async fn fetch_rollback_candidates(
         }
         let asset = manifest.asset_for_channel(install_channel);
         let tag_name = manifest.tag_name.clone();
-        let release_notes_url = manifest.release_notes_url.clone();
         let candidate = AvailableRelease {
             version: release_version,
             tag_name,
             release_name: release
                 .name
                 .unwrap_or_else(|| format!("NaniteClip {}", manifest.version)),
-            html_url: release_notes_url,
+            html_url: release.html_url,
+            changelog_markdown: release.body.unwrap_or_default(),
+            published_at: manifest.published_at.or(release.published_at),
+            minimum_version: manifest.minimum_version.clone(),
+            signature: manifest.signature.clone(),
             asset,
             install_channel,
             skipped: false,
@@ -136,4 +171,23 @@ pub async fn fetch_rollback_candidates(
     }
     candidates.sort_by(|left, right| right.version.cmp(&left.version));
     Ok(candidates)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_update_public_keys;
+
+    #[test]
+    fn parse_update_public_keys_supports_rotation_and_fallback() {
+        let keys = parse_update_public_keys(Some("key-a,\nkey-b; key-c"), Some("key-b"));
+
+        assert_eq!(keys, vec!["key-a", "key-b", "key-c"]);
+    }
+
+    #[test]
+    fn parse_update_public_keys_uses_fallback_when_rotation_is_empty() {
+        let keys = parse_update_public_keys(Some(" "), Some("key-a"));
+
+        assert_eq!(keys, vec!["key-a"]);
+    }
 }

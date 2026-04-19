@@ -1,8 +1,11 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use super::helper_shared::{ApplyKind, ApplyPlan};
+use chrono::Utc;
+
+use super::helper_shared::{ApplyKind, ApplyPlan, ApplyResult, ApplyResultStatus};
 
 pub fn run_apply_plan(plan_path: &Path) -> Result<(), String> {
     let plan_bytes = fs::read(plan_path).map_err(|error| {
@@ -20,16 +23,75 @@ pub fn run_apply_plan(plan_path: &Path) -> Result<(), String> {
         ));
     }
 
-    wait_for_process_exit(plan.wait_pid)?;
+    let mut logger = ApplyLogger::new(&plan.log_path)?;
+    logger.log(format!(
+        "starting updater apply for version {} with {:?}",
+        plan.target_version, plan.kind
+    ));
 
-    match plan.kind {
-        ApplyKind::WindowsMsi => apply_windows_msi(&plan)?,
-        ApplyKind::WindowsPortableExe => apply_windows_portable(&plan)?,
-        ApplyKind::LinuxPortableTarGz => apply_linux_portable(&plan)?,
+    let apply_result = (|| -> Result<(), String> {
+        logger.log(format!(
+            "waiting for process {} to exit before applying",
+            plan.wait_pid
+        ));
+        wait_for_process_exit(plan.wait_pid)?;
+        logger.log("app process exited; beginning apply".to_string());
+
+        match plan.kind {
+            ApplyKind::WindowsMsi => apply_windows_msi(&plan)?,
+            ApplyKind::WindowsPortableExe => apply_windows_portable(&plan)?,
+            ApplyKind::LinuxPortableTarGz => apply_linux_portable(&plan)?,
+        }
+
+        logger.log("apply step completed successfully".to_string());
+        Ok(())
+    })();
+
+    let apply_state = match &apply_result {
+        Ok(()) => ApplyResultStatus::Succeeded,
+        Err(error) => {
+            logger.log(format!("apply failed: {error}"));
+            ApplyResultStatus::Failed
+        }
+    };
+
+    let write_result_error = write_apply_result(
+        &plan,
+        apply_state,
+        apply_result.as_ref().err().cloned(),
+        &mut logger,
+    )
+    .err();
+    if let Some(error) = &write_result_error {
+        logger.log(format!("failed to record apply result: {error}"));
     }
 
-    relaunch(&plan.target_executable, &plan.relaunch_args)?;
-    Ok(())
+    match relaunch(&plan.target_executable, &plan.relaunch_args) {
+        Ok(()) => {
+            logger.log(format!(
+                "relaunch requested for {}",
+                plan.target_executable.display()
+            ));
+        }
+        Err(error) => {
+            logger.log(format!("relaunch failed: {error}"));
+            return match (apply_result, write_result_error) {
+                (Ok(()), Some(write_error)) => Err(format!("{write_error}; {error}")),
+                (Ok(()), None) => Err(error),
+                (Err(apply_error), Some(write_error)) => {
+                    Err(format!("{apply_error}; {write_error}; {error}"))
+                }
+                (Err(apply_error), None) => Err(format!("{apply_error}; {error}")),
+            };
+        }
+    }
+
+    match (apply_result, write_result_error) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(write_error)) => Err(write_error),
+        (Err(apply_error), None) => Err(apply_error),
+        (Err(apply_error), Some(write_error)) => Err(format!("{apply_error}; {write_error}")),
+    }
 }
 
 fn relaunch(executable: &Path, args: &[String]) -> Result<(), String> {
@@ -220,4 +282,63 @@ fn copy_directory_contents(source: &Path, destination: &Path) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+fn write_apply_result(
+    plan: &ApplyPlan,
+    status: ApplyResultStatus,
+    detail: Option<String>,
+    logger: &mut ApplyLogger,
+) -> Result<(), String> {
+    let result = ApplyResult {
+        plan_version: plan.plan_version,
+        target_version: plan.target_version.clone(),
+        status,
+        detail,
+        log_path: plan.log_path.clone(),
+        finished_at: Utc::now(),
+    };
+    if let Some(parent) = plan.result_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create updater result directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(&result)
+        .map_err(|error| format!("failed to serialize updater apply result: {error}"))?;
+    fs::write(&plan.result_path, bytes)
+        .map_err(|error| format!("failed to write updater apply result: {error}"))?;
+    logger.log(format!(
+        "apply result recorded at {} with status {:?}",
+        plan.result_path.display(),
+        result.status
+    ));
+    Ok(())
+}
+
+struct ApplyLogger {
+    file: fs::File,
+}
+
+impl ApplyLogger {
+    fn new(path: &Path) -> Result<Self, String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create updater log directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let file = fs::File::create(path)
+            .map_err(|error| format!("failed to create updater log {}: {error}", path.display()))?;
+        Ok(Self { file })
+    }
+
+    fn log(&mut self, message: String) {
+        let _ = writeln!(self.file, "[{}] {message}", Utc::now().to_rfc3339());
+        let _ = self.file.flush();
+    }
 }

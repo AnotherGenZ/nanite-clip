@@ -46,12 +46,13 @@ use crate::rules::{ClassifiedEvent, ClipAction, ClipActionLifecycle, ClipLength,
 use crate::secure_store::{SecretKey, SecureStore};
 use crate::storage_tiering::{self, StorageTier};
 use crate::tray::{TrayController, TrayEvent, TrayProfileOption, TraySnapshot};
-use crate::ui::app::{column, container, stack};
+use crate::ui::app::{column, container, row, scrollable, stack, text};
 use crate::ui::layout::tabs::{Tab as NavTab, tabs as nav_tabs};
+use crate::ui::overlay::modal::modal;
 use crate::ui::overlay::toast::{self, ToastId, ToastStack, Tone as ToastTone};
 use crate::update::{
-    self, UpdateErrorKind, UpdateErrorState, UpdateInstallBehavior, UpdatePhase,
-    UpdatePrimaryAction, UpdateProgressState, UpdateState,
+    self, UpdateApplyReport, UpdateApplyReportStatus, UpdateErrorKind, UpdateErrorState,
+    UpdateInstallBehavior, UpdatePhase, UpdatePrimaryAction, UpdateProgressState, UpdateState,
 };
 use crate::uploads::{
     self, CopypartyUploadCredentials, YouTubeOAuthClient, YouTubeUploadCredentials,
@@ -155,6 +156,10 @@ pub struct App {
     next_recorder_start_id: u64,
     obs_restart_requires_manual_restart: bool,
     update_state: UpdateState,
+    update_details_modal_open: bool,
+    update_details_log_text: Option<String>,
+    update_details_log_error: Option<String>,
+    update_details_log_loading: bool,
 
     // UI state
     new_character_name: String,
@@ -168,6 +173,7 @@ pub struct App {
     settings_selected_update_action: UpdatePrimaryAction,
     settings_selected_rollback_release: Option<update::AvailableRelease>,
     pending_hotkey_binding_label: Option<String>,
+    pending_hotkey_success_toast: bool,
     settings_service_id: String,
     settings_capture_backend: String,
     settings_capture_source: String,
@@ -505,6 +511,9 @@ pub enum Message {
     InstallDownloadedUpdateWhenIdle,
     OpenUpdateReleaseNotes,
     UpdateReleaseNotesOpened(Result<(), String>),
+    ShowUpdateDetails,
+    HideUpdateDetails,
+    UpdateDetailsLogLoaded(Result<String, String>),
 
     RuntimePoll,
     Tick,
@@ -608,6 +617,7 @@ impl App {
             settings_selected_update_action: UpdatePrimaryAction::DownloadUpdate,
             settings_selected_rollback_release: None,
             pending_hotkey_binding_label: None,
+            pending_hotkey_success_toast: false,
             settings_service_id: config.service_id.clone(),
             settings_capture_backend: config.capture.backend.clone(),
             settings_capture_source: config.recorder.gsr().capture_source.clone(),
@@ -757,6 +767,10 @@ impl App {
             next_recorder_start_id: 0,
             obs_restart_requires_manual_restart: false,
             update_state,
+            update_details_modal_open: false,
+            update_details_log_text: None,
+            update_details_log_error: None,
+            update_details_log_loading: false,
             new_character_name: String::new(),
             clip_date_range_preset: tabs::clips::DateRangePreset::AllTime,
             clip_date_range_start: String::new(),
@@ -771,6 +785,7 @@ impl App {
         if startup_version_changed && let Err(error) = app.config.save() {
             tracing::warn!("Failed to persist the installed version history: {error}");
         }
+        app.recover_apply_result();
 
         tabs::rules::ensure_selection(&mut app);
         let initial_tray_snapshot = app.tray_snapshot();
@@ -792,7 +807,7 @@ impl App {
             Task::perform(async { ClipStore::open_default().await }, |result| {
                 Message::DatabaseReady(result.map_err(|e| e.to_string()))
             }),
-            app.configure_hotkeys(),
+            app.configure_hotkeys(false),
             app.resolve_unresolved_characters(),
             initial_window_task,
             app.maybe_resume_staged_update_task(),
@@ -849,6 +864,91 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    fn recover_apply_result(&mut self) {
+        match update::helper::take_apply_result() {
+            Ok(Some(result)) => {
+                let report = update_apply_report_from_helper_result(&result);
+                self.update_state.last_apply_report = Some(report.clone());
+                self.config.updates.last_apply_report = Some(report);
+                if let Err(error) = self.config.save() {
+                    tracing::warn!("Failed to persist updater apply result: {error}");
+                }
+
+                match result.status {
+                    update::helper_shared::ApplyResultStatus::Succeeded => {
+                        tracing::info!(
+                            target_version = result.target_version,
+                            log_path = %result.log_path.display(),
+                            finished_at = %result.finished_at,
+                            "recovered successful updater apply result"
+                        );
+                    }
+                    update::helper_shared::ApplyResultStatus::Failed => {
+                        let detail = result.detail.unwrap_or_else(|| {
+                            format!(
+                                "The updater could not install NaniteClip {}.",
+                                result.target_version
+                            )
+                        });
+                        let message =
+                            format!("{detail} See updater log at {}.", result.log_path.display());
+                        self.set_update_error(UpdateErrorKind::Install, message.clone());
+                        self.set_status_feedback_silent(message.clone(), false);
+                        self.push_toast(ToastTone::Error, "Update Failed", message, true);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!("Failed to recover updater apply result: {error}");
+            }
+        }
+    }
+
+    fn show_update_details(&mut self) -> Task<Message> {
+        self.update_details_modal_open = true;
+        self.update_details_log_text = None;
+        self.update_details_log_error = None;
+        self.update_details_log_loading = false;
+
+        let Some(log_path) = self
+            .update_state
+            .last_apply_report
+            .as_ref()
+            .map(|report| report.log_path.clone())
+            .filter(|path| path.exists())
+        else {
+            return Task::none();
+        };
+
+        self.update_details_log_loading = true;
+        Task::perform(
+            async move {
+                tokio::fs::read_to_string(&log_path).await.map_err(|error| {
+                    format!("failed to read updater log {}: {error}", log_path.display())
+                })
+            },
+            Message::UpdateDetailsLogLoaded,
+        )
+    }
+
+    fn active_update_release_url(&self) -> Option<String> {
+        self.selected_rollback_release()
+            .map(|release| release.html_url)
+            .or_else(|| {
+                self.update_state
+                    .latest_release
+                    .as_ref()
+                    .map(|release| release.html_url.clone())
+            })
+            .or_else(|| {
+                self.update_state
+                    .prepared_update
+                    .as_ref()
+                    .map(|prepared| prepared.release_notes_url.clone())
+            })
     }
 
     fn should_auto_check_for_updates(&self) -> bool {
@@ -1452,24 +1552,31 @@ impl App {
 
             Message::InstallDownloadedUpdateWhenIdle => self.schedule_downloaded_update_when_idle(),
 
+            Message::ShowUpdateDetails => self.show_update_details(),
+
+            Message::HideUpdateDetails => {
+                self.update_details_modal_open = false;
+                self.update_details_log_loading = false;
+                Task::none()
+            }
+
+            Message::UpdateDetailsLogLoaded(result) => {
+                self.update_details_log_loading = false;
+                match result {
+                    Ok(log_text) => {
+                        self.update_details_log_text = Some(log_text);
+                        self.update_details_log_error = None;
+                    }
+                    Err(error) => {
+                        self.update_details_log_text = None;
+                        self.update_details_log_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+
             Message::OpenUpdateReleaseNotes => {
-                let Some(url) = self
-                    .update_state
-                    .prepared_update
-                    .as_ref()
-                    .map(|prepared| prepared.release_notes_url.clone())
-                    .or_else(|| {
-                        self.settings_selected_rollback_release
-                            .as_ref()
-                            .map(|release| release.html_url.clone())
-                    })
-                    .or_else(|| {
-                        self.update_state
-                            .latest_release
-                            .as_ref()
-                            .map(|release| release.html_url.clone())
-                    })
-                else {
+                let Some(url) = self.active_update_release_url() else {
                     return Task::none();
                 };
                 Task::perform(
@@ -2546,7 +2653,16 @@ impl App {
                 .into()
         });
 
-        stack![base, overlay].into()
+        let base: Element<'_, Message> = stack![base, overlay].into();
+        if self.update_details_modal_open {
+            modal(
+                base,
+                update_details_modal(self),
+                Some(Message::HideUpdateDetails),
+            )
+        } else {
+            base
+        }
     }
 
     fn ensure_ps2_recorder_running(&mut self, ps2_pid: u32) -> (bool, Task<Message>) {
@@ -5487,12 +5603,13 @@ impl App {
         }
     }
 
-    fn configure_hotkeys(&mut self) -> Task<Message> {
+    fn configure_hotkeys(&mut self, show_success_toast: bool) -> Task<Message> {
         self.hotkey_config_generation += 1;
         #[cfg(not(target_os = "windows"))]
         let generation = self.hotkey_config_generation;
         let previous_binding_label = self.hotkeys.binding_label().map(str::to_string);
         self.pending_hotkey_binding_label = previous_binding_label.clone();
+        self.pending_hotkey_success_toast = show_success_toast;
         let config = self.config.manual_clip.clone();
         let display_server = process::detect_display_server();
         let desktop_environment = process::detect_desktop_environment();
@@ -5535,6 +5652,7 @@ impl App {
 
     fn finish_hotkey_configuration(&mut self, result: Result<HotkeyManager, String>) {
         let previous_binding_label = self.pending_hotkey_binding_label.take();
+        let show_success_toast = std::mem::take(&mut self.pending_hotkey_success_toast);
         match result {
             Ok(hotkeys) => {
                 let binding_label = hotkeys.binding_label().map(str::to_string);
@@ -5551,7 +5669,7 @@ impl App {
                         let changed =
                             previous_binding_label.as_deref() != Some(binding_label.as_str());
                         let message = format!("Manual clip hotkey active: {binding_label}");
-                        if changed {
+                        if changed && show_success_toast {
                             self.set_settings_feedback(message, true);
                         } else {
                             self.set_settings_feedback_silent(message, true);
@@ -6005,6 +6123,7 @@ fn hydrate_update_state_from_config(
         .installed_version_history
         .first()
         .and_then(|version| semver::Version::parse(version).ok());
+    update_state.last_apply_report = config.updates.last_apply_report.clone();
 
     let prepared_update = config.updates.prepared_update.take().and_then(|prepared| {
         let prepared_version = prepared.parsed_version()?;
@@ -6179,6 +6298,182 @@ fn can_run_selected_update_action(app: &App) -> bool {
     }
 }
 
+fn update_apply_report_from_helper_result(
+    result: &update::helper_shared::ApplyResult,
+) -> UpdateApplyReport {
+    UpdateApplyReport {
+        target_version: result.target_version.clone(),
+        status: match result.status {
+            update::helper_shared::ApplyResultStatus::Succeeded => {
+                UpdateApplyReportStatus::Succeeded
+            }
+            update::helper_shared::ApplyResultStatus::Failed => UpdateApplyReportStatus::Failed,
+        },
+        detail: result.detail.clone(),
+        log_path: result.log_path.clone(),
+        finished_at: result.finished_at,
+    }
+}
+
+fn active_release_for_details(app: &App) -> Option<&update::AvailableRelease> {
+    app.settings_selected_rollback_release
+        .as_ref()
+        .or(app.update_state.latest_release.as_ref())
+}
+
+fn update_details_modal(app: &App) -> Element<'_, Message> {
+    let active_release = active_release_for_details(app);
+    let prepared = app.update_state.prepared_update.as_ref();
+    let title = prepared
+        .map(|prepared| format!("Release {}", prepared.version))
+        .or_else(|| active_release.map(|release| format!("Release {}", release.version)))
+        .unwrap_or_else(|| "Updater Details".into());
+    let changelog = active_release
+        .map(|release| release.changelog_markdown.as_str())
+        .or_else(|| prepared.and_then(|prepared| prepared.changelog_markdown.as_deref()))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or("No changelog text is available for this release yet.");
+    let signing_key_id = active_release
+        .and_then(|release| release.signature.key_id.as_deref())
+        .or_else(|| prepared.and_then(|prepared| prepared.signature.key_id.as_deref()))
+        .unwrap_or("Not reported");
+    let signing_key_label = active_release
+        .and_then(|release| release.signature.key_label.as_deref())
+        .or_else(|| prepared.and_then(|prepared| prepared.signature.key_label.as_deref()))
+        .unwrap_or("Not reported");
+    let signing_algorithm = active_release
+        .and_then(|release| release.signature.algorithm.as_deref())
+        .or_else(|| prepared.and_then(|prepared| prepared.signature.algorithm.as_deref()))
+        .unwrap_or("ed25519");
+    let published_summary = active_release
+        .and_then(|release| release.published_at)
+        .or_else(|| prepared.and_then(|prepared| prepared.published_at))
+        .map(tabs::clips::format_timestamp)
+        .unwrap_or_else(|| "Not reported".into());
+    let minimum_version = active_release
+        .and_then(|release| release.minimum_version.as_deref())
+        .or_else(|| prepared.and_then(|prepared| prepared.minimum_version.as_deref()))
+        .unwrap_or("None");
+    let verifier_key_count = update::update_public_keys().len();
+    let prepared_summary = prepared.map(|prepared| {
+        format!(
+            "Staged {} at {}",
+            prepared.asset_kind.label(),
+            prepared.asset_path.display()
+        )
+    });
+    let last_apply_summary = app
+        .update_state
+        .last_apply_report
+        .as_ref()
+        .map(|report| {
+            format!(
+                "Last apply: {} {} at {}",
+                match report.status {
+                    UpdateApplyReportStatus::Succeeded => "Succeeded for",
+                    UpdateApplyReportStatus::Failed => "Failed for",
+                },
+                report.target_version,
+                tabs::clips::format_timestamp(report.finished_at)
+            )
+        })
+        .unwrap_or_else(|| "Last apply: no helper result has been recorded yet.".into());
+    let last_apply_detail = app
+        .update_state
+        .last_apply_report
+        .as_ref()
+        .and_then(|report| report.detail.as_deref())
+        .unwrap_or("No additional apply detail was recorded.");
+    let log_summary = if app.update_details_log_loading {
+        "Loading updater log…".into()
+    } else if let Some(error) = &app.update_details_log_error {
+        format!("Could not load updater log: {error}")
+    } else if let Some(log_text) = &app.update_details_log_text {
+        summarize_update_log_for_viewer(log_text)
+    } else if let Some(report) = &app.update_state.last_apply_report {
+        format!(
+            "No updater log preview loaded. Log path: {}",
+            report.log_path.display()
+        )
+    } else {
+        "No updater log has been recorded yet.".into()
+    };
+
+    let mut details = column![
+        text(title).size(24),
+        text("Release metadata, signing details, and the current changelog.").size(13),
+        text(format!("Current version: {}", app.update_state.current_version)).size(12),
+        text(format!(
+            "Install channel: {}",
+            app.update_state.install_channel.label()
+        ))
+        .size(12),
+        text(format!("Published: {published_summary}")).size(12),
+        text(format!("Minimum supported version: {minimum_version}")).size(12),
+        text(format!(
+            "Manifest signature: {signing_algorithm} via key `{signing_key_id}` ({signing_key_label})"
+        ))
+        .size(12),
+        text(format!(
+            "Embedded verifier keys in this build: {verifier_key_count}"
+        ))
+        .size(12),
+        text(last_apply_summary).size(12),
+        text(format!("Apply detail: {last_apply_detail}")).size(12),
+    ]
+    .spacing(8);
+
+    if let Some(summary) = prepared_summary {
+        details = details.push(text(summary).size(12));
+    }
+    if let Some(report) = &app.update_state.last_apply_report {
+        details =
+            details.push(text(format!("Updater log path: {}", report.log_path.display())).size(12));
+    }
+
+    details = details
+        .push(text("Changelog").size(16))
+        .push(container(text(changelog).size(12)).width(Length::Fill))
+        .push(text("Updater Log").size(16))
+        .push(container(text(log_summary).size(12)).width(Length::Fill));
+
+    let controls = row![
+        {
+            let button = shared::styled_button("Close", shared::ButtonTone::Secondary);
+            button.on_press(Message::HideUpdateDetails)
+        },
+        {
+            let button = shared::styled_button("Open on GitHub", shared::ButtonTone::Primary);
+            if app.active_update_release_url().is_some() {
+                button.on_press(Message::OpenUpdateReleaseNotes)
+            } else {
+                button
+            }
+        }
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+
+    column![
+        scrollable(container(details).width(Length::Fill)).height(Length::Fixed(420.0)),
+        controls
+    ]
+    .spacing(16)
+    .width(Length::Fill)
+    .into()
+}
+
+fn summarize_update_log_for_viewer(log_text: &str) -> String {
+    const MAX_LINES: usize = 120;
+    let lines: Vec<_> = log_text.lines().collect();
+    if lines.len() <= MAX_LINES {
+        return log_text.to_string();
+    }
+
+    let tail = lines[lines.len() - MAX_LINES..].join("\n");
+    format!("Showing the last {MAX_LINES} lines of the updater log.\n\n{tail}")
+}
+
 fn release_action_label(
     target_version: &semver::Version,
     current_version: &semver::Version,
@@ -6351,6 +6646,7 @@ mod tests {
             settings_selected_update_action: UpdatePrimaryAction::DownloadUpdate,
             settings_selected_rollback_release: None,
             pending_hotkey_binding_label: None,
+            pending_hotkey_success_toast: false,
             settings_service_id: config.service_id.clone(),
             settings_capture_backend: config.capture.backend.clone(),
             settings_capture_source: config.recorder.gsr().capture_source.clone(),
@@ -6512,6 +6808,10 @@ mod tests {
             next_recorder_start_id: 0,
             obs_restart_requires_manual_restart: false,
             update_state,
+            update_details_modal_open: false,
+            update_details_log_text: None,
+            update_details_log_error: None,
+            update_details_log_loading: false,
             new_character_name: String::new(),
             clip_date_range_preset: tabs::clips::DateRangePreset::AllTime,
             clip_date_range_start: String::new(),
@@ -6566,6 +6866,11 @@ mod tests {
             asset_name: "nanite-clip.exe".into(),
             asset_path,
             release_notes_url: format!("https://example.invalid/releases/v{version}"),
+            release_name: Some(format!("NaniteClip {version}")),
+            changelog_markdown: Some("## Highlights\n\n- Sample release".into()),
+            published_at: None,
+            minimum_version: None,
+            signature: update::types::UpdateSignatureInfo::default(),
         }
     }
 

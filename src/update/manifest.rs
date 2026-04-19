@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::github::{GithubAsset, GithubRelease, client};
 use super::types::{InstallChannel, ManifestAsset};
-use super::{MANIFEST_ASSET_NAME, MANIFEST_SIGNATURE_ASSET_NAME, update_public_key};
+use super::{MANIFEST_ASSET_NAME, MANIFEST_SIGNATURE_ASSET_NAME, update_public_keys};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateManifest {
@@ -15,6 +15,8 @@ pub struct UpdateManifest {
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     pub minimum_version: Option<String>,
+    #[serde(default)]
+    pub signature: super::types::UpdateSignatureInfo,
     pub assets: Vec<ManifestAsset>,
 }
 
@@ -80,19 +82,10 @@ fn find_asset<'a>(assets: &'a [GithubAsset], name: &str) -> Result<&'a GithubAss
 }
 
 fn verify_manifest_signature(manifest_bytes: &[u8], signature_text: &str) -> Result<(), String> {
-    let public_key = update_public_key().trim();
-    if public_key.is_empty() {
-        return Err("Updater public key is not configured in this build.".into());
+    let public_keys = update_public_keys();
+    if public_keys.is_empty() {
+        return Err("Updater public keys are not configured in this build.".into());
     }
-
-    let public_key_bytes = base64::engine::general_purpose::STANDARD
-        .decode(public_key)
-        .map_err(|error| format!("failed to decode updater public key: {error}"))?;
-    let public_key_bytes: [u8; 32] = public_key_bytes
-        .try_into()
-        .map_err(|_| "updater public key must decode to 32 bytes".to_string())?;
-    let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
-        .map_err(|error| format!("failed to parse updater public key: {error}"))?;
 
     let signature_bytes = base64::engine::general_purpose::STANDARD
         .decode(signature_text)
@@ -100,7 +93,45 @@ fn verify_manifest_signature(manifest_bytes: &[u8], signature_text: &str) -> Res
     let signature = Signature::from_slice(&signature_bytes)
         .map_err(|error| format!("failed to parse manifest signature: {error}"))?;
 
-    verifying_key
-        .verify_strict(manifest_bytes, &signature)
-        .map_err(|error| format!("manifest signature verification failed: {error}"))
+    let mut errors = Vec::new();
+
+    for public_key in public_keys {
+        let public_key_bytes = match base64::engine::general_purpose::STANDARD.decode(&public_key) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                errors.push(format!("failed to decode updater public key: {error}"));
+                continue;
+            }
+        };
+        let public_key_bytes: [u8; 32] = match public_key_bytes.try_into() {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                errors.push("updater public key must decode to 32 bytes".into());
+                continue;
+            }
+        };
+        let verifying_key = match VerifyingKey::from_bytes(&public_key_bytes) {
+            Ok(key) => key,
+            Err(error) => {
+                errors.push(format!("failed to parse updater public key: {error}"));
+                continue;
+            }
+        };
+
+        if verifying_key
+            .verify_strict(manifest_bytes, &signature)
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "manifest signature verification failed for all configured updater keys{}",
+        if errors.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", errors.join("; "))
+        }
+    ))
 }

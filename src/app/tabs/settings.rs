@@ -123,10 +123,10 @@ pub enum Message {
     RefreshRollbackCatalog,
     UpdatePrimaryActionSelected(UpdatePrimaryAction),
     RunSelectedUpdateAction,
-    RollbackReleaseSelected(AvailableRelease),
+    RollbackReleaseSelected(Box<AvailableRelease>),
     DownloadSelectedRollbackVersion,
     RollbackToPreviousInstalledVersion,
-    OpenUpdateReleaseNotes,
+    ViewUpdateDetails,
     Save,
 }
 
@@ -179,7 +179,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::RollbackReleaseSelected(value) => {
-            app.settings_selected_rollback_release = Some(value);
+            app.settings_selected_rollback_release = Some(*value);
             iced::Task::none()
         }
         Message::CaptureSourceChanged(value) => {
@@ -705,7 +705,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         Message::RollbackToPreviousInstalledVersion => {
             iced::Task::done(AppMessage::RollbackToPreviousInstalledVersion)
         }
-        Message::OpenUpdateReleaseNotes => iced::Task::done(AppMessage::OpenUpdateReleaseNotes),
+        Message::ViewUpdateDetails => iced::Task::done(AppMessage::ShowUpdateDetails),
         Message::Save => {
             app.settings_hotkey_capture_active = false;
             if let Err(error) =
@@ -872,7 +872,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 Ok(()) => {
                     app.set_settings_feedback_silent("Settings saved.", false);
                     iced::Task::batch([
-                        app.configure_hotkeys(),
+                        app.configure_hotkeys(true),
                         app.sync_tray_snapshot(),
                         app.sync_launch_at_login_task(),
                     ])
@@ -1910,6 +1910,39 @@ fn update_action_tone(action: UpdatePrimaryAction) -> ButtonTone {
     }
 }
 
+fn active_release_signature_summary(app: &App) -> String {
+    let verifier_key_count = crate::update::update_public_keys().len();
+    let signature = app
+        .settings_selected_rollback_release
+        .as_ref()
+        .map(|release| &release.signature)
+        .or_else(|| {
+            app.update_state
+                .latest_release
+                .as_ref()
+                .map(|release| &release.signature)
+        })
+        .or_else(|| {
+            app.update_state
+                .prepared_update
+                .as_ref()
+                .map(|prepared| &prepared.signature)
+        });
+
+    if let Some(signature) = signature {
+        let key_id = signature.key_id.as_deref().unwrap_or("not reported");
+        let key_label = signature.key_label.as_deref().unwrap_or("not reported");
+        let algorithm = signature.algorithm.as_deref().unwrap_or("ed25519");
+        format!(
+            "Signature metadata: {algorithm} via key `{key_id}` ({key_label}). Embedded verifier keys: {verifier_key_count}."
+        )
+    } else {
+        format!(
+            "Signature metadata is not loaded yet. Embedded verifier keys: {verifier_key_count}."
+        )
+    }
+}
+
 fn update_action_controls(app: &App) -> Element<'_, Message> {
     let selected_action = super::super::selected_update_action(app);
 
@@ -1934,17 +1967,17 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
         .width(220),
         with_tooltip(
             {
-                let button = styled_button("Open Release Notes", ButtonTone::Secondary);
+                let button = styled_button("View Changelog", ButtonTone::Secondary);
                 if app.update_state.latest_release.is_some()
                     || app.update_state.prepared_update.is_some()
                     || app.settings_selected_rollback_release.is_some()
                 {
-                    button.on_press(Message::OpenUpdateReleaseNotes).into()
+                    button.on_press(Message::ViewUpdateDetails).into()
                 } else {
                     button.into()
                 }
             },
-            "Open the GitHub release page for the latest detected version.",
+            "Open the in-app changelog and updater details viewer for the active release target.",
         ),
     ]
     .spacing(8)
@@ -2042,6 +2075,23 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                 )
             })
         });
+    let security_summary = active_release_signature_summary(app);
+    let last_apply_summary = app
+        .update_state
+        .last_apply_report
+        .as_ref()
+        .map(|report| {
+            format!(
+                "Last apply: {} {} at {}.",
+                match report.status {
+                    crate::update::UpdateApplyReportStatus::Succeeded => "succeeded for",
+                    crate::update::UpdateApplyReportStatus::Failed => "failed for",
+                },
+                report.target_version,
+                super::clips::format_timestamp(report.finished_at)
+            )
+        })
+        .unwrap_or_else(|| "Last apply: no helper result recorded yet.".into());
     let previous_installed_summary = app
         .update_state
         .previous_installed_version
@@ -2067,6 +2117,8 @@ fn update_panel(app: &App) -> Element<'_, Message> {
     let mut available_release_rows = vec![
         text(phase_summary).size(12).into(),
         text(latest_release_summary).size(12).into(),
+        text(security_summary).size(12).into(),
+        text(last_apply_summary).size(12).into(),
         text(format!(
             "Install behavior: {}.",
             app.settings_update_install_behavior.description()
@@ -2156,7 +2208,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                     "Choose a specific older release to download and install for this channel.",
                     app.update_state.rollback_candidates.as_slice(),
                     app.settings_selected_rollback_release.clone(),
-                    Message::RollbackReleaseSelected,
+                    |value| Message::RollbackReleaseSelected(Box::new(value)),
                 ),
                 row![
                     with_tooltip(

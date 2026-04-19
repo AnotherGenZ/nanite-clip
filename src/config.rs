@@ -9,7 +9,7 @@ use crate::rules::{
     default_auto_switch_rules, default_rule_definitions, default_rule_profiles,
     normalized_active_character_ids, validate_auto_switch_rule,
 };
-use crate::update::{PreparedUpdate, UpdateInstallBehavior};
+use crate::update::{PreparedUpdate, UpdateApplyReport, UpdateInstallBehavior};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -342,6 +342,8 @@ pub struct AppUpdateConfig {
     pub installed_version_history: Vec<String>,
     #[serde(default)]
     pub prepared_update: Option<PreparedUpdate>,
+    #[serde(default)]
+    pub last_apply_report: Option<UpdateApplyReport>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -551,6 +553,7 @@ impl Default for AppUpdateConfig {
             current_version: None,
             installed_version_history: Vec::new(),
             prepared_update: None,
+            last_apply_report: None,
         }
     }
 }

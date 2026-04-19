@@ -10,6 +10,8 @@ def parse_args():
     parser.add_argument("--tag", required=True)
     parser.add_argument("--checksums", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--signing-key-id")
+    parser.add_argument("--signing-key-label")
     return parser.parse_args()
 
 
@@ -54,6 +56,11 @@ def main():
         "version": version,
         "tag_name": tag,
         "release_notes_url": f"https://github.com/{args.repo}/releases/tag/{tag}",
+        "signature": {
+            "algorithm": "ed25519",
+            "key_id": args.signing_key_id,
+            "key_label": args.signing_key_label,
+        },
         "assets": assets,
     }
 

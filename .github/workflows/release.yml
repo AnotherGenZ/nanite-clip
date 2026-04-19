@@ -15,6 +15,9 @@ env:
   CARGO_WIX_VERSION: "0.3.9"
   FPM_VERSION: "1.17.0"
   NANITE_CLIP_UPDATE_PUBLIC_KEY: ${{ vars.NANITE_CLIP_UPDATE_PUBLIC_KEY }}
+  NANITE_CLIP_UPDATE_PUBLIC_KEYS: ${{ vars.NANITE_CLIP_UPDATE_PUBLIC_KEYS }}
+  NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_ID: ${{ vars.NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_ID }}
+  NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_LABEL: ${{ vars.NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_LABEL }}
   RELEASE_REF_NAME: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0test1' }}
 
 jobs:
@@ -460,14 +463,23 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --tag "${RELEASE_REF_NAME}" \
             --checksums SHA256SUMS.txt \
+            --signing-key-id "${NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_ID}" \
+            --signing-key-label "${NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_LABEL}" \
             --output nanite-clip-update-manifest.json
 
-      - name: Sign update manifest
+      - name: Select update signing key
         env:
+          NANITE_CLIP_UPDATE_SIGNING_KEYS_JSON: ${{ secrets.NANITE_CLIP_UPDATE_SIGNING_KEYS_JSON }}
           NANITE_CLIP_UPDATE_SIGNING_KEY_PEM: ${{ secrets.NANITE_CLIP_UPDATE_SIGNING_KEY_PEM }}
         run: |
-          [[ -n "${NANITE_CLIP_UPDATE_SIGNING_KEY_PEM}" ]] || { echo "missing NANITE_CLIP_UPDATE_SIGNING_KEY_PEM"; exit 1; }
-          printf '%s\n' "${NANITE_CLIP_UPDATE_SIGNING_KEY_PEM}" > update-signing-key.pem
+          python3 scripts/select-update-signing-key.py \
+            --key-id "${NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_ID}" \
+            --keys-json-env NANITE_CLIP_UPDATE_SIGNING_KEYS_JSON \
+            --fallback-pem-env NANITE_CLIP_UPDATE_SIGNING_KEY_PEM \
+            --output update-signing-key.pem
+
+      - name: Sign update manifest
+        run: |
           openssl pkeyutl -sign -rawin -inkey update-signing-key.pem -in nanite-clip-update-manifest.json -out nanite-clip-update-manifest.sig.raw
           base64 -w0 nanite-clip-update-manifest.sig.raw > nanite-clip-update-manifest.sig
 
