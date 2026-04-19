@@ -1,9 +1,10 @@
 //! Tag primitive — similar to `badge` but rectangular with slightly larger
 //! type, intended for filter chips and keywords.
 
-use iced::widget::{Container, container, text};
+use iced::widget::{Container, container};
 use iced::{Background, Element, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub use super::badge::Tone;

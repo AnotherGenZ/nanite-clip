@@ -6,9 +6,10 @@
 //! prev/next month header followed by a 7-column weekday grid.
 
 use chrono::{Datelike, Duration, NaiveDate};
-use iced::widget::{Column, Row, button, column, container, row, text};
+use iced::widget::{Column, Row, button, column, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 /// Render a month-grid date picker.

@@ -1,9 +1,10 @@
 //! Stat composite — a small KPI card with label, value, and optional
 //! delta indicator (e.g. "+12.4%"). Delta tone controls color.
 
-use iced::widget::{Column, Container, column, container, row, text};
+use iced::widget::{Column, Container, column, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

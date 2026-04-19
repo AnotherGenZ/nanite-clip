@@ -7,9 +7,10 @@
 //! No virtualization — suitable for trees up to a few hundred nodes. For
 //! large trees, wrap the result in `iced::widget::scrollable`.
 
-use iced::widget::{Column, Row, button, column, container, text};
+use iced::widget::{Column, Row, button, column, container};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub struct TreeNode<'a, Id, Message> {

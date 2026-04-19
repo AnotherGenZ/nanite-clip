@@ -5,9 +5,10 @@
 //! Arbitrary HSV/RGB manipulation would need a proper canvas-backed
 //! widget, which is out of scope here.
 
-use iced::widget::{Row, button, column, container, row, text};
+use iced::widget::{Row, button, column, container, row};
 use iced::{Background, Color, Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 /// A named preset swatch. Labels appear in the tooltip-less hex preview

@@ -4,9 +4,10 @@
 //! read from [`crate::ui::theme`]. Use [`button`] for a label-only button,
 //! [`button_with`] when you need a custom child element (icon + text, etc.).
 
-use iced::widget::{Button, button as iced_button, text};
+use iced::widget::{Button, button as iced_button};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border, mix, with_alpha};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -72,7 +73,7 @@ impl Size {
 }
 
 /// Create a button with a text label.
-pub fn button<'a, Message>(label: impl Into<String>) -> NaniteButton<'a, Message> {
+pub fn button<'a, Message: 'a>(label: impl Into<String>) -> NaniteButton<'a, Message> {
     let size = Size::default();
     let variant = Variant::default();
     let tokens = theme::DARK;

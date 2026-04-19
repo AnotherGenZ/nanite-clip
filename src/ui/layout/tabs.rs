@@ -10,9 +10,10 @@
 //!     .push(Tab::new(PageTab::Settings, "Settings").badge("3"));
 //! ```
 
-use iced::widget::{Row, button, container, row, text};
+use iced::widget::{Row, button, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub struct Tab<Value> {

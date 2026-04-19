@@ -1,9 +1,10 @@
 //! Avatar primitive — circular container that holds either initials text or
 //! an arbitrary child element (like an image).
 
-use iced::widget::{Container, container, text};
+use iced::widget::{Container, container};
 use iced::{Background, Element, Length};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

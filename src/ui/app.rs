@@ -23,8 +23,12 @@ pub use crate::ui::primitives::tooltip::{Position as TooltipPosition, tooltip};
 pub type ContainerStyle = iced::widget::container::Style;
 pub type TextStyle = iced::widget::text::Style;
 
-pub fn text<'a>(label: impl Into<String>) -> iced::widget::Text<'a> {
+pub fn text<'a>(label: impl Into<String>) -> crate::ui::primitives::label::Text<'a> {
     crate::ui::primitives::label::text(label)
+}
+
+pub fn text_non_selectable<'a>(label: impl Into<String>) -> crate::ui::primitives::label::Text<'a> {
+    crate::ui::primitives::label::text_non_selectable(label)
 }
 
 pub fn checkbox<'a, Message: 'a>(is_checked: bool) -> iced::widget::Checkbox<'a, Message> {

@@ -1,9 +1,10 @@
 //! Page header composite — title, optional subtitle, and a trailing
 //! actions row. Lives at the top of each page and sets the page context.
 
-use iced::widget::{Column, Container, Row, column, container, row, text};
+use iced::widget::{Column, Container, Row, column, container, row};
 use iced::{Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self};
 
 pub fn page_header<'a, Message: 'a + Clone>(

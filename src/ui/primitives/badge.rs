@@ -3,9 +3,10 @@
 //! Uses a `container` around a `text` so it inherits placement from its parent
 //! `row`/`column`.
 
-use iced::widget::{Container, container, text};
+use iced::widget::{Container, container};
 use iced::{Background, Element, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -4,9 +4,10 @@
 //! optional subtitle, optional trailing meta text, and an optional trailing
 //! custom element. Rows can be made clickable.
 
-use iced::widget::{Column, Row, button, column, container, text};
+use iced::widget::{Column, Row, button, column, container};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub struct DataRow<'a, Message> {

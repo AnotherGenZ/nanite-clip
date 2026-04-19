@@ -1,9 +1,10 @@
 //! Empty state composite — centered placeholder with icon, title,
 //! description, and optional call-to-action.
 
-use iced::widget::{Column, Container, column, container, text};
+use iced::widget::{Column, Container, column, container};
 use iced::{Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self};
 
 pub fn empty_state<'a, Message: 'a>(title: impl Into<String>) -> EmptyStateBuilder<'a, Message> {

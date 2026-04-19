@@ -4,9 +4,10 @@
 //! column of children. Use it to cluster related rows of settings or
 //! details without the heavier visual weight of a nested card.
 
-use iced::widget::{Column, Container, column, container, text};
+use iced::widget::{Column, Container, column, container};
 use iced::{Element, Length};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self};
 
 pub fn section<'a, Message: 'a>(title: impl Into<String>) -> SectionBuilder<'a, Message> {

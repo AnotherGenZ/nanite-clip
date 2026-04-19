@@ -4,9 +4,10 @@
 //! content), and footer (typically a row of actions). Use it for any
 //! bounded content block that needs a surface, border, and padding.
 
-use iced::widget::{Column, Container, column, container, text};
+use iced::widget::{Column, Container, column, container};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub fn card<'a, Message: 'a>() -> CardBuilder<'a, Message> {

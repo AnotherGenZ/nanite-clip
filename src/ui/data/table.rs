@@ -18,9 +18,10 @@
 //!     .build();
 //! ```
 
-use iced::widget::{Column, Row, button, column, container, row, text};
+use iced::widget::{Column, Row, button, column, container, row};
 use iced::{Alignment, Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone)]

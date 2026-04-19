@@ -1,8 +1,9 @@
 //! Keyboard key primitive — renders a small pill styled to resemble a key cap.
 
-use iced::widget::{Container, container, text};
+use iced::widget::{Container, container};
 use iced::{Background, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub fn kbd<'a, Message: 'a>(key: impl Into<String>) -> Container<'a, Message> {

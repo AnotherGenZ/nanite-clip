@@ -38,9 +38,10 @@
 use std::time::{Duration, Instant};
 
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{Column, Container, Row, button, column, container, row, text};
+use iced::widget::{Column, Container, Row, button, column, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::{text, text_non_selectable};
 use crate::ui::theme::{self, Tokens, border, with_alpha};
 
 /// Messages longer than this get a "Show more" toggle. Roughly 2–3 lines in
@@ -268,11 +269,11 @@ where
             } else {
                 "Show more"
             };
-            let toggle = button(text(label).size(font.size_sm).style(|theme: &iced::Theme| {
-                iced::widget::text::Style {
+            let toggle = button(text_non_selectable(label).size(font.size_sm).style(
+                |theme: &iced::Theme| iced::widget::text::Style {
                     color: Some(theme::tokens_for(theme).color.foreground),
-                }
-            }))
+                },
+            ))
             .padding(Padding {
                 top: 2.0,
                 bottom: 2.0,
@@ -285,7 +286,7 @@ where
         }
     }
 
-    let close = button(text("\u{00D7}").size(font.size_lg))
+    let close = button(text_non_selectable("\u{00D7}").size(font.size_lg))
         .padding(Padding {
             top: 0.0,
             bottom: 2.0,

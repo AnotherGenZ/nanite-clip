@@ -5,9 +5,10 @@
 //! normal column flow and take up their own space. Use them for blocking
 //! errors that must stay visible until the user acknowledges them.
 
-use iced::widget::{Column, Container, button, column, container, row, text};
+use iced::widget::{Column, Container, button, column, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::{text, text_non_selectable};
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,7 +98,7 @@ impl<'a, Message: 'a + Clone> BannerBuilder<'a, Message> {
             .align_y(iced::Alignment::Start);
 
         if let Some(message) = self.on_dismiss {
-            let close = button(text("\u{00D7}").size(font.size_lg))
+            let close = button(text_non_selectable("\u{00D7}").size(font.size_lg))
                 .padding(Padding {
                     top: 0.0,
                     bottom: 2.0,

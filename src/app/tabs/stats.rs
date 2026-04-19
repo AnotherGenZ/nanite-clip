@@ -4,7 +4,9 @@ use chrono::Utc;
 use iced::{Background, Color, Element, Length, Task};
 
 use crate::db::{ClipStatsSnapshot, CountByLabel};
-use crate::ui::app::{Column, ContainerStyle, column, container, row, scrollable, text};
+use crate::ui::app::{
+    Column, ContainerStyle, column, container, row, scrollable, text, text_non_selectable,
+};
 use crate::ui::layout::empty_state::empty_state;
 use crate::ui::layout::page_header::page_header;
 use crate::ui::layout::panel::panel;
@@ -553,11 +555,11 @@ fn histogram_panel(
     let _ = app; // used via section_is_collapsed in caller
 
     let collapse_btn: Element<'static, Message> =
-        iced::widget::button(text("\u{25BE}").size(14).style(|theme: &iced::Theme| {
-            iced::widget::text::Style {
+        iced::widget::button(text_non_selectable("\u{25BE}").size(14).style(
+            |theme: &iced::Theme| iced::widget::text::Style {
                 color: Some(theme::tokens_for(theme).color.muted_foreground),
-            }
-        }))
+            },
+        ))
         .padding([2, 6])
         .style(clickable_row_button_style)
         .on_press(Message::ToggleSection(section))
@@ -677,11 +679,11 @@ fn histogram_row_themed(
 
     let label_el: Element<'static, Message> = if let Some(action) = click_action {
         let nav_label = label.clone();
-        iced::widget::button(text(label.clone()).size(13).style(|theme: &iced::Theme| {
-            iced::widget::text::Style {
+        iced::widget::button(text_non_selectable(label.clone()).size(13).style(
+            |theme: &iced::Theme| iced::widget::text::Style {
                 color: Some(theme::tokens_for(theme).color.primary),
-            }
-        }))
+            },
+        ))
         .padding(0)
         .style(clickable_row_button_style)
         .on_press(match action {

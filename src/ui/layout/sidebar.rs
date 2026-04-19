@@ -5,9 +5,10 @@
 //! and disabled state. Groups render as a small muted header above a
 //! cluster of items.
 
-use iced::widget::{Column, Container, Row, button, column, container, row, text};
+use iced::widget::{Column, Container, Row, button, column, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub struct SidebarItem<'a, Value, Message> {

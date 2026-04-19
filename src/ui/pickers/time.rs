@@ -4,9 +4,10 @@
 //! every change. Seconds are optional; pass `show_seconds = false` to hide
 //! that column. All values wrap inside their valid ranges.
 
-use iced::widget::{Row, button, column, container, text};
+use iced::widget::{Row, button, column, container};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

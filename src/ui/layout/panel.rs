@@ -3,9 +3,10 @@
 //! or detail content. Panels omit the card's shadow and use a subtler
 //! border so nested cards still read as distinct.
 
-use iced::widget::{Column, Container, column, container, text};
+use iced::widget::{Column, Container, column, container};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 pub fn panel<'a, Message: 'a>(title: impl Into<String>) -> PanelBuilder<'a, Message> {

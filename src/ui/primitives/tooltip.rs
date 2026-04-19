@@ -5,11 +5,12 @@
 
 use std::time::Duration;
 
-use iced::widget::{Tooltip, container, text, tooltip as iced_tooltip};
+use iced::widget::{Tooltip, container, tooltip as iced_tooltip};
 use iced::{Background, Element, Padding};
 
 pub use iced::widget::tooltip::Position;
 
+use crate::ui::primitives::label::text;
 use crate::ui::theme::{self, Tokens, border};
 
 const DEFAULT_DELAY: Duration = Duration::from_millis(350);

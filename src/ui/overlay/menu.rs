@@ -15,9 +15,10 @@
 //! let view = popover(base, menu.build(), Anchor::TopRight, Some(Message::CloseMenu));
 //! ```
 
-use iced::widget::{Column, button, column, container, row, text};
+use iced::widget::{Column, button, column, container, row};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 #[derive(Debug, Clone)]

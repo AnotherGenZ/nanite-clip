@@ -3,9 +3,10 @@
 //! Ellipsizes when there are too many pages to show inline. Caller owns the
 //! current page and receives a message on each selection.
 
-use iced::widget::{Row, button, container, text};
+use iced::widget::{Row, button, container};
 use iced::{Background, Element, Length, Padding};
 
+use crate::ui::primitives::label::text_non_selectable as text;
 use crate::ui::theme::{self, Tokens, border};
 
 /// Render a pagination row.
