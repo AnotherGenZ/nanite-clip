@@ -58,17 +58,17 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
         .width(220),
         with_tooltip(
             {
-                let button = styled_button("Release Notes", ButtonTone::Secondary);
+                let button = styled_button("View Changelog", ButtonTone::Secondary);
                 if app.update_state.latest_release.is_some()
                     || app.update_state.prepared_update.is_some()
                     || app.settings_selected_rollback_release.is_some()
                 {
-                    button.on_press(Message::OpenUpdateReleaseNotes).into()
+                    button.on_press(Message::ShowUpdateDetails).into()
                 } else {
                     button.into()
                 }
             },
-            "Open the GitHub release page for the active update target.",
+            "Open the in-app changelog and updater details viewer for the active update target.",
         ),
     ]
     .spacing(8)
@@ -258,6 +258,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             ))
             .size(12),
         );
+        system_panel = system_panel.push(text(status_update_detail_summary(app)).size(12));
         system_panel = system_panel.push(update_action_controls(app));
     } else if let Some(release) = &app.update_state.latest_release {
         let next_check_label = super::super::next_automatic_update_check_at(app)
@@ -311,6 +312,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             ))
             .size(12),
         );
+        system_panel = system_panel.push(text(status_update_detail_summary(app)).size(12));
         system_panel = system_panel.push(update_action_controls(app));
     } else if let Some(error) = &app.update_state.last_error {
         system_panel = system_panel.push(
@@ -446,6 +448,51 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
 
 fn status_badge<'a>(label: impl Into<String>, tone: BadgeTone) -> Element<'a, Message> {
     badge(label).tone(tone).build().into()
+}
+
+fn status_update_detail_summary(app: &App) -> String {
+    let verifier_key_count = crate::update::update_public_keys().len();
+    let signature = app
+        .settings_selected_rollback_release
+        .as_ref()
+        .map(|release| &release.signature)
+        .or_else(|| {
+            app.update_state
+                .latest_release
+                .as_ref()
+                .map(|release| &release.signature)
+        })
+        .or_else(|| {
+            app.update_state
+                .prepared_update
+                .as_ref()
+                .map(|prepared| &prepared.signature)
+        });
+    let apply_summary = app
+        .update_state
+        .last_apply_report
+        .as_ref()
+        .map(|report| {
+            format!(
+                "Last apply {} {}.",
+                match report.status {
+                    crate::update::UpdateApplyReportStatus::Succeeded => "succeeded for",
+                    crate::update::UpdateApplyReportStatus::Failed => "failed for",
+                },
+                report.target_version
+            )
+        })
+        .unwrap_or_else(|| "No apply result recorded yet.".into());
+
+    if let Some(signature) = signature {
+        let key_id = signature.key_id.as_deref().unwrap_or("not reported");
+        let key_label = signature.key_label.as_deref().unwrap_or("not reported");
+        format!(
+            "Signed by `{key_id}` ({key_label}). Embedded verifier keys: {verifier_key_count}. {apply_summary}"
+        )
+    } else {
+        format!("Embedded verifier keys: {verifier_key_count}. {apply_summary}")
+    }
 }
 
 fn ffmpeg_status_label(app: &App) -> &'static str {

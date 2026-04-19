@@ -46,6 +46,11 @@ where
             asset_name: asset.filename,
             asset_path: final_path,
             release_notes_url: release.html_url.clone(),
+            release_name: Some(release.release_name.clone()),
+            changelog_markdown: Some(release.changelog_markdown.clone()),
+            published_at: release.published_at,
+            minimum_version: release.minimum_version.clone(),
+            signature: release.signature.clone(),
         });
     }
 
@@ -116,6 +121,11 @@ where
         asset_name: asset.filename,
         asset_path: final_path,
         release_notes_url: release.html_url.clone(),
+        release_name: Some(release.release_name.clone()),
+        changelog_markdown: Some(release.changelog_markdown.clone()),
+        published_at: release.published_at,
+        minimum_version: release.minimum_version.clone(),
+        signature: release.signature.clone(),
     })
 }
 

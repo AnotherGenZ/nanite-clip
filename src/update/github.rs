@@ -16,8 +16,13 @@ pub struct GithubRelease {
     pub tag_name: String,
     #[serde(default)]
     pub name: Option<String>,
+    pub html_url: String,
     pub draft: bool,
     pub prerelease: bool,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub published_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     pub assets: Vec<GithubAsset>,
 }

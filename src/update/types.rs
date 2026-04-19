@@ -238,12 +238,26 @@ pub struct ManifestAsset {
     pub size: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateSignatureInfo {
+    #[serde(default)]
+    pub algorithm: Option<String>,
+    #[serde(default)]
+    pub key_id: Option<String>,
+    #[serde(default)]
+    pub key_label: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableRelease {
     pub version: Version,
     pub tag_name: String,
     pub release_name: String,
     pub html_url: String,
+    pub changelog_markdown: String,
+    pub published_at: Option<DateTime<Utc>>,
+    pub minimum_version: Option<String>,
+    pub signature: UpdateSignatureInfo,
     pub asset: Option<ManifestAsset>,
     pub install_channel: InstallChannel,
     pub skipped: bool,
@@ -274,12 +288,39 @@ pub struct PreparedUpdate {
     pub asset_name: String,
     pub asset_path: PathBuf,
     pub release_notes_url: String,
+    #[serde(default)]
+    pub release_name: Option<String>,
+    #[serde(default)]
+    pub changelog_markdown: Option<String>,
+    #[serde(default)]
+    pub published_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub minimum_version: Option<String>,
+    #[serde(default)]
+    pub signature: UpdateSignatureInfo,
 }
 
 impl PreparedUpdate {
     pub fn parsed_version(&self) -> Option<Version> {
         Version::parse(&self.version).ok()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateApplyReportStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateApplyReport {
+    pub target_version: String,
+    pub status: UpdateApplyReportStatus,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub log_path: PathBuf,
+    pub finished_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +336,7 @@ pub struct UpdateState {
     pub rollback_candidates: Vec<AvailableRelease>,
     pub rollback_catalog_loading: bool,
     pub prepared_update: Option<PreparedUpdate>,
+    pub last_apply_report: Option<UpdateApplyReport>,
     pub last_error: Option<UpdateErrorState>,
 }
 
@@ -312,6 +354,7 @@ impl UpdateState {
             rollback_candidates: Vec::new(),
             rollback_catalog_loading: false,
             prepared_update: None,
+            last_apply_report: None,
             last_error: None,
         }
     }

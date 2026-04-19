@@ -12,9 +12,12 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLASMA_HELPER_BUILD");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_SKIP_PLATFORM_SERVICE_BUILD");
     println!("cargo:rerun-if-env-changed=NANITE_CLIP_UPDATE_PUBLIC_KEY");
+    println!("cargo:rerun-if-env-changed=NANITE_CLIP_UPDATE_PUBLIC_KEYS");
 
     let update_public_key = env::var("NANITE_CLIP_UPDATE_PUBLIC_KEY").unwrap_or_default();
+    let update_public_keys = env::var("NANITE_CLIP_UPDATE_PUBLIC_KEYS").unwrap_or_default();
     println!("cargo:rustc-env=NANITE_CLIP_UPDATE_PUBLIC_KEY={update_public_key}");
+    println!("cargo:rustc-env=NANITE_CLIP_UPDATE_PUBLIC_KEYS={update_public_keys}");
 
     if let Err(error) = embed_windows_resources() {
         println!("cargo:warning={error}");
