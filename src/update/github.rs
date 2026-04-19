@@ -41,30 +41,68 @@ pub fn client() -> Result<reqwest::Client, String> {
 }
 
 pub async fn fetch_release(channel: UpdateChannel) -> Result<GithubRelease, String> {
-    let client = client()?;
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=12");
-    let releases = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("failed to contact GitHub Releases: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("GitHub Releases returned an error: {error}"))?
-        .json::<Vec<GithubRelease>>()
-        .await
-        .map_err(|error| format!("failed to decode GitHub release metadata: {error}"))?;
-
-    releases
+    fetch_releases(channel, 12)
+        .await?
         .into_iter()
-        .find(|release| {
-            if release.draft {
-                return false;
-            }
-
-            match channel {
-                UpdateChannel::Stable => !release.prerelease,
-                UpdateChannel::Beta => true,
-            }
-        })
+        .next()
         .ok_or_else(|| "No matching GitHub release was available.".into())
+}
+
+pub async fn fetch_releases(
+    channel: UpdateChannel,
+    limit: usize,
+) -> Result<Vec<GithubRelease>, String> {
+    let client = client()?;
+    let limit = limit.clamp(1, 100);
+    let page_size = limit.min(50);
+    let mut page = 1usize;
+    let mut matching_releases = Vec::new();
+
+    while matching_releases.len() < limit {
+        let url = format!(
+            "https://api.github.com/repos/{GITHUB_REPO}/releases?per_page={page_size}&page={page}"
+        );
+        let releases = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("failed to contact GitHub Releases: {error}"))?
+            .error_for_status()
+            .map_err(|error| format!("GitHub Releases returned an error: {error}"))?
+            .json::<Vec<GithubRelease>>()
+            .await
+            .map_err(|error| format!("failed to decode GitHub release metadata: {error}"))?;
+
+        if releases.is_empty() {
+            break;
+        }
+
+        let fetched_count = releases.len();
+        for release in releases {
+            if release_matches_channel(&release, channel) {
+                matching_releases.push(release);
+                if matching_releases.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        if fetched_count < page_size {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(matching_releases)
+}
+
+fn release_matches_channel(release: &GithubRelease, channel: UpdateChannel) -> bool {
+    if release.draft {
+        return false;
+    }
+
+    match channel {
+        UpdateChannel::Stable => !release.prerelease,
+        UpdateChannel::Beta => true,
+    }
 }

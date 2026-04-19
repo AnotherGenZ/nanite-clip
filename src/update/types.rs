@@ -121,6 +121,57 @@ impl std::fmt::Display for UpdateInstallBehavior {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdatePrimaryAction {
+    #[default]
+    DownloadUpdate,
+    InstallAndRestart,
+    InstallWhenIdle,
+    InstallOnNextLaunch,
+    RemindLater,
+    SkipThisVersion,
+}
+
+impl UpdatePrimaryAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DownloadUpdate => "Download Update",
+            Self::InstallAndRestart => "Install and Restart",
+            Self::InstallWhenIdle => "Install When Idle",
+            Self::InstallOnNextLaunch => "Install on Next Launch",
+            Self::RemindLater => "Remind Me Later",
+            Self::SkipThisVersion => "Skip This Version",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::DownloadUpdate => {
+                "Download the latest compatible release asset into the local staging area."
+            }
+            Self::InstallAndRestart => {
+                "Apply the staged target immediately and relaunch NaniteClip."
+            }
+            Self::InstallWhenIdle => {
+                "Keep the staged target ready and install it automatically when monitoring is idle."
+            }
+            Self::InstallOnNextLaunch => {
+                "Keep the staged target ready and prompt for installation the next time NaniteClip launches."
+            }
+            Self::RemindLater => "Hide update reminders for the next 12 hours.",
+            Self::SkipThisVersion => {
+                "Suppress automatic reminders for the currently detected release."
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for UpdatePrimaryAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdatePhase {
     Idle,
@@ -176,7 +227,7 @@ pub struct UpdateProgressState {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestAsset {
     pub channel: InstallChannel,
     pub kind: UpdateAssetKind,
@@ -187,7 +238,7 @@ pub struct ManifestAsset {
     pub size: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableRelease {
     pub version: Version,
     pub tag_name: String,
@@ -201,6 +252,16 @@ pub struct AvailableRelease {
 impl AvailableRelease {
     pub fn supports_download(&self) -> bool {
         self.install_channel.supports_self_update() && self.asset.is_some()
+    }
+}
+
+impl std::fmt::Display for AvailableRelease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.release_name.trim().is_empty() || self.release_name == self.version.to_string() {
+            write!(f, "{}", self.version)
+        } else {
+            write!(f, "{} ({})", self.version, self.release_name)
+        }
     }
 }
 
@@ -225,11 +286,14 @@ impl PreparedUpdate {
 pub struct UpdateState {
     pub install_channel: InstallChannel,
     pub current_version: Version,
+    pub previous_installed_version: Option<Version>,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub checking: bool,
     pub phase: UpdatePhase,
     pub progress: Option<UpdateProgressState>,
     pub latest_release: Option<AvailableRelease>,
+    pub rollback_candidates: Vec<AvailableRelease>,
+    pub rollback_catalog_loading: bool,
     pub prepared_update: Option<PreparedUpdate>,
     pub last_error: Option<UpdateErrorState>,
 }
@@ -239,11 +303,14 @@ impl UpdateState {
         Self {
             install_channel,
             current_version,
+            previous_installed_version: None,
             last_checked_at: None,
             checking: false,
             phase: UpdatePhase::Idle,
             progress: None,
             latest_release: None,
+            rollback_candidates: Vec::new(),
+            rollback_catalog_loading: false,
             prepared_update: None,
             last_error: None,
         }

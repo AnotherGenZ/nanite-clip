@@ -8,7 +8,7 @@
     Manufacturer="AnotherGenZ"
     UpgradeCode="C65B9E43-D5EA-44F5-8EA0-6BF7F6727A33">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of NaniteClip is already installed." />
+    <MajorUpgrade AllowDowngrades="yes" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="ProductIcon" SourceFile="$(var.CargoTargetBinDir)\nanite-clip.exe" />
