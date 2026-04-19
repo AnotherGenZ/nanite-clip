@@ -337,6 +337,10 @@ pub struct AppUpdateConfig {
     #[serde(default)]
     pub last_check_utc: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub current_version: Option<String>,
+    #[serde(default)]
+    pub installed_version_history: Vec<String>,
+    #[serde(default)]
     pub prepared_update: Option<PreparedUpdate>,
 }
 
@@ -367,7 +371,7 @@ impl Default for Config {
             .map(|profile| profile.id.clone())
             .unwrap_or_default();
         Self {
-            schema_version: 8,
+            schema_version: 9,
             service_id: "s:example".into(),
             characters: Vec::new(),
             rule_definitions: default_rule_definitions(),
@@ -544,6 +548,8 @@ impl Default for AppUpdateConfig {
             remind_later_version: None,
             remind_later_until_utc: None,
             last_check_utc: None,
+            current_version: None,
+            installed_version_history: Vec::new(),
             prepared_update: None,
         }
     }
@@ -593,7 +599,7 @@ impl Config {
     }
 
     pub fn normalize(&mut self) {
-        self.schema_version = 8;
+        self.schema_version = 9;
 
         if self.recorder.backends.gsr.capture_source.trim().is_empty()
             || self.recorder.backends.gsr.capture_source == "screen"
@@ -815,10 +821,27 @@ impl AppUpdateConfig {
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
         });
+        self.current_version = self.current_version.take().and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
         self.remind_later_version = self.remind_later_version.take().and_then(|value| {
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
         });
+        let current_version = self.current_version.clone();
+        let mut deduped_history = Vec::new();
+        for version in std::mem::take(&mut self.installed_version_history) {
+            let trimmed = version.trim().to_string();
+            if trimmed.is_empty() || current_version.as_deref() == Some(trimmed.as_str()) {
+                continue;
+            }
+            if !deduped_history.contains(&trimmed) {
+                deduped_history.push(trimmed);
+            }
+        }
+        deduped_history.truncate(10);
+        self.installed_version_history = deduped_history;
         if self
             .remind_later_until_utc
             .is_some_and(|until| until <= Utc::now())
@@ -1567,7 +1590,7 @@ mod tests {
 
         config.normalize();
 
-        assert_eq!(config.schema_version, 8);
+        assert_eq!(config.schema_version, 9);
         assert_eq!(
             config.clip_naming_template,
             "{timestamp}_{source}_{character}_{rule}_{score}"
@@ -1588,6 +1611,40 @@ mod tests {
         );
         assert!(config.updates.prepared_update.is_none());
         assert!(config.updates.remind_later_until_utc.is_none());
+        assert!(config.updates.current_version.is_none());
+        assert!(config.updates.installed_version_history.is_empty());
+    }
+
+    #[test]
+    fn update_config_normalize_trims_and_dedupes_version_history() {
+        let mut updates = AppUpdateConfig::default();
+        updates.current_version = Some(" 1.4.0 ".into());
+        updates.installed_version_history = vec![
+            " 1.4.0 ".into(),
+            "1.3.0".into(),
+            " 1.2.0 ".into(),
+            "1.3.0".into(),
+            "".into(),
+            "1.1.0".into(),
+            "1.0.0".into(),
+            "0.9.0".into(),
+            "0.8.0".into(),
+            "0.7.0".into(),
+            "0.6.0".into(),
+            "0.5.0".into(),
+            "0.4.0".into(),
+        ];
+
+        updates.normalize();
+
+        assert_eq!(updates.current_version.as_deref(), Some("1.4.0"));
+        assert_eq!(
+            updates.installed_version_history,
+            vec![
+                "1.3.0", "1.2.0", "1.1.0", "1.0.0", "0.9.0", "0.8.0", "0.7.0", "0.6.0", "0.5.0",
+                "0.4.0",
+            ]
+        );
     }
 
     #[test]

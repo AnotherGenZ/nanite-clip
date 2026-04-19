@@ -28,7 +28,7 @@ use crate::ui::layout::toolbar::toolbar;
 use crate::ui::overlay::banner::banner;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::primitives::switch::switch as toggle_switch;
-use crate::update::{UpdateInstallBehavior, UpdatePhase};
+use crate::update::{AvailableRelease, UpdateInstallBehavior, UpdatePhase, UpdatePrimaryAction};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AvailableAudioSourceOption {
@@ -120,12 +120,12 @@ pub enum Message {
     BackupCompleted(Result<String, String>),
     ExportCompleted(Result<String, String>),
     CheckForUpdates,
-    DownloadAvailableUpdate,
-    ApplyDownloadedUpdate,
-    InstallDownloadedUpdateWhenIdle,
-    InstallDownloadedUpdateOnNextLaunch,
-    RemindUpdateLater,
-    SkipAvailableUpdate,
+    RefreshRollbackCatalog,
+    UpdatePrimaryActionSelected(UpdatePrimaryAction),
+    RunSelectedUpdateAction,
+    RollbackReleaseSelected(AvailableRelease),
+    DownloadSelectedRollbackVersion,
+    RollbackToPreviousInstalledVersion,
     OpenUpdateReleaseNotes,
     Save,
 }
@@ -166,10 +166,20 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::UpdateChannelSelected(value) => {
             app.settings_update_channel = value;
-            iced::Task::none()
+            app.settings_selected_rollback_release = None;
+            app.update_state.rollback_candidates.clear();
+            iced::Task::done(AppMessage::RefreshRollbackCatalog)
         }
         Message::UpdateInstallBehaviorSelected(value) => {
             app.settings_update_install_behavior = value;
+            iced::Task::none()
+        }
+        Message::UpdatePrimaryActionSelected(value) => {
+            app.settings_selected_update_action = value;
+            iced::Task::none()
+        }
+        Message::RollbackReleaseSelected(value) => {
+            app.settings_selected_rollback_release = Some(value);
             iced::Task::none()
         }
         Message::CaptureSourceChanged(value) => {
@@ -687,16 +697,14 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::CheckForUpdates => iced::Task::done(AppMessage::CheckForUpdates { manual: true }),
-        Message::DownloadAvailableUpdate => iced::Task::done(AppMessage::DownloadAvailableUpdate),
-        Message::ApplyDownloadedUpdate => iced::Task::done(AppMessage::ApplyDownloadedUpdate),
-        Message::InstallDownloadedUpdateWhenIdle => {
-            iced::Task::done(AppMessage::InstallDownloadedUpdateWhenIdle)
+        Message::RefreshRollbackCatalog => iced::Task::done(AppMessage::RefreshRollbackCatalog),
+        Message::RunSelectedUpdateAction => iced::Task::done(AppMessage::RunSelectedUpdateAction),
+        Message::DownloadSelectedRollbackVersion => {
+            iced::Task::done(AppMessage::DownloadSelectedRollbackVersion)
         }
-        Message::InstallDownloadedUpdateOnNextLaunch => {
-            iced::Task::done(AppMessage::InstallDownloadedUpdateOnNextLaunch)
+        Message::RollbackToPreviousInstalledVersion => {
+            iced::Task::done(AppMessage::RollbackToPreviousInstalledVersion)
         }
-        Message::RemindUpdateLater => iced::Task::done(AppMessage::RemindUpdateLater),
-        Message::SkipAvailableUpdate => iced::Task::done(AppMessage::SkipAvailableUpdate),
         Message::OpenUpdateReleaseNotes => iced::Task::done(AppMessage::OpenUpdateReleaseNotes),
         Message::Save => {
             app.settings_hotkey_capture_active = false;
@@ -862,7 +870,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
 
             match app.config.save() {
                 Ok(()) => {
-                    app.set_settings_feedback("Settings saved.", false);
+                    app.set_settings_feedback_silent("Settings saved.", false);
                     iced::Task::batch([
                         app.configure_hotkeys(),
                         app.sync_tray_snapshot(),
@@ -1891,6 +1899,59 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
         .into()
 }
 
+fn update_action_tone(action: UpdatePrimaryAction) -> ButtonTone {
+    match action {
+        UpdatePrimaryAction::DownloadUpdate => ButtonTone::Primary,
+        UpdatePrimaryAction::InstallAndRestart => ButtonTone::Success,
+        UpdatePrimaryAction::InstallWhenIdle
+        | UpdatePrimaryAction::InstallOnNextLaunch
+        | UpdatePrimaryAction::RemindLater => ButtonTone::Secondary,
+        UpdatePrimaryAction::SkipThisVersion => ButtonTone::Danger,
+    }
+}
+
+fn update_action_controls(app: &App) -> Element<'_, Message> {
+    let selected_action = super::super::selected_update_action(app);
+
+    row![
+        with_tooltip(
+            {
+                let button =
+                    styled_button(selected_action.label(), update_action_tone(selected_action));
+                if super::super::can_run_selected_update_action(app) {
+                    button.on_press(Message::RunSelectedUpdateAction).into()
+                } else {
+                    button.into()
+                }
+            },
+            selected_action.description(),
+        ),
+        pick_list(
+            super::super::update_action_options(app),
+            Some(selected_action),
+            Message::UpdatePrimaryActionSelected,
+        )
+        .width(220),
+        with_tooltip(
+            {
+                let button = styled_button("Open Release Notes", ButtonTone::Secondary);
+                if app.update_state.latest_release.is_some()
+                    || app.update_state.prepared_update.is_some()
+                    || app.settings_selected_rollback_release.is_some()
+                {
+                    button.on_press(Message::OpenUpdateReleaseNotes).into()
+                } else {
+                    button.into()
+                }
+            },
+            "Open the GitHub release page for the latest detected version.",
+        ),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 fn update_panel(app: &App) -> Element<'_, Message> {
     let last_checked_summary = app
         .update_state
@@ -1944,7 +2005,20 @@ fn update_panel(app: &App) -> Element<'_, Message> {
             .update_state
             .prepared_update
             .as_ref()
-            .map(|prepared| format!("Ready to install: {}", prepared.version))
+            .map(|prepared| {
+                let prepared_version = prepared
+                    .parsed_version()
+                    .unwrap_or_else(|| app.update_state.current_version.clone());
+                format!(
+                    "Ready to {}: {}",
+                    if prepared_version < app.update_state.current_version {
+                        "roll back"
+                    } else {
+                        "install"
+                    },
+                    prepared.version
+                )
+            })
             .unwrap_or_else(|| app.update_state.phase.label().into()),
         UpdatePhase::Failed => app
             .update_state
@@ -1968,6 +2042,27 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                 )
             })
         });
+    let previous_installed_summary = app
+        .update_state
+        .previous_installed_version
+        .as_ref()
+        .map(|version| format!("Previously installed version: {version}"))
+        .unwrap_or_else(|| "Previously installed version: not recorded yet".into());
+    let selected_rollback_summary = app
+        .settings_selected_rollback_release
+        .as_ref()
+        .map(|release| format!("Selected rollback target: {}.", release.version))
+        .unwrap_or_else(|| "Selected rollback target: none".into());
+    let rollback_catalog_summary = if app.update_state.rollback_catalog_loading {
+        "Rollback version list: loading…".into()
+    } else if app.update_state.rollback_candidates.is_empty() {
+        "Rollback version list: not loaded yet or no compatible older versions were found.".into()
+    } else {
+        format!(
+            "Rollback version list: {} compatible older release(s) available.",
+            app.update_state.rollback_candidates.len()
+        )
+    };
 
     let mut available_release_rows = vec![
         text(phase_summary).size(12).into(),
@@ -1982,124 +2077,27 @@ fn update_panel(app: &App) -> Element<'_, Message> {
     if let Some(summary) = reminder_summary {
         available_release_rows.push(text(summary).size(12).into());
     }
-    available_release_rows.extend([
-        row![
-            with_tooltip(
-                styled_button("Check for Updates", ButtonTone::Secondary)
-                    .on_press(Message::CheckForUpdates)
-                    .into(),
-                "Query the latest GitHub Release for the selected channel.",
-            ),
-            with_tooltip(
-                {
-                    let button = styled_button("Download Update", ButtonTone::Primary);
-                    if app
-                        .update_state
-                        .latest_release
-                        .as_ref()
-                        .is_some_and(|release| release.supports_download())
-                        && !matches!(
-                            app.update_state.phase,
-                            UpdatePhase::Downloading
-                                | UpdatePhase::Verifying
-                                | UpdatePhase::Applying
-                        )
-                    {
-                        button.on_press(Message::DownloadAvailableUpdate).into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Download the release asset into the local update staging area.",
-            ),
-            with_tooltip(
-                {
-                    let button = styled_button("Install and Restart", ButtonTone::Success);
-                    if app.update_state.has_downloaded_update()
-                        && !matches!(app.update_state.phase, UpdatePhase::Applying)
-                    {
-                        button.on_press(Message::ApplyDownloadedUpdate).into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Apply the downloaded update with the external helper, then relaunch NaniteClip.",
-            ),
-        ]
+    available_release_rows.push(
+        row![with_tooltip(
+            styled_button("Check for Updates", ButtonTone::Secondary)
+                .on_press(Message::CheckForUpdates)
+                .into(),
+            "Query the latest GitHub Release for the selected channel.",
+        ),]
         .spacing(8)
         .into(),
-        row![
-            with_tooltip(
-                {
-                    let button = styled_button("Install When Idle", ButtonTone::Secondary);
-                    if app.update_state.has_downloaded_update()
-                        && !matches!(app.update_state.phase, UpdatePhase::Applying)
-                    {
-                        button
-                            .on_press(Message::InstallDownloadedUpdateWhenIdle)
-                            .into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Keep the update staged and apply it automatically after monitoring stops.",
-            ),
-            with_tooltip(
-                {
-                    let button = styled_button("Install on Next Launch", ButtonTone::Secondary);
-                    if app.update_state.has_downloaded_update() {
-                        button
-                            .on_press(Message::InstallDownloadedUpdateOnNextLaunch)
-                            .into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Keep the update staged and prompt you again on the next app launch.",
-            ),
-        ]
-        .spacing(8)
-        .into(),
-        row![
-            with_tooltip(
-                {
-                    let button = styled_button("Open Release Notes", ButtonTone::Secondary);
-                    if app.update_state.latest_release.is_some()
-                        || app.update_state.prepared_update.is_some()
-                    {
-                        button.on_press(Message::OpenUpdateReleaseNotes).into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Open the GitHub release page for the latest detected version.",
-            ),
-            with_tooltip(
-                {
-                    let button = styled_button("Remind Me Later", ButtonTone::Secondary);
-                    if app.update_state.latest_release.is_some() {
-                        button.on_press(Message::RemindUpdateLater).into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Hide automatic update reminders for the next 12 hours.",
-            ),
-            with_tooltip(
-                {
-                    let button = styled_button("Skip This Version", ButtonTone::Danger);
-                    if app.update_state.latest_release.is_some() {
-                        button.on_press(Message::SkipAvailableUpdate).into()
-                    } else {
-                        button.into()
-                    }
-                },
-                "Suppress automatic reminders for the currently detected release.",
-            ),
-        ]
-        .spacing(8)
-        .into(),
-    ]);
+    );
+    if app.update_state.latest_release.is_some() || app.update_state.prepared_update.is_some() {
+        available_release_rows.push(
+            text(format!(
+                "Selected action: {}",
+                super::super::selected_update_action(app).description()
+            ))
+            .size(12)
+            .into(),
+        );
+        available_release_rows.push(update_action_controls(app));
+    }
 
     panel("Application Updates")
         .push(settings_section_block(
@@ -2145,6 +2143,69 @@ fn update_panel(app: &App) -> Element<'_, Message> {
             "Available Release",
             "Check, download, and apply updates for this installation.",
             available_release_rows,
+        ))
+        .push(settings_section_block(
+            "Rollback",
+            "Rollback to the previous installed version or choose a specific older GitHub Release.",
+            vec![
+                text(previous_installed_summary).size(12).into(),
+                text(selected_rollback_summary).size(12).into(),
+                text(rollback_catalog_summary).size(12).into(),
+                settings_pick_list_field(
+                    "Rollback Target",
+                    "Choose a specific older release to download and install for this channel.",
+                    app.update_state.rollback_candidates.as_slice(),
+                    app.settings_selected_rollback_release.clone(),
+                    Message::RollbackReleaseSelected,
+                ),
+                row![
+                    with_tooltip(
+                        styled_button("Refresh Versions", ButtonTone::Secondary)
+                            .on_press(Message::RefreshRollbackCatalog)
+                            .into(),
+                        "Load older signed releases and their matching assets for this install channel.",
+                    ),
+                    with_tooltip(
+                        {
+                            let button = styled_button(
+                                "Rollback to Previous",
+                                ButtonTone::Warning,
+                            );
+                            if app.update_state.previous_installed_version.is_some() {
+                                button
+                                    .on_press(Message::RollbackToPreviousInstalledVersion)
+                                    .into()
+                            } else {
+                                button.into()
+                            }
+                        },
+                        "Download the last installed version and stage it as a rollback target.",
+                    ),
+                    with_tooltip(
+                        {
+                            let button = styled_button(
+                                "Download Selected Version",
+                                ButtonTone::Warning,
+                            );
+                            if app.settings_selected_rollback_release.is_some()
+                                && !matches!(
+                                    app.update_state.phase,
+                                    UpdatePhase::Downloading
+                                        | UpdatePhase::Verifying
+                                        | UpdatePhase::Applying
+                                )
+                            {
+                                button.on_press(Message::DownloadSelectedRollbackVersion).into()
+                            } else {
+                                button.into()
+                            }
+                        },
+                        "Download the selected older release and stage it for rollback.",
+                    ),
+                ]
+                .spacing(8)
+                .into(),
+            ],
         ))
         .build()
         .into()

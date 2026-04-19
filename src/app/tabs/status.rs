@@ -1,7 +1,7 @@
 use iced::{Background, Element, Length};
 
 use crate::background_jobs::{BackgroundJobRecord, BackgroundJobState};
-use crate::ui::app::{Column, column, container, row, scrollable, text};
+use crate::ui::app::{Column, column, container, pick_list, row, scrollable, text};
 use crate::ui::layout::card::card;
 use crate::ui::layout::empty_state::empty_state;
 use crate::ui::layout::page_header::page_header;
@@ -10,7 +10,7 @@ use crate::ui::layout::toolbar::toolbar;
 use crate::ui::overlay::banner::banner;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::theme::{self, Tokens};
-use crate::update::UpdatePhase;
+use crate::update::{UpdatePhase, UpdatePrimaryAction};
 
 use super::super::shared::{ButtonTone, styled_button, with_tooltip};
 use super::super::{App, AppState, Message};
@@ -22,6 +22,59 @@ const JOB_TABLE_CLIPS_WIDTH: f32 = 88.0;
 const JOB_TABLE_UPDATED_WIDTH: f32 = 172.0;
 const JOB_TABLE_ACTIONS_WIDTH: f32 = 180.0;
 const JOB_TABLE_HEIGHT: f32 = 260.0;
+
+fn update_action_tone(action: UpdatePrimaryAction) -> ButtonTone {
+    match action {
+        UpdatePrimaryAction::DownloadUpdate => ButtonTone::Primary,
+        UpdatePrimaryAction::InstallAndRestart => ButtonTone::Success,
+        UpdatePrimaryAction::InstallWhenIdle
+        | UpdatePrimaryAction::InstallOnNextLaunch
+        | UpdatePrimaryAction::RemindLater => ButtonTone::Secondary,
+        UpdatePrimaryAction::SkipThisVersion => ButtonTone::Danger,
+    }
+}
+
+fn update_action_controls(app: &App) -> Element<'_, Message> {
+    let selected_action = super::super::selected_update_action(app);
+
+    row![
+        with_tooltip(
+            {
+                let button =
+                    styled_button(selected_action.label(), update_action_tone(selected_action));
+                if super::super::can_run_selected_update_action(app) {
+                    button.on_press(Message::RunSelectedUpdateAction).into()
+                } else {
+                    button.into()
+                }
+            },
+            selected_action.description(),
+        ),
+        pick_list(
+            super::super::update_action_options(app),
+            Some(selected_action),
+            Message::UpdatePrimaryActionSelected,
+        )
+        .width(220),
+        with_tooltip(
+            {
+                let button = styled_button("Release Notes", ButtonTone::Secondary);
+                if app.update_state.latest_release.is_some()
+                    || app.update_state.prepared_update.is_some()
+                    || app.settings_selected_rollback_release.is_some()
+                {
+                    button.on_press(Message::OpenUpdateReleaseNotes).into()
+                } else {
+                    button.into()
+                }
+            },
+            "Open the GitHub release page for the active update target.",
+        ),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let (state_text, state_tone) = match &app.state {
@@ -160,84 +213,56 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    if let Some(release) = &app.update_state.latest_release {
+    if let Some(previous_version) = &app.update_state.previous_installed_version {
+        system_panel = system_panel.push(
+            row![
+                status_badge(
+                    format!("Previous install {previous_version}"),
+                    BadgeTone::Outline
+                ),
+                with_tooltip(
+                    styled_button("Rollback Previous", ButtonTone::Warning)
+                        .on_press(Message::RollbackToPreviousInstalledVersion)
+                        .into(),
+                    "Download the last installed version and stage it as a rollback target.",
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
+    }
+
+    if let Some(prepared) = &app.update_state.prepared_update {
+        let prepared_version = prepared
+            .parsed_version()
+            .unwrap_or_else(|| app.update_state.current_version.clone());
+        let staged_title = if prepared_version < app.update_state.current_version {
+            format!("Rollback {} is staged", prepared.version)
+        } else {
+            format!("Update {} is staged", prepared.version)
+        };
+        system_panel = system_panel.push(
+            banner(staged_title)
+                .warning()
+                .description(format!(
+                    "The downloaded {} is ready. Install behavior: {}.",
+                    prepared.asset_kind.label(),
+                    app.config.updates.install_behavior.label()
+                ))
+                .build(),
+        );
+        system_panel = system_panel.push(
+            text(format!(
+                "Selected action: {}",
+                super::super::selected_update_action(app).description()
+            ))
+            .size(12),
+        );
+        system_panel = system_panel.push(update_action_controls(app));
+    } else if let Some(release) = &app.update_state.latest_release {
         let next_check_label = super::super::next_automatic_update_check_at(app)
             .map(|next_check| format!("Next check {}", super::clips::format_timestamp(next_check)))
             .unwrap_or_else(|| "Automatic checks off".into());
-        let mut actions_top = row![
-            with_tooltip(
-                styled_button("Release Notes", ButtonTone::Secondary)
-                    .on_press(Message::OpenUpdateReleaseNotes)
-                    .into(),
-                "Open the GitHub release page for the latest detected version.",
-            ),
-            with_tooltip(
-                styled_button("Remind Later", ButtonTone::Secondary)
-                    .on_press(Message::RemindUpdateLater)
-                    .into(),
-                "Hide automatic update reminders for the next 12 hours.",
-            ),
-            with_tooltip(
-                styled_button("Skip", ButtonTone::Danger)
-                    .on_press(Message::SkipAvailableUpdate)
-                    .into(),
-                "Suppress automatic reminders for this release.",
-            ),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-        let mut actions_bottom = row![].spacing(8).align_y(iced::Alignment::Center);
-        let mut has_bottom_actions = false;
-
-        if release.supports_download() {
-            actions_top = actions_top.push(with_tooltip(
-                {
-                    let button = styled_button(
-                        if app.update_state.has_downloaded_update() {
-                            "Install and Restart"
-                        } else {
-                            "Download Update"
-                        },
-                        if app.update_state.has_downloaded_update() {
-                            ButtonTone::Success
-                        } else {
-                            ButtonTone::Primary
-                        },
-                    );
-                    if app.update_state.has_downloaded_update() {
-                        if matches!(app.update_state.phase, UpdatePhase::Applying) {
-                            button.into()
-                        } else {
-                            button.on_press(Message::ApplyDownloadedUpdate).into()
-                        }
-                    } else {
-                        button.on_press(Message::DownloadAvailableUpdate).into()
-                    }
-                },
-                if app.update_state.has_downloaded_update() {
-                    "Apply the downloaded update and relaunch NaniteClip."
-                } else {
-                    "Download the release asset for this installation."
-                },
-            ));
-        }
-
-        if app.update_state.has_downloaded_update() {
-            has_bottom_actions = true;
-            actions_bottom = actions_bottom
-                .push(with_tooltip(
-                    styled_button("Install When Idle", ButtonTone::Secondary)
-                        .on_press(Message::InstallDownloadedUpdateWhenIdle)
-                        .into(),
-                    "Keep the update staged and apply it automatically when monitoring stops.",
-                ))
-                .push(with_tooltip(
-                    styled_button("Install on Next Launch", ButtonTone::Secondary)
-                        .on_press(Message::InstallDownloadedUpdateOnNextLaunch)
-                        .into(),
-                    "Keep the update staged and prompt you again on the next launch.",
-                ));
-        }
 
         let phase_description = match app.update_state.phase {
             UpdatePhase::Checking
@@ -279,54 +304,14 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 .description(phase_description)
                 .build(),
         );
-        system_panel = system_panel.push(actions_top);
-        if has_bottom_actions {
-            system_panel = system_panel.push(actions_bottom);
-        }
-    } else if let Some(prepared) = &app.update_state.prepared_update {
-        let mut actions = row![
-            with_tooltip(
-                styled_button("Install and Restart", ButtonTone::Success)
-                    .on_press(Message::ApplyDownloadedUpdate)
-                    .into(),
-                "Apply the downloaded update and relaunch NaniteClip.",
-            ),
-            with_tooltip(
-                styled_button("Install When Idle", ButtonTone::Secondary)
-                    .on_press(Message::InstallDownloadedUpdateWhenIdle)
-                    .into(),
-                "Keep the update staged and apply it automatically when monitoring stops.",
-            ),
-            with_tooltip(
-                styled_button("Install on Next Launch", ButtonTone::Secondary)
-                    .on_press(Message::InstallDownloadedUpdateOnNextLaunch)
-                    .into(),
-                "Keep the update staged and prompt you again on the next launch.",
-            ),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-
-        if !prepared.release_notes_url.trim().is_empty() {
-            actions = actions.push(with_tooltip(
-                styled_button("Release Notes", ButtonTone::Secondary)
-                    .on_press(Message::OpenUpdateReleaseNotes)
-                    .into(),
-                "Open the GitHub release page for this staged update.",
-            ));
-        }
-
         system_panel = system_panel.push(
-            banner(format!("Update {} is staged", prepared.version))
-                .warning()
-                .description(format!(
-                    "The downloaded {} is ready to install. Install behavior: {}.",
-                    prepared.asset_kind.label(),
-                    app.config.updates.install_behavior.label()
-                ))
-                .build(),
+            text(format!(
+                "Selected action: {}",
+                super::super::selected_update_action(app).description()
+            ))
+            .size(12),
         );
-        system_panel = system_panel.push(actions);
+        system_panel = system_panel.push(update_action_controls(app));
     } else if let Some(error) = &app.update_state.last_error {
         system_panel = system_panel.push(
             banner("Update check failed")
