@@ -3,8 +3,8 @@
 use iced::Element;
 
 use crate::ui::app::{
-    ButtonVariant, NaniteButton, TooltipPosition, button, button_with, fa_icon_solid, pick_list,
-    row, text, text_input, tooltip,
+    ButtonVariant, NaniteButton, TooltipPosition, button, button_with, column, fa_icon_solid,
+    pick_list, row, text, text_input, tooltip,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +75,10 @@ pub(super) fn field_label<'a, M: 'a>(
     description: &'a str,
     width: f32,
 ) -> Element<'a, M> {
-    with_tooltip(text(label).size(14).width(width).into(), description)
+    column![text(label).size(14), text(description).size(12),]
+        .spacing(2)
+        .width(width)
+        .into()
 }
 
 pub(super) fn settings_text_field<'a, M: Clone + 'a>(

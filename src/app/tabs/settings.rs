@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use chrono::Utc;
 use iced::Element;
 use iced::Length;
+use iced::Padding;
 
 use super::super::shared::{
     ButtonTone, field_label, settings_pick_list_field, settings_stepper_field, settings_text_field,
     settings_text_field_with_button, styled_button, with_tooltip,
 };
-use super::super::{App, AudioSourceDraft, Message as AppMessage};
+use super::super::{App, AudioSourceDraft, Message as AppMessage, audio_source_drafts_from_config};
 use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
 use crate::config::{
     AudioSourceConfig, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
@@ -16,7 +17,7 @@ use crate::config::{
 };
 use crate::secure_store::SecretKey;
 use crate::ui::app::{
-    checkbox, column, container, mouse_area, pick_list, rounded_box, row, scrollable, text,
+    checkbox, column, container, mouse_area, pick_list, rounded_box, row, scrollable, stack, text,
     text_input,
 };
 use crate::ui::layout::card::card;
@@ -24,6 +25,7 @@ use crate::ui::layout::empty_state::empty_state;
 use crate::ui::layout::page_header::page_header;
 use crate::ui::layout::panel::panel;
 use crate::ui::layout::section::section;
+use crate::ui::layout::sidebar::{SidebarItem, sidebar};
 use crate::ui::layout::toolbar::toolbar;
 use crate::ui::overlay::banner::banner;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
@@ -42,8 +44,19 @@ impl std::fmt::Display for AvailableAudioSourceOption {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsSubView {
+    #[default]
+    General,
+    CaptureAudio,
+    Clips,
+    Delivery,
+    System,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
+    SetSubView(SettingsSubView),
     ServiceIdChanged(String),
     CaptureBackendSelected(CaptureBackendPreset),
     LaunchAtLoginToggled(bool),
@@ -127,11 +140,16 @@ pub enum Message {
     DownloadSelectedRollbackVersion,
     RollbackToPreviousInstalledVersion,
     ViewUpdateDetails,
+    RevertDraft,
     Save,
 }
 
 pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppMessage> {
     match message {
+        Message::SetSubView(sub_view) => {
+            app.settings_sub_view = sub_view;
+            iced::Task::none()
+        }
         Message::ServiceIdChanged(value) => {
             app.settings_service_id = value;
             iced::Task::none()
@@ -706,6 +724,13 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::done(AppMessage::RollbackToPreviousInstalledVersion)
         }
         Message::ViewUpdateDetails => iced::Task::done(AppMessage::ShowUpdateDetails),
+        Message::RevertDraft => {
+            apply_settings_draft_from_config(app);
+            iced::Task::batch([
+                refresh_audio_sources(app),
+                iced::Task::done(AppMessage::RefreshRollbackCatalog),
+            ])
+        }
         Message::Save => {
             app.settings_hotkey_capture_active = false;
             if let Err(error) =
@@ -925,12 +950,6 @@ pub(in crate::app) fn refresh_audio_sources(app: &mut App) -> iced::Task<AppMess
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let header = page_header("Settings")
         .subtitle("Capture, automation, delivery, and maintenance.")
-        .action(with_tooltip(
-            styled_button("Save Settings", ButtonTone::Primary)
-                .on_press(Message::Save)
-                .into(),
-            "Save settings to disk and refresh integrations.",
-        ))
         .build();
 
     let status_bar = toolbar()
@@ -988,28 +1007,285 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         ))
         .build();
 
-    let mut body = column![
-        settings_overview_cards(app),
-        runtime_panel(app),
-        capture_panel(app),
-    ]
-    .spacing(16);
-    if !obs_audio_is_backend_owned(app) {
-        body = body.push(audio_panel(app));
+    let mut detail_body = column![].spacing(12);
+    if let Some(feedback) = settings_feedback_banner(app) {
+        detail_body = detail_body.push(feedback);
     }
-    body = body
-        .push(clip_output_panel(app))
-        .push(delivery_panel(app))
-        .push(update_panel(app))
-        .push(maintenance_panel(app));
+    detail_body = detail_body.push(settings_detail_pane(app));
+
+    let sidebar_element: Element<'_, Message> = scrollable(settings_sidebar(app))
+        .height(Length::Fill)
+        .into();
+
+    let detail_base: Element<'_, Message> = container(detail_body)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
+    let detail_overlay: Element<'_, Message> = if settings_dirty(app) {
+        container(settings_draft_bar(app))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Bottom)
+            .padding([16, 20])
+            .into()
+    } else {
+        container(iced::widget::Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    };
+    let detail_element: Element<'_, Message> = container(stack![detail_base, detail_overlay])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
 
     column![
         header,
         status_bar,
-        scrollable(container(body).width(Length::Fill)).height(Length::Fill)
+        row![sidebar_element, detail_element]
+            .spacing(12)
+            .height(Length::Fill)
     ]
     .spacing(12)
+    .height(Length::Fill)
     .into()
+}
+
+fn settings_sidebar(app: &App) -> Element<'_, Message> {
+    let active = app.settings_sub_view;
+    let delivery_badge = {
+        let enabled = usize::from(app.settings_storage_tiering_enabled)
+            + usize::from(app.settings_copyparty_enabled)
+            + usize::from(app.settings_youtube_enabled)
+            + usize::from(app.settings_discord_enabled);
+        format!("{enabled} on")
+    };
+    let capture_badge = if selected_capture_backend(app) == CaptureBackendPreset::Obs {
+        format!("{} · OBS", selected_capture_backend(app))
+    } else {
+        format!("{} tracks", configured_audio_source_count(app))
+    };
+
+    sidebar(active, Message::SetSubView)
+        .width(240.0)
+        .header(
+            column![
+                text("Settings Areas").size(13),
+                text("Pick a section to edit on the right.").size(12),
+            ]
+            .spacing(4),
+        )
+        .push(SidebarItem::new(SettingsSubView::General, "General").badge("Runtime"))
+        .push(
+            SidebarItem::new(SettingsSubView::CaptureAudio, "Capture & Audio").badge(capture_badge),
+        )
+        .push(SidebarItem::new(SettingsSubView::Clips, "Clips").badge(
+            if app.settings_manual_clip_enabled {
+                "Hotkey on"
+            } else {
+                "Manual only"
+            },
+        ))
+        .push(SidebarItem::new(SettingsSubView::Delivery, "Delivery").badge(delivery_badge))
+        .push(
+            SidebarItem::new(SettingsSubView::System, "System")
+                .badge(format!("Updates: {}", app.settings_update_channel)),
+        )
+        .build()
+        .into()
+}
+
+fn settings_detail_pane(app: &App) -> Element<'_, Message> {
+    let bottom_padding = if settings_dirty(app) { 108.0 } else { 0.0 };
+    let mut body = match app.settings_sub_view {
+        SettingsSubView::General => column![settings_overview_cards(app), runtime_panel(app)],
+        SettingsSubView::CaptureAudio => {
+            let mut body = column![capture_panel(app)].spacing(16);
+            if !obs_audio_is_backend_owned(app) {
+                body = body.push(audio_panel(app));
+            }
+            body
+        }
+        SettingsSubView::Clips => column![clip_output_panel(app)],
+        SettingsSubView::Delivery => column![delivery_panel(app)],
+        SettingsSubView::System => column![update_panel(app), maintenance_panel(app)],
+    }
+    .spacing(16);
+
+    if matches!(app.settings_sub_view, SettingsSubView::General) {
+        body = body.push(
+            card()
+                .title("How Settings Work")
+                .description("Save persists draft changes. Revert resets this draft to the last saved configuration.")
+                .width(Length::Fill)
+                .build(),
+        );
+    }
+
+    scrollable(container(body).width(Length::Fill).padding(Padding {
+        top: 0.0,
+        right: 0.0,
+        bottom: bottom_padding,
+        left: 0.0,
+    }))
+    .height(Length::Fill)
+    .into()
+}
+
+fn settings_draft_bar(_app: &App) -> Element<'_, Message> {
+    let revert_button: Element<'_, Message> = styled_button("Revert", ButtonTone::Secondary)
+        .on_press(Message::RevertDraft)
+        .into();
+    let save_button: Element<'_, Message> = styled_button("Save Settings", ButtonTone::Primary)
+        .on_press(Message::Save)
+        .into();
+
+    container(
+        row![
+            column![
+                text("Unsaved changes").size(14),
+                text(
+                    "Save to persist config changes and refresh integrations, or revert this draft."
+                )
+                .size(12)
+                .width(360),
+            ]
+            .spacing(4)
+            .width(Length::Shrink),
+            revert_button,
+            with_tooltip(
+                save_button,
+                "Save settings to disk and refresh integrations.",
+            ),
+        ]
+        .spacing(12)
+        .align_y(iced::Alignment::Center),
+    )
+    .width(Length::Shrink)
+    .padding([12, 14])
+    .style(rounded_box)
+    .into()
+}
+
+fn settings_feedback_banner(app: &App) -> Option<Element<'_, Message>> {
+    app.settings_feedback.as_ref().map(|feedback| {
+        banner("Settings status")
+            .info()
+            .description(feedback.clone())
+            .build()
+            .into()
+    })
+}
+
+fn settings_dirty(app: &App) -> bool {
+    app.settings_launch_at_login != app.config.launch_at_login.enabled
+        || app.settings_auto_start_monitoring != app.config.auto_start_monitoring
+        || app.settings_start_minimized != app.config.start_minimized
+        || app.settings_minimize_to_tray != app.config.minimize_to_tray
+        || app.settings_update_auto_check != app.config.updates.auto_check
+        || app.settings_update_channel != app.config.updates.channel
+        || app.settings_update_install_behavior != app.config.updates.install_behavior
+        || app.settings_service_id != app.config.service_id
+        || app.settings_capture_backend != app.config.capture.backend
+        || app.settings_capture_source != app.config.recorder.gsr().capture_source
+        || app.settings_save_dir != app.config.recorder.save_directory.to_string_lossy()
+        || app.settings_framerate != app.config.recorder.gsr().framerate.to_string()
+        || app.settings_codec != app.config.recorder.gsr().codec
+        || app.settings_quality != app.config.recorder.gsr().quality
+        || app.settings_audio_sources
+            != audio_source_drafts_from_config(&app.config.recorder.audio_sources)
+        || app.settings_container != app.config.recorder.gsr().container
+        || app.settings_obs_websocket_url != app.config.recorder.obs().websocket_url
+        || app.settings_obs_management_mode != app.config.recorder.obs().management_mode
+        || !app.settings_obs_password_input.trim().is_empty()
+        || app.settings_buffer_secs != app.config.recorder.replay_buffer_secs.to_string()
+        || app.settings_save_delay_secs != app.config.recorder.save_delay_secs.to_string()
+        || app.settings_clip_saved_notifications != app.config.recorder.clip_saved_notifications
+        || app.settings_clip_naming_template != app.config.clip_naming_template
+        || app.settings_manual_clip_enabled != app.config.manual_clip.enabled
+        || app.settings_manual_clip_hotkey != app.config.manual_clip.hotkey
+        || app.settings_manual_clip_duration_secs
+            != app.config.manual_clip.duration_secs.to_string()
+        || app.settings_storage_tiering_enabled != app.config.storage_tiering.enabled
+        || app.settings_storage_tier_directory
+            != app.config.storage_tiering.tier_directory.to_string_lossy()
+        || app.settings_storage_min_age_days != app.config.storage_tiering.min_age_days.to_string()
+        || app.settings_storage_max_score != app.config.storage_tiering.max_score.to_string()
+        || app.settings_copyparty_enabled != app.config.uploads.copyparty.enabled
+        || app.settings_copyparty_upload_url != app.config.uploads.copyparty.upload_url
+        || app.settings_copyparty_public_base_url != app.config.uploads.copyparty.public_base_url
+        || app.settings_copyparty_username != app.config.uploads.copyparty.username
+        || !app.settings_copyparty_password_input.trim().is_empty()
+        || app.settings_youtube_enabled != app.config.uploads.youtube.enabled
+        || app.settings_youtube_client_id != app.config.uploads.youtube.client_id
+        || !app.settings_youtube_client_secret_input.trim().is_empty()
+        || app.settings_youtube_privacy_status != app.config.uploads.youtube.privacy_status
+        || app.settings_discord_enabled != app.config.discord_webhook.enabled
+        || app.settings_discord_min_score != app.config.discord_webhook.min_score.to_string()
+        || app.settings_discord_include_thumbnail != app.config.discord_webhook.include_thumbnail
+        || !app.settings_discord_webhook_input.trim().is_empty()
+}
+
+fn apply_settings_draft_from_config(app: &mut App) {
+    app.settings_launch_at_login = app.config.launch_at_login.enabled;
+    app.settings_auto_start_monitoring = app.config.auto_start_monitoring;
+    app.settings_start_minimized = app.config.start_minimized;
+    app.settings_minimize_to_tray = app.config.minimize_to_tray;
+    app.settings_update_auto_check = app.config.updates.auto_check;
+    app.settings_update_channel = app.config.updates.channel;
+    app.settings_update_install_behavior = app.config.updates.install_behavior;
+    app.settings_selected_update_action = UpdatePrimaryAction::DownloadUpdate;
+    app.settings_selected_rollback_release = None;
+    app.settings_service_id = app.config.service_id.clone();
+    app.settings_capture_backend = app.config.capture.backend.clone();
+    app.settings_capture_source = app.config.recorder.gsr().capture_source.clone();
+    app.settings_save_dir = app.config.recorder.save_directory.to_string_lossy().into();
+    app.settings_framerate = app.config.recorder.gsr().framerate.to_string();
+    app.settings_codec = app.config.recorder.gsr().codec.clone();
+    app.settings_quality = app.config.recorder.gsr().quality.clone();
+    app.settings_audio_sources =
+        audio_source_drafts_from_config(&app.config.recorder.audio_sources);
+    app.settings_selected_device_audio_source = None;
+    app.settings_selected_application_audio_source = None;
+    app.settings_audio_discovery_error = None;
+    app.settings_container = app.config.recorder.gsr().container.clone();
+    app.settings_obs_websocket_url = app.config.recorder.obs().websocket_url.clone();
+    app.settings_obs_password_input.clear();
+    app.settings_obs_management_mode = app.config.recorder.obs().management_mode;
+    app.settings_buffer_secs = app.config.recorder.replay_buffer_secs.to_string();
+    app.settings_save_delay_secs = app.config.recorder.save_delay_secs.to_string();
+    app.settings_clip_saved_notifications = app.config.recorder.clip_saved_notifications;
+    app.settings_clip_naming_template = app.config.clip_naming_template.clone();
+    app.settings_manual_clip_enabled = app.config.manual_clip.enabled;
+    app.settings_manual_clip_hotkey = app.config.manual_clip.hotkey.clone();
+    app.settings_hotkey_capture_active = false;
+    app.settings_manual_clip_duration_secs = app.config.manual_clip.duration_secs.to_string();
+    app.settings_storage_tiering_enabled = app.config.storage_tiering.enabled;
+    app.settings_storage_tier_directory = app
+        .config
+        .storage_tiering
+        .tier_directory
+        .to_string_lossy()
+        .into();
+    app.settings_storage_min_age_days = app.config.storage_tiering.min_age_days.to_string();
+    app.settings_storage_max_score = app.config.storage_tiering.max_score.to_string();
+    app.settings_copyparty_enabled = app.config.uploads.copyparty.enabled;
+    app.settings_copyparty_upload_url = app.config.uploads.copyparty.upload_url.clone();
+    app.settings_copyparty_public_base_url = app.config.uploads.copyparty.public_base_url.clone();
+    app.settings_copyparty_username = app.config.uploads.copyparty.username.clone();
+    app.settings_copyparty_password_input.clear();
+    app.settings_youtube_enabled = app.config.uploads.youtube.enabled;
+    app.settings_youtube_client_id = app.config.uploads.youtube.client_id.clone();
+    app.settings_youtube_client_secret_input.clear();
+    app.settings_youtube_oauth_in_flight = false;
+    app.settings_youtube_privacy_status = app.config.uploads.youtube.privacy_status;
+    app.settings_discord_enabled = app.config.discord_webhook.enabled;
+    app.settings_discord_min_score = app.config.discord_webhook.min_score.to_string();
+    app.settings_discord_include_thumbnail = app.config.discord_webhook.include_thumbnail;
+    app.settings_discord_webhook_input.clear();
+    sync_selected_audio_sources(app);
+    app.set_settings_feedback_silent("Reverted unsaved settings changes.", true);
 }
 
 fn settings_overview_cards(app: &App) -> Element<'_, Message> {
@@ -1651,249 +1927,297 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
             "Allow per-clip YouTube uploads from the Clips tab.",
             app.settings_youtube_enabled,
             Message::YouTubeEnabledToggled,
-        ))
-        .push(settings_text_field(
-            "YouTube OAuth Client ID",
-            "Google OAuth client ID (Desktop App client recommended).",
-            &app.settings_youtube_client_id,
-            Message::YouTubeClientIdChanged,
-        ))
-        .push(settings_text_field(
-            if app.settings_youtube_client_secret_present {
-                "YouTube OAuth Client Secret (stored)"
-            } else {
-                "YouTube OAuth Client Secret"
-            },
-            "Required for confidential OAuth clients. Paste to replace.",
-            &app.settings_youtube_client_secret_input,
-            Message::YouTubeClientSecretChanged,
         ));
 
-    if !app.settings_youtube_client_secret_present
-        && app.settings_youtube_client_secret_input.trim().is_empty()
-    {
-        youtube_section = youtube_section.push(
-            banner("Client secret required for some OAuth clients")
-                .warning()
-                .description("Web application OAuth clients won't connect until you enter the matching secret.")
-                .build(),
-        );
-    }
+    if app.settings_youtube_enabled {
+        youtube_section = youtube_section
+            .push(settings_text_field(
+                "YouTube OAuth Client ID",
+                "Google OAuth client ID (Desktop App client recommended).",
+                &app.settings_youtube_client_id,
+                Message::YouTubeClientIdChanged,
+            ))
+            .push(settings_text_field(
+                if app.settings_youtube_client_secret_present {
+                    "YouTube OAuth Client Secret (stored)"
+                } else {
+                    "YouTube OAuth Client Secret"
+                },
+                "Required for confidential OAuth clients. Paste to replace.",
+                &app.settings_youtube_client_secret_input,
+                Message::YouTubeClientSecretChanged,
+            ));
 
-    youtube_section = youtube_section
-        .push(settings_pick_list_field(
-            "YouTube Privacy",
-            "Privacy status applied to future YouTube uploads.",
-            &[
-                YouTubePrivacyStatus::Public,
-                YouTubePrivacyStatus::Unlisted,
-                YouTubePrivacyStatus::Private,
-            ][..],
-            Some(app.settings_youtube_privacy_status),
-            Message::YouTubePrivacyStatusSelected,
-        ))
-        .push(
-            row![
-                settings_status_badge(
-                    if app.settings_youtube_refresh_token_present {
-                        "Account connected"
-                    } else {
-                        "No account connected"
-                    },
-                    if app.settings_youtube_refresh_token_present {
-                        BadgeTone::Success
-                    } else {
-                        BadgeTone::Neutral
-                    },
-                ),
-                with_tooltip(
-                    {
-                        let button = styled_button("Connect YouTube", ButtonTone::Secondary);
-                        if app.settings_youtube_oauth_in_flight {
-                            button.into()
+        if !app.settings_youtube_client_secret_present
+            && app.settings_youtube_client_secret_input.trim().is_empty()
+        {
+            youtube_section = youtube_section.push(
+                banner("Client secret required for some OAuth clients")
+                    .warning()
+                    .description("Web application OAuth clients won't connect until you enter the matching secret.")
+                    .build(),
+            );
+        }
+
+        youtube_section = youtube_section
+            .push(settings_pick_list_field(
+                "YouTube Privacy",
+                "Privacy status applied to future YouTube uploads.",
+                &[
+                    YouTubePrivacyStatus::Public,
+                    YouTubePrivacyStatus::Unlisted,
+                    YouTubePrivacyStatus::Private,
+                ][..],
+                Some(app.settings_youtube_privacy_status),
+                Message::YouTubePrivacyStatusSelected,
+            ))
+            .push(
+                row![
+                    settings_status_badge(
+                        if app.settings_youtube_refresh_token_present {
+                            "Account connected"
                         } else {
-                            button.on_press(Message::ConnectYouTube).into()
-                        }
-                    },
-                    "Open the Google OAuth flow and store a refresh token.",
-                ),
-                with_tooltip(
-                    styled_button("Disconnect YouTube", ButtonTone::Danger)
-                        .on_press(Message::DisconnectYouTube)
-                        .into(),
-                    "Remove stored YouTube OAuth credentials.",
-                ),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        );
+                            "No account connected"
+                        },
+                        if app.settings_youtube_refresh_token_present {
+                            BadgeTone::Success
+                        } else {
+                            BadgeTone::Neutral
+                        },
+                    ),
+                    with_tooltip(
+                        {
+                            let button = styled_button("Connect YouTube", ButtonTone::Secondary);
+                            if app.settings_youtube_oauth_in_flight {
+                                button.into()
+                            } else {
+                                button.on_press(Message::ConnectYouTube).into()
+                            }
+                        },
+                        "Open the Google OAuth flow and store a refresh token.",
+                    ),
+                    with_tooltip(
+                        styled_button("Disconnect YouTube", ButtonTone::Danger)
+                            .on_press(Message::DisconnectYouTube)
+                            .into(),
+                        "Remove stored YouTube OAuth credentials.",
+                    ),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+    } else {
+        youtube_section = youtube_section
+            .push(text("Enable YouTube uploads to configure OAuth and upload defaults.").size(12));
+    }
 
     panel("Delivery & Storage")
         .push(settings_section_block(
             "Storage Tiering",
             "Move older, low-score clips to archive storage in the background.",
-            vec![
-                settings_toggle_row(
+            {
+                let mut rows = vec![settings_toggle_row(
                     "Enable Storage Tiering",
                     "Archive clips that exceed the age and score thresholds.",
                     app.settings_storage_tiering_enabled,
                     Message::StorageTieringEnabledToggled,
-                ),
-                settings_text_field_with_button(
-                    "Archive Directory",
-                    "Directory used for lower-cost clip storage.",
-                    &app.settings_storage_tier_directory,
-                    Message::StorageTierDirectoryChanged,
-                    with_tooltip(
-                        styled_button("Browse", ButtonTone::Secondary)
-                            .on_press(Message::PickStorageTierDirectory)
-                            .into(),
-                        "Open a folder picker for the archive directory.",
-                    ),
-                ),
-                settings_stepper_field(
-                    "Archive After",
-                    "Minimum clip age before archive is eligible.",
-                    current_storage_min_age_days(app),
-                    "days",
-                    Message::StorageMinAgeDaysStepped,
-                ),
-                settings_stepper_field(
-                    "Archive Score Ceiling",
-                    "Only clips at or below this score are archived.",
-                    current_storage_max_score(app),
-                    "pts",
-                    Message::StorageMaxScoreStepped,
-                ),
-                with_tooltip(
-                    styled_button("Run Tiering Sweep", ButtonTone::Secondary)
-                        .on_press(Message::RunStorageTieringSweep)
+                )];
+
+                if app.settings_storage_tiering_enabled {
+                    rows.extend([
+                        settings_text_field_with_button(
+                            "Archive Directory",
+                            "Directory used for lower-cost clip storage.",
+                            &app.settings_storage_tier_directory,
+                            Message::StorageTierDirectoryChanged,
+                            with_tooltip(
+                                styled_button("Browse", ButtonTone::Secondary)
+                                    .on_press(Message::PickStorageTierDirectory)
+                                    .into(),
+                                "Open a folder picker for the archive directory.",
+                            ),
+                        ),
+                        settings_stepper_field(
+                            "Archive After",
+                            "Minimum clip age before archive is eligible.",
+                            current_storage_min_age_days(app),
+                            "days",
+                            Message::StorageMinAgeDaysStepped,
+                        ),
+                        settings_stepper_field(
+                            "Archive Score Ceiling",
+                            "Only clips at or below this score are archived.",
+                            current_storage_max_score(app),
+                            "pts",
+                            Message::StorageMaxScoreStepped,
+                        ),
+                        with_tooltip(
+                            styled_button("Run Tiering Sweep", ButtonTone::Secondary)
+                                .on_press(Message::RunStorageTieringSweep)
+                                .into(),
+                            "Queue a sweep that archives all currently eligible clips.",
+                        ),
+                    ]);
+                } else {
+                    rows.push(
+                        text(
+                            "Enable storage tiering to configure archive location and thresholds.",
+                        )
+                        .size(12)
                         .into(),
-                    "Queue a sweep that archives all currently eligible clips.",
-                ),
-            ],
+                    );
+                }
+
+                rows
+            },
         ))
         .push(settings_section_block(
             "Copyparty",
             "Secrets are stored in the secure credential backend, not config.toml.",
-            vec![
-                settings_toggle_row(
+            {
+                let mut rows = vec![settings_toggle_row(
                     "Enable Copyparty Uploads",
                     "Allow per-clip Copyparty uploads from the Clips tab.",
                     app.settings_copyparty_enabled,
                     Message::CopypartyEnabledToggled,
-                ),
-                settings_text_field(
-                    "Copyparty Upload URL",
-                    "Upload URL, e.g. `https://clips.example.com/up/`.",
-                    &app.settings_copyparty_upload_url,
-                    Message::CopypartyUploadUrlChanged,
-                ),
-                settings_text_field(
-                    "Copyparty Public Base URL",
-                    "Optional public base URL when the server returns a relative path.",
-                    &app.settings_copyparty_public_base_url,
-                    Message::CopypartyPublicBaseUrlChanged,
-                ),
-                settings_text_field(
-                    "Copyparty Username",
-                    "Optional username for basic auth or `--usernames`.",
-                    &app.settings_copyparty_username,
-                    Message::CopypartyUsernameChanged,
-                ),
-                settings_text_field(
-                    if app.settings_copyparty_password_present {
-                        "Copyparty Password (stored)"
-                    } else {
-                        "Copyparty Password"
-                    },
-                    "Paste to replace the stored password. Blank keeps the current one.",
-                    &app.settings_copyparty_password_input,
-                    Message::CopypartyPasswordChanged,
-                ),
-                row![
-                    settings_status_badge(
-                        if app.settings_copyparty_password_present {
-                            "Password stored"
-                        } else {
-                            "No password stored"
-                        },
-                        if app.settings_copyparty_password_present {
-                            BadgeTone::Success
-                        } else {
-                            BadgeTone::Neutral
-                        },
-                    ),
-                    with_tooltip(
-                        styled_button("Clear Copyparty Password", ButtonTone::Danger)
-                            .on_press(Message::ClearCopypartyPassword)
+                )];
+
+                if app.settings_copyparty_enabled {
+                    rows.extend([
+                        settings_text_field(
+                            "Copyparty Upload URL",
+                            "Upload URL, e.g. `https://clips.example.com/up/`.",
+                            &app.settings_copyparty_upload_url,
+                            Message::CopypartyUploadUrlChanged,
+                        ),
+                        settings_text_field(
+                            "Copyparty Public Base URL",
+                            "Optional public base URL when the server returns a relative path.",
+                            &app.settings_copyparty_public_base_url,
+                            Message::CopypartyPublicBaseUrlChanged,
+                        ),
+                        settings_text_field(
+                            "Copyparty Username",
+                            "Optional username for basic auth or `--usernames`.",
+                            &app.settings_copyparty_username,
+                            Message::CopypartyUsernameChanged,
+                        ),
+                        settings_text_field(
+                            if app.settings_copyparty_password_present {
+                                "Copyparty Password (stored)"
+                            } else {
+                                "Copyparty Password"
+                            },
+                            "Paste to replace the stored password. Blank keeps the current one.",
+                            &app.settings_copyparty_password_input,
+                            Message::CopypartyPasswordChanged,
+                        ),
+                        row![
+                            settings_status_badge(
+                                if app.settings_copyparty_password_present {
+                                    "Password stored"
+                                } else {
+                                    "No password stored"
+                                },
+                                if app.settings_copyparty_password_present {
+                                    BadgeTone::Success
+                                } else {
+                                    BadgeTone::Neutral
+                                },
+                            ),
+                            with_tooltip(
+                                styled_button("Clear Copyparty Password", ButtonTone::Danger)
+                                    .on_press(Message::ClearCopypartyPassword)
+                                    .into(),
+                                "Remove the stored Copyparty credential.",
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ]);
+                } else {
+                    rows.push(
+                        text("Enable Copyparty uploads to configure URLs and credentials.")
+                            .size(12)
                             .into(),
-                        "Remove the stored Copyparty credential.",
-                    ),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center)
-                .into(),
-            ],
+                    );
+                }
+
+                rows
+            },
         ))
         .push(youtube_section)
         .push(settings_section_block(
             "Discord Webhook",
             "Webhook notifications for high-value clips after they save.",
-            vec![
-                settings_toggle_row(
+            {
+                let mut rows = vec![settings_toggle_row(
                     "Enable Discord Webhook",
                     "Post qualifying clips to a stored Discord webhook.",
                     app.settings_discord_enabled,
                     Message::DiscordWebhookEnabledToggled,
-                ),
-                settings_stepper_field(
-                    "Minimum Score",
-                    "Only clips at or above this score fire the webhook.",
-                    current_discord_min_score(app),
-                    "pts",
-                    Message::DiscordMinScoreStepped,
-                ),
-                settings_toggle_row(
-                    "Attach Thumbnail",
-                    "Extract a thumbnail with ffmpeg and attach it.",
-                    app.settings_discord_include_thumbnail,
-                    Message::DiscordIncludeThumbnailToggled,
-                ),
-                settings_text_field(
-                    if app.settings_discord_webhook_present {
-                        "Discord Webhook URL (stored)"
-                    } else {
-                        "Discord Webhook URL"
-                    },
-                    "Paste to store or replace. Blank keeps the current one.",
-                    &app.settings_discord_webhook_input,
-                    Message::DiscordWebhookUrlChanged,
-                ),
-                row![
-                    settings_status_badge(
-                        if app.settings_discord_webhook_present {
-                            "Webhook stored"
-                        } else {
-                            "No webhook stored"
-                        },
-                        if app.settings_discord_webhook_present {
-                            BadgeTone::Success
-                        } else {
-                            BadgeTone::Neutral
-                        },
-                    ),
-                    with_tooltip(
-                        styled_button("Clear Discord Webhook", ButtonTone::Danger)
-                            .on_press(Message::ClearDiscordWebhook)
+                )];
+
+                if app.settings_discord_enabled {
+                    rows.extend([
+                        settings_stepper_field(
+                            "Minimum Score",
+                            "Only clips at or above this score fire the webhook.",
+                            current_discord_min_score(app),
+                            "pts",
+                            Message::DiscordMinScoreStepped,
+                        ),
+                        settings_toggle_row(
+                            "Attach Thumbnail",
+                            "Extract a thumbnail with ffmpeg and attach it.",
+                            app.settings_discord_include_thumbnail,
+                            Message::DiscordIncludeThumbnailToggled,
+                        ),
+                        settings_text_field(
+                            if app.settings_discord_webhook_present {
+                                "Discord Webhook URL (stored)"
+                            } else {
+                                "Discord Webhook URL"
+                            },
+                            "Paste to store or replace. Blank keeps the current one.",
+                            &app.settings_discord_webhook_input,
+                            Message::DiscordWebhookUrlChanged,
+                        ),
+                        row![
+                            settings_status_badge(
+                                if app.settings_discord_webhook_present {
+                                    "Webhook stored"
+                                } else {
+                                    "No webhook stored"
+                                },
+                                if app.settings_discord_webhook_present {
+                                    BadgeTone::Success
+                                } else {
+                                    BadgeTone::Neutral
+                                },
+                            ),
+                            with_tooltip(
+                                styled_button("Clear Discord Webhook", ButtonTone::Danger)
+                                    .on_press(Message::ClearDiscordWebhook)
+                                    .into(),
+                                "Remove the stored webhook URL.",
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ]);
+                } else {
+                    rows.push(
+                        text("Enable the Discord webhook to configure thresholds and credentials.")
+                            .size(12)
                             .into(),
-                        "Remove the stored webhook URL.",
-                    ),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center)
-                .into(),
-            ],
+                    );
+                }
+
+                rows
+            },
         ))
         .build()
         .into()
