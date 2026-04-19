@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use iced::{Element, Length, Subscription, Task, Theme, event, window};
+use semver::Version;
 use tracing::{info, warn};
 
 use crate::background_jobs::{
@@ -509,6 +510,7 @@ pub enum Message {
     UpdatePrimaryActionSelected(UpdatePrimaryAction),
     RunSelectedUpdateAction,
     InstallDownloadedUpdateWhenIdle,
+    SystemUpdaterOpened(Result<(), String>),
     OpenUpdateReleaseNotes,
     UpdateReleaseNotesOpened(Result<(), String>),
     ShowUpdateDetails,
@@ -598,6 +600,7 @@ impl App {
         );
         let current_version = update::current_version();
         let current_version_label = current_version.to_string();
+        let original_updates = config.updates.clone();
         let startup_version_changed =
             config.updates.current_version.as_deref() != Some(current_version_label.as_str());
         let update_state = hydrate_update_state_from_config(
@@ -782,8 +785,10 @@ impl App {
         if let Some(notice) = initial_rules_feedback.as_ref() {
             app.push_feedback_toast("Rules", notice.clone(), false);
         }
-        if startup_version_changed && let Err(error) = app.config.save() {
-            tracing::warn!("Failed to persist the installed version history: {error}");
+        if (startup_version_changed || app.config.updates != original_updates)
+            && let Err(error) = app.config.save()
+        {
+            tracing::warn!("Failed to persist updater startup state: {error}");
         }
         app.recover_apply_result();
 
@@ -991,9 +996,33 @@ impl App {
             UpdatePrimaryAction::InstallOnNextLaunch => {
                 self.schedule_downloaded_update_on_next_launch()
             }
+            UpdatePrimaryAction::OpenSystemUpdater => self.open_system_updater(),
             UpdatePrimaryAction::RemindLater => self.remind_update_later(),
             UpdatePrimaryAction::SkipThisVersion => self.skip_available_update(),
         }
+    }
+
+    fn open_system_updater(&mut self) -> Task<Message> {
+        let Some(plan) = self.update_state.system_update_plan.clone() else {
+            self.set_status_feedback_silent(
+                "No system updater handoff is available for this install.",
+                false,
+            );
+            return Task::none();
+        };
+        let Some(program) = plan.command_program.clone() else {
+            self.set_status_feedback_silent(plan.command_display.unwrap_or(plan.detail), false);
+            return Task::none();
+        };
+        let args = plan.command_args.clone();
+        let command_display = plan
+            .command_display
+            .clone()
+            .unwrap_or_else(|| plan.label.clone());
+        Task::perform(
+            async move { crate::launcher::launch_command(&program, &args, &command_display) },
+            Message::SystemUpdaterOpened,
+        )
     }
 
     fn schedule_downloaded_update_when_idle(&mut self) -> Task<Message> {
@@ -1176,6 +1205,7 @@ impl App {
         };
         let install_channel = self.update_state.install_channel;
         let current_version = self.update_state.current_version.clone();
+        let install_id = self.config.updates.install_id.clone();
         let skipped_version = self.config.updates.skipped_version.clone();
         Task::perform(
             async move {
@@ -1183,6 +1213,7 @@ impl App {
                     channel,
                     install_channel,
                     &current_version,
+                    install_id.as_deref(),
                     skipped_version.as_deref(),
                 )
                 .await
@@ -1571,6 +1602,16 @@ impl App {
                         self.update_details_log_text = None;
                         self.update_details_log_error = Some(error);
                     }
+                }
+                Task::none()
+            }
+
+            Message::SystemUpdaterOpened(result) => {
+                if let Err(error) = result {
+                    self.set_status_feedback_silent(
+                        format!("Failed to launch the system updater: {error}"),
+                        false,
+                    );
                 }
                 Task::none()
             }
@@ -4641,7 +4682,14 @@ impl App {
             return Task::none();
         }
         if !release.supports_download() {
-            self.set_status_feedback_silent(release.install_channel.update_instructions(), false);
+            self.set_status_feedback_silent(
+                release_policy_summary(
+                    &release,
+                    &self.update_state.current_version,
+                    self.update_state.system_update_plan.as_ref(),
+                ),
+                false,
+            );
             return Task::none();
         }
         if self
@@ -6116,7 +6164,9 @@ fn hydrate_update_state_from_config(
     current_version: semver::Version,
 ) -> UpdateState {
     record_running_version(config, &current_version);
+    config.updates.ensure_install_id();
     let mut update_state = UpdateState::new(install_channel, current_version.clone());
+    update_state.system_update_plan = update::detect_system_update_plan(install_channel);
     update_state.last_checked_at = config.updates.last_check_utc;
     update_state.previous_installed_version = config
         .updates
@@ -6213,11 +6263,121 @@ fn next_automatic_update_check_at(app: &App) -> Option<DateTime<Utc>> {
         .map(|checked_at| checked_at + chrono::Duration::hours(12))
 }
 
+fn system_update_plan_summary(plan: &update::SystemUpdatePlan) -> String {
+    match &plan.command_display {
+        Some(command) => format!("{}: {} Command: `{command}`.", plan.label, plan.detail),
+        None => format!("{}: {}", plan.label, plan.detail),
+    }
+}
+
+fn release_banner_title(release: &update::AvailableRelease, current_version: &Version) -> String {
+    match release.policy.availability {
+        update::UpdateAvailability::DeferredByRollout => {
+            format!("Update {} is rolling out", release.version)
+        }
+        update::UpdateAvailability::RequiresManualUpgrade => {
+            format!("Update {} needs a newer base install", release.version)
+        }
+        update::UpdateAvailability::Available if release.policy.requires_attention() => {
+            format!(
+                "{} {} requires attention",
+                release_action_title(&release.version, current_version),
+                release.version
+            )
+        }
+        update::UpdateAvailability::Available => format!("Update {} is available", release.version),
+    }
+}
+
+fn release_policy_summary(
+    release: &update::AvailableRelease,
+    current_version: &Version,
+    system_update_plan: Option<&update::SystemUpdatePlan>,
+) -> String {
+    let mut parts = Vec::new();
+
+    match release.policy.availability {
+        update::UpdateAvailability::Available => {
+            if release.policy.requires_attention() {
+                parts.push(format!(
+                    "Current version {} requires attention before you keep using it.",
+                    current_version
+                ));
+            } else if release.supports_download() {
+                parts.push(format!(
+                    "{} {} is ready for this install.",
+                    release_action_title(&release.version, current_version),
+                    release.version
+                ));
+            }
+        }
+        update::UpdateAvailability::DeferredByRollout => {
+            parts.push(format!(
+                "{} is still in a staged rollout and this install is outside the active cohort.",
+                release.version
+            ));
+        }
+        update::UpdateAvailability::RequiresManualUpgrade => {
+            let minimum_version = release
+                .policy
+                .minimum_version
+                .as_deref()
+                .unwrap_or("a newer supported version");
+            parts.push(format!(
+                "{} requires at least NaniteClip {} before it can be offered to this install.",
+                release.version, minimum_version
+            ));
+        }
+    }
+
+    if release.policy.blocked_current_version {
+        parts.push(format!(
+            "Current version {} is blocked by this release manifest.",
+            current_version
+        ));
+    }
+    if release.policy.mandatory {
+        parts.push("This release is marked mandatory.".into());
+    }
+    if let Some(percentage) = release.policy.rollout_percentage {
+        parts.push(if release.policy.rollout_eligible {
+            format!("Rollout bucket: eligible within the current {percentage}% rollout.")
+        } else {
+            format!("Rollout bucket: outside the current {percentage}% rollout.")
+        });
+    }
+    if let Some(message) = release.policy.message.as_deref() {
+        parts.push(message.into());
+    }
+    if !release.install_channel.supports_self_update() {
+        if let Some(plan) = system_update_plan {
+            parts.push(system_update_plan_summary(plan));
+        } else {
+            parts.push(release.install_channel.update_instructions().into());
+        }
+    }
+
+    if parts.is_empty() {
+        release.install_channel.update_instructions().into()
+    } else {
+        parts.join(" ")
+    }
+}
+
 const DOWNLOADABLE_UPDATE_ACTIONS: [UpdatePrimaryAction; 3] = [
     UpdatePrimaryAction::DownloadUpdate,
     UpdatePrimaryAction::RemindLater,
     UpdatePrimaryAction::SkipThisVersion,
 ];
+const REQUIRED_DOWNLOADABLE_UPDATE_ACTIONS: [UpdatePrimaryAction; 1] =
+    [UpdatePrimaryAction::DownloadUpdate];
+const SYSTEM_UPDATE_ACTIONS: [UpdatePrimaryAction; 3] = [
+    UpdatePrimaryAction::OpenSystemUpdater,
+    UpdatePrimaryAction::RemindLater,
+    UpdatePrimaryAction::SkipThisVersion,
+];
+const REQUIRED_SYSTEM_UPDATE_ACTIONS: [UpdatePrimaryAction; 1] =
+    [UpdatePrimaryAction::OpenSystemUpdater];
 const NOTIFICATION_UPDATE_ACTIONS: [UpdatePrimaryAction; 2] = [
     UpdatePrimaryAction::RemindLater,
     UpdatePrimaryAction::SkipThisVersion,
@@ -6228,16 +6388,28 @@ const STAGED_UPDATE_ACTIONS: [UpdatePrimaryAction; 3] = [
     UpdatePrimaryAction::InstallOnNextLaunch,
 ];
 
+fn can_launch_system_updater(app: &App) -> bool {
+    app.update_state
+        .system_update_plan
+        .as_ref()
+        .is_some_and(|plan| plan.can_launch())
+}
+
 fn update_action_options(app: &App) -> &'static [UpdatePrimaryAction] {
     if app.update_state.prepared_update.is_some() {
         &STAGED_UPDATE_ACTIONS
-    } else if app
-        .update_state
-        .latest_release
-        .as_ref()
-        .is_some_and(|release| release.supports_download())
-    {
-        &DOWNLOADABLE_UPDATE_ACTIONS
+    } else if let Some(release) = app.update_state.latest_release.as_ref() {
+        if release.policy.requires_attention() && release.supports_download() {
+            &REQUIRED_DOWNLOADABLE_UPDATE_ACTIONS
+        } else if release.policy.requires_attention() && can_launch_system_updater(app) {
+            &REQUIRED_SYSTEM_UPDATE_ACTIONS
+        } else if release.supports_download() {
+            &DOWNLOADABLE_UPDATE_ACTIONS
+        } else if can_launch_system_updater(app) {
+            &SYSTEM_UPDATE_ACTIONS
+        } else {
+            &NOTIFICATION_UPDATE_ACTIONS
+        }
     } else {
         &NOTIFICATION_UPDATE_ACTIONS
     }
@@ -6257,6 +6429,8 @@ fn default_update_action(app: &App) -> UpdatePrimaryAction {
         .is_some_and(|release| release.supports_download())
     {
         UpdatePrimaryAction::DownloadUpdate
+    } else if can_launch_system_updater(app) {
+        UpdatePrimaryAction::OpenSystemUpdater
     } else {
         UpdatePrimaryAction::RemindLater
     }
@@ -6291,6 +6465,9 @@ fn can_run_selected_update_action(app: &App) -> bool {
                     app.update_state.phase,
                     UpdatePhase::Downloading | UpdatePhase::Verifying | UpdatePhase::Applying
                 )
+        }
+        UpdatePrimaryAction::OpenSystemUpdater => {
+            app.update_state.latest_release.is_some() && can_launch_system_updater(app)
         }
         UpdatePrimaryAction::RemindLater | UpdatePrimaryAction::SkipThisVersion => {
             app.update_state.latest_release.is_some()
@@ -6350,10 +6527,41 @@ fn update_details_modal(app: &App) -> Element<'_, Message> {
         .or_else(|| prepared.and_then(|prepared| prepared.published_at))
         .map(tabs::clips::format_timestamp)
         .unwrap_or_else(|| "Not reported".into());
-    let minimum_version = active_release
-        .and_then(|release| release.minimum_version.as_deref())
-        .or_else(|| prepared.and_then(|prepared| prepared.minimum_version.as_deref()))
+    let release_policy = active_release
+        .map(|release| &release.policy)
+        .or_else(|| prepared.map(|prepared| &prepared.policy));
+    let minimum_version = release_policy
+        .and_then(|policy| policy.minimum_version.as_deref())
         .unwrap_or("None");
+    let availability_summary = release_policy
+        .map(|policy| policy.availability.label())
+        .unwrap_or(update::UpdateAvailability::Available.label());
+    let rollout_summary = release_policy
+        .and_then(|policy| policy.rollout_percentage)
+        .map(|percentage| {
+            if release_policy.is_some_and(|policy| policy.rollout_eligible) {
+                format!("Rollout: eligible within the current {percentage}% rollout")
+            } else {
+                format!("Rollout: outside the current {percentage}% rollout")
+            }
+        })
+        .unwrap_or_else(|| "Rollout: not configured".into());
+    let policy_message = release_policy
+        .and_then(|policy| policy.message.as_deref())
+        .unwrap_or("No release policy message was provided.");
+    let policy_flags = release_policy
+        .map(|policy| {
+            format!(
+                "Mandatory: {} · Current version blocked: {}",
+                if policy.mandatory { "yes" } else { "no" },
+                if policy.blocked_current_version {
+                    "yes"
+                } else {
+                    "no"
+                }
+            )
+        })
+        .unwrap_or_else(|| "Mandatory: no · Current version blocked: no".into());
     let verifier_key_count = update::update_public_keys().len();
     let prepared_summary = prepared.map(|prepared| {
         format!(
@@ -6409,7 +6617,11 @@ fn update_details_modal(app: &App) -> Element<'_, Message> {
         ))
         .size(12),
         text(format!("Published: {published_summary}")).size(12),
+        text(format!("Availability: {availability_summary}")).size(12),
         text(format!("Minimum supported version: {minimum_version}")).size(12),
+        text(rollout_summary).size(12),
+        text(policy_flags).size(12),
+        text(format!("Release policy message: {policy_message}")).size(12),
         text(format!(
             "Manifest signature: {signing_algorithm} via key `{signing_key_id}` ({signing_key_label})"
         ))
@@ -6425,6 +6637,9 @@ fn update_details_modal(app: &App) -> Element<'_, Message> {
 
     if let Some(summary) = prepared_summary {
         details = details.push(text(summary).size(12));
+    }
+    if let Some(plan) = app.update_state.system_update_plan.as_ref() {
+        details = details.push(text(system_update_plan_summary(plan)).size(12));
     }
     if let Some(report) = &app.update_state.last_apply_report {
         details =
@@ -6869,8 +7084,35 @@ mod tests {
             release_name: Some(format!("NaniteClip {version}")),
             changelog_markdown: Some("## Highlights\n\n- Sample release".into()),
             published_at: None,
-            minimum_version: None,
             signature: update::types::UpdateSignatureInfo::default(),
+            policy: update::UpdateReleasePolicy::default(),
+        }
+    }
+
+    fn sample_available_release(
+        install_channel: update::InstallChannel,
+        policy: update::UpdateReleasePolicy,
+        with_asset: bool,
+    ) -> update::AvailableRelease {
+        update::AvailableRelease {
+            version: Version::parse("9.9.9").unwrap(),
+            tag_name: "v9.9.9".into(),
+            release_name: "NaniteClip 9.9.9".into(),
+            html_url: "https://example.invalid/releases/v9.9.9".into(),
+            changelog_markdown: "## Highlights".into(),
+            published_at: None,
+            signature: update::types::UpdateSignatureInfo::default(),
+            policy,
+            asset: with_asset.then_some(update::types::ManifestAsset {
+                channel: install_channel,
+                kind: update::types::UpdateAssetKind::Exe,
+                filename: "nanite-clip.exe".into(),
+                download_url: "https://example.invalid/nanite-clip.exe".into(),
+                sha256: "abc123".into(),
+                size: Some(42),
+            }),
+            install_channel,
+            skipped: false,
         }
     }
 
@@ -7036,6 +7278,38 @@ mod tests {
         let next_check = next_automatic_update_check_at(&app).unwrap();
 
         assert_eq!(next_check, last_check + chrono::Duration::hours(12));
+    }
+
+    #[test]
+    fn mandatory_package_managed_release_prefers_system_updater_action() {
+        let mut app = sample_app(Config::default());
+        app.state = AppState::Idle;
+        app.active_session = None;
+        app.update_state.latest_release = Some(sample_available_release(
+            update::InstallChannel::LinuxDeb,
+            update::UpdateReleasePolicy {
+                mandatory: true,
+                ..Default::default()
+            },
+            false,
+        ));
+        app.update_state.system_update_plan = Some(update::SystemUpdatePlan {
+            label: "PackageKit".into(),
+            detail: "Launch PackageKit.".into(),
+            command_display: Some("pkcon update".into()),
+            command_program: Some("pkcon".into()),
+            command_args: vec!["update".into()],
+        });
+
+        assert_eq!(
+            update_action_options(&app),
+            &[UpdatePrimaryAction::OpenSystemUpdater]
+        );
+        assert_eq!(
+            selected_update_action(&app),
+            UpdatePrimaryAction::OpenSystemUpdater
+        );
+        assert!(can_run_selected_update_action(&app));
     }
 
     #[test]

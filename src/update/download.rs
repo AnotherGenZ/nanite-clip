@@ -49,8 +49,8 @@ where
             release_name: Some(release.release_name.clone()),
             changelog_markdown: Some(release.changelog_markdown.clone()),
             published_at: release.published_at,
-            minimum_version: release.minimum_version.clone(),
             signature: release.signature.clone(),
+            policy: release.policy.clone(),
         });
     }
 
@@ -124,8 +124,8 @@ where
         release_name: Some(release.release_name.clone()),
         changelog_markdown: Some(release.changelog_markdown.clone()),
         published_at: release.published_at,
-        minimum_version: release.minimum_version.clone(),
         signature: release.signature.clone(),
+        policy: release.policy.clone(),
     })
 }
 

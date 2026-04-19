@@ -12,6 +12,20 @@ def parse_args():
     parser.add_argument("--output", required=True)
     parser.add_argument("--signing-key-id")
     parser.add_argument("--signing-key-label")
+    parser.add_argument("--minimum-supported-version")
+    parser.add_argument(
+        "--blocked-version",
+        action="append",
+        default=[],
+        help="Repeat to add blocked current versions for this release.",
+    )
+    parser.add_argument("--rollout-percentage", type=int)
+    parser.add_argument(
+        "--mandatory",
+        action="store_true",
+        help="Mark this release as mandatory in the signed update manifest.",
+    )
+    parser.add_argument("--message")
     return parser.parse_args()
 
 
@@ -31,6 +45,8 @@ def main():
     tag = args.tag
     version = tag[1:] if tag.startswith("v") else tag
     checksums = load_checksums(Path(args.checksums))
+    if args.rollout_percentage is not None and not 0 <= args.rollout_percentage <= 100:
+        raise SystemExit("--rollout-percentage must be between 0 and 100")
 
     assets = []
     candidates = [
@@ -56,6 +72,10 @@ def main():
         "version": version,
         "tag_name": tag,
         "release_notes_url": f"https://github.com/{args.repo}/releases/tag/{tag}",
+        "minimum_supported_version": args.minimum_supported_version,
+        "blocked_versions": args.blocked_version,
+        "mandatory": args.mandatory,
+        "message": args.message,
         "signature": {
             "algorithm": "ed25519",
             "key_id": args.signing_key_id,
@@ -63,6 +83,8 @@ def main():
         },
         "assets": assets,
     }
+    if args.rollout_percentage is not None:
+        manifest["rollout"] = {"percentage": args.rollout_percentage}
 
     Path(args.output).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 

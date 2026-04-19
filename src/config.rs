@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::rules::schedule::{default_schedule_weekdays, legacy_cron_to_local_schedule};
 use crate::rules::{
@@ -337,6 +339,8 @@ pub struct AppUpdateConfig {
     #[serde(default)]
     pub last_check_utc: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub install_id: Option<String>,
+    #[serde(default)]
     pub current_version: Option<String>,
     #[serde(default)]
     pub installed_version_history: Vec<String>,
@@ -550,6 +554,7 @@ impl Default for AppUpdateConfig {
             remind_later_version: None,
             remind_later_until_utc: None,
             last_check_utc: None,
+            install_id: None,
             current_version: None,
             installed_version_history: Vec::new(),
             prepared_update: None,
@@ -824,6 +829,10 @@ impl AppUpdateConfig {
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
         });
+        self.install_id = self.install_id.take().and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
         self.current_version = self.current_version.take().and_then(|value| {
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
@@ -852,6 +861,33 @@ impl AppUpdateConfig {
             self.remind_later_until_utc = None;
             self.remind_later_version = None;
         }
+    }
+
+    pub fn ensure_install_id(&mut self) -> bool {
+        if self
+            .install_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return false;
+        }
+
+        let current_exe = std::env::current_exe()
+            .ok()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let seed = format!(
+            "{}:{}:{}:{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            Config::config_path().display(),
+            current_exe
+        );
+        self.install_id = Some(format!("{:x}", Sha256::digest(seed.as_bytes())));
+        true
     }
 }
 
@@ -1621,6 +1657,7 @@ mod tests {
     #[test]
     fn update_config_normalize_trims_and_dedupes_version_history() {
         let mut updates = AppUpdateConfig::default();
+        updates.install_id = Some(" install-a ".into());
         updates.current_version = Some(" 1.4.0 ".into());
         updates.installed_version_history = vec![
             " 1.4.0 ".into(),
@@ -1640,6 +1677,7 @@ mod tests {
 
         updates.normalize();
 
+        assert_eq!(updates.install_id.as_deref(), Some("install-a"));
         assert_eq!(updates.current_version.as_deref(), Some("1.4.0"));
         assert_eq!(
             updates.installed_version_history,
@@ -1648,6 +1686,17 @@ mod tests {
                 "0.4.0",
             ]
         );
+    }
+
+    #[test]
+    fn update_config_generates_install_id_once() {
+        let mut updates = AppUpdateConfig::default();
+
+        assert!(updates.ensure_install_id());
+        let install_id = updates.install_id.clone();
+        assert!(install_id.is_some());
+        assert!(!updates.ensure_install_id());
+        assert_eq!(updates.install_id, install_id);
     }
 
     #[test]

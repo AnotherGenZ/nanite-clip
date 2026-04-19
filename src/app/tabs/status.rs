@@ -25,7 +25,9 @@ const JOB_TABLE_HEIGHT: f32 = 260.0;
 
 fn update_action_tone(action: UpdatePrimaryAction) -> ButtonTone {
     match action {
-        UpdatePrimaryAction::DownloadUpdate => ButtonTone::Primary,
+        UpdatePrimaryAction::DownloadUpdate | UpdatePrimaryAction::OpenSystemUpdater => {
+            ButtonTone::Primary
+        }
         UpdatePrimaryAction::InstallAndRestart => ButtonTone::Success,
         UpdatePrimaryAction::InstallWhenIdle
         | UpdatePrimaryAction::InstallOnNextLaunch
@@ -281,29 +283,25 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 .as_ref()
                 .map(|prepared| format!("{} is downloaded and ready to install.", prepared.version))
                 .unwrap_or_else(|| "An update is available.".into()),
-            _ => {
-                if release.install_channel.supports_self_update() {
-                    format!(
-                        "{}. Install channel: {}. {}.",
-                        release.release_name,
-                        release.install_channel.label(),
-                        next_check_label
-                    )
-                } else {
-                    format!(
-                        "{} {}",
-                        release.install_channel.update_instructions(),
-                        next_check_label
-                    )
-                }
-            }
+            _ => format!(
+                "{}. {}.",
+                super::super::release_policy_summary(
+                    release,
+                    &app.update_state.current_version,
+                    app.update_state.system_update_plan.as_ref(),
+                ),
+                next_check_label
+            ),
         };
 
         system_panel = system_panel.push(
-            banner(format!("Update {} is available", release.version))
-                .warning()
-                .description(phase_description)
-                .build(),
+            banner(super::super::release_banner_title(
+                release,
+                &app.update_state.current_version,
+            ))
+            .warning()
+            .description(phase_description)
+            .build(),
         );
         system_panel = system_panel.push(
             text(format!(
@@ -484,14 +482,42 @@ fn status_update_detail_summary(app: &App) -> String {
         })
         .unwrap_or_else(|| "No apply result recorded yet.".into());
 
+    let release_summary = app
+        .update_state
+        .latest_release
+        .as_ref()
+        .map(|release| {
+            super::super::release_policy_summary(
+                release,
+                &app.update_state.current_version,
+                app.update_state.system_update_plan.as_ref(),
+            )
+        })
+        .or_else(|| {
+            app.update_state
+                .system_update_plan
+                .as_ref()
+                .map(super::super::system_update_plan_summary)
+        });
+
     if let Some(signature) = signature {
         let key_id = signature.key_id.as_deref().unwrap_or("not reported");
         let key_label = signature.key_label.as_deref().unwrap_or("not reported");
-        format!(
+        let mut summary = format!(
             "Signed by `{key_id}` ({key_label}). Embedded verifier keys: {verifier_key_count}. {apply_summary}"
-        )
+        );
+        if let Some(release_summary) = release_summary {
+            summary.push(' ');
+            summary.push_str(&release_summary);
+        }
+        summary
     } else {
-        format!("Embedded verifier keys: {verifier_key_count}. {apply_summary}")
+        let mut summary = format!("Embedded verifier keys: {verifier_key_count}. {apply_summary}");
+        if let Some(release_summary) = release_summary {
+            summary.push(' ');
+            summary.push_str(&release_summary);
+        }
+        summary
     }
 }
 

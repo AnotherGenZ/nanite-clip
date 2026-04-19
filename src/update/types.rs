@@ -128,6 +128,7 @@ pub enum UpdatePrimaryAction {
     InstallAndRestart,
     InstallWhenIdle,
     InstallOnNextLaunch,
+    OpenSystemUpdater,
     RemindLater,
     SkipThisVersion,
 }
@@ -139,6 +140,7 @@ impl UpdatePrimaryAction {
             Self::InstallAndRestart => "Install and Restart",
             Self::InstallWhenIdle => "Install When Idle",
             Self::InstallOnNextLaunch => "Install on Next Launch",
+            Self::OpenSystemUpdater => "Open System Updater",
             Self::RemindLater => "Remind Me Later",
             Self::SkipThisVersion => "Skip This Version",
         }
@@ -157,6 +159,9 @@ impl UpdatePrimaryAction {
             }
             Self::InstallOnNextLaunch => {
                 "Keep the staged target ready and prompt for installation the next time NaniteClip launches."
+            }
+            Self::OpenSystemUpdater => {
+                "Launch the system-native updater or package manager command for this install."
             }
             Self::RemindLater => "Hide update reminders for the next 12 hours.",
             Self::SkipThisVersion => {
@@ -248,6 +253,68 @@ pub struct UpdateSignatureInfo {
     pub key_label: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateAvailability {
+    #[default]
+    Available,
+    DeferredByRollout,
+    RequiresManualUpgrade,
+}
+
+impl UpdateAvailability {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Available => "Available",
+            Self::DeferredByRollout => "Deferred by rollout",
+            Self::RequiresManualUpgrade => "Requires manual upgrade",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateReleasePolicy {
+    #[serde(default)]
+    pub availability: UpdateAvailability,
+    #[serde(default)]
+    pub minimum_version: Option<String>,
+    #[serde(default)]
+    pub blocked_current_version: bool,
+    #[serde(default)]
+    pub mandatory: bool,
+    #[serde(default)]
+    pub rollout_percentage: Option<u8>,
+    #[serde(default)]
+    pub rollout_eligible: bool,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+impl UpdateReleasePolicy {
+    pub fn download_allowed(&self) -> bool {
+        matches!(self.availability, UpdateAvailability::Available)
+    }
+
+    pub fn requires_attention(&self) -> bool {
+        self.mandatory || self.blocked_current_version
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemUpdatePlan {
+    pub label: String,
+    pub detail: String,
+    pub command_display: Option<String>,
+    pub command_program: Option<String>,
+    pub command_args: Vec<String>,
+}
+
+impl SystemUpdatePlan {
+    pub fn can_launch(&self) -> bool {
+        self.command_program.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableRelease {
     pub version: Version,
@@ -256,8 +323,8 @@ pub struct AvailableRelease {
     pub html_url: String,
     pub changelog_markdown: String,
     pub published_at: Option<DateTime<Utc>>,
-    pub minimum_version: Option<String>,
     pub signature: UpdateSignatureInfo,
+    pub policy: UpdateReleasePolicy,
     pub asset: Option<ManifestAsset>,
     pub install_channel: InstallChannel,
     pub skipped: bool,
@@ -265,7 +332,9 @@ pub struct AvailableRelease {
 
 impl AvailableRelease {
     pub fn supports_download(&self) -> bool {
-        self.install_channel.supports_self_update() && self.asset.is_some()
+        self.install_channel.supports_self_update()
+            && self.asset.is_some()
+            && self.policy.download_allowed()
     }
 }
 
@@ -295,9 +364,9 @@ pub struct PreparedUpdate {
     #[serde(default)]
     pub published_at: Option<DateTime<Utc>>,
     #[serde(default)]
-    pub minimum_version: Option<String>,
-    #[serde(default)]
     pub signature: UpdateSignatureInfo,
+    #[serde(default)]
+    pub policy: UpdateReleasePolicy,
 }
 
 impl PreparedUpdate {
@@ -326,6 +395,7 @@ pub struct UpdateApplyReport {
 #[derive(Debug, Clone)]
 pub struct UpdateState {
     pub install_channel: InstallChannel,
+    pub system_update_plan: Option<SystemUpdatePlan>,
     pub current_version: Version,
     pub previous_installed_version: Option<Version>,
     pub last_checked_at: Option<DateTime<Utc>>,
@@ -344,6 +414,7 @@ impl UpdateState {
     pub fn new(install_channel: InstallChannel, current_version: Version) -> Self {
         Self {
             install_channel,
+            system_update_plan: None,
             current_version,
             previous_installed_version: None,
             last_checked_at: None,

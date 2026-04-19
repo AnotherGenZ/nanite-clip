@@ -1901,7 +1901,9 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
 
 fn update_action_tone(action: UpdatePrimaryAction) -> ButtonTone {
     match action {
-        UpdatePrimaryAction::DownloadUpdate => ButtonTone::Primary,
+        UpdatePrimaryAction::DownloadUpdate | UpdatePrimaryAction::OpenSystemUpdater => {
+            ButtonTone::Primary
+        }
         UpdatePrimaryAction::InstallAndRestart => ButtonTone::Success,
         UpdatePrimaryAction::InstallWhenIdle
         | UpdatePrimaryAction::InstallOnNextLaunch
@@ -2011,8 +2013,10 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         .as_ref()
         .map(|release| {
             format!(
-                "Latest available: {} ({})",
-                release.version, release.release_name
+                "{} ({}) · {}",
+                release.version,
+                release.release_name,
+                release.policy.availability.label()
             )
         })
         .or_else(|| {
@@ -2117,6 +2121,26 @@ fn update_panel(app: &App) -> Element<'_, Message> {
     let mut available_release_rows = vec![
         text(phase_summary).size(12).into(),
         text(latest_release_summary).size(12).into(),
+        text(
+            app.update_state
+                .latest_release
+                .as_ref()
+                .map(|release| {
+                    super::super::release_policy_summary(
+                        release,
+                        &app.update_state.current_version,
+                        app.update_state.system_update_plan.as_ref(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    app.update_state
+                        .install_channel
+                        .update_instructions()
+                        .into()
+                }),
+        )
+        .size(12)
+        .into(),
         text(security_summary).size(12).into(),
         text(last_apply_summary).size(12).into(),
         text(format!(
@@ -2126,6 +2150,13 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         .size(12)
         .into(),
     ];
+    if let Some(plan) = app.update_state.system_update_plan.as_ref() {
+        available_release_rows.push(
+            text(super::super::system_update_plan_summary(plan))
+                .size(12)
+                .into(),
+        );
+    }
     if let Some(summary) = reminder_summary {
         available_release_rows.push(text(summary).size(12).into());
     }

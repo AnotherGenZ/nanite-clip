@@ -458,14 +458,42 @@ jobs:
             > SHA256SUMS.txt
 
       - name: Generate update manifest
+        env:
+          NANITE_CLIP_UPDATE_MINIMUM_SUPPORTED_VERSION: ${{ vars.NANITE_CLIP_UPDATE_MINIMUM_SUPPORTED_VERSION }}
+          NANITE_CLIP_UPDATE_BLOCKED_VERSIONS: ${{ vars.NANITE_CLIP_UPDATE_BLOCKED_VERSIONS }}
+          NANITE_CLIP_UPDATE_ROLLOUT_PERCENTAGE: ${{ vars.NANITE_CLIP_UPDATE_ROLLOUT_PERCENTAGE }}
+          NANITE_CLIP_UPDATE_MANDATORY: ${{ vars.NANITE_CLIP_UPDATE_MANDATORY }}
+          NANITE_CLIP_UPDATE_MESSAGE: ${{ vars.NANITE_CLIP_UPDATE_MESSAGE }}
         run: |
+          manifest_args=()
+          if [[ -n "${NANITE_CLIP_UPDATE_MINIMUM_SUPPORTED_VERSION:-}" ]]; then
+            manifest_args+=(--minimum-supported-version "${NANITE_CLIP_UPDATE_MINIMUM_SUPPORTED_VERSION}")
+          fi
+          if [[ -n "${NANITE_CLIP_UPDATE_BLOCKED_VERSIONS:-}" ]]; then
+            IFS=',' read -ra blocked_versions <<< "${NANITE_CLIP_UPDATE_BLOCKED_VERSIONS}"
+            for blocked_version in "${blocked_versions[@]}"; do
+              blocked_version="${blocked_version#"${blocked_version%%[![:space:]]*}"}"
+              blocked_version="${blocked_version%"${blocked_version##*[![:space:]]}"}"
+              [[ -n "$blocked_version" ]] && manifest_args+=(--blocked-version "$blocked_version")
+            done
+          fi
+          if [[ -n "${NANITE_CLIP_UPDATE_ROLLOUT_PERCENTAGE:-}" ]]; then
+            manifest_args+=(--rollout-percentage "${NANITE_CLIP_UPDATE_ROLLOUT_PERCENTAGE}")
+          fi
+          if [[ "${NANITE_CLIP_UPDATE_MANDATORY:-}" == "true" ]]; then
+            manifest_args+=(--mandatory)
+          fi
+          if [[ -n "${NANITE_CLIP_UPDATE_MESSAGE:-}" ]]; then
+            manifest_args+=(--message "${NANITE_CLIP_UPDATE_MESSAGE}")
+          fi
           python3 scripts/build-update-manifest.py \
             --repo "${GITHUB_REPOSITORY}" \
             --tag "${RELEASE_REF_NAME}" \
             --checksums SHA256SUMS.txt \
             --signing-key-id "${NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_ID}" \
             --signing-key-label "${NANITE_CLIP_UPDATE_SIGNING_ACTIVE_KEY_LABEL}" \
-            --output nanite-clip-update-manifest.json
+            --output nanite-clip-update-manifest.json \
+            "${manifest_args[@]}"
 
       - name: Select update signing key
         env:

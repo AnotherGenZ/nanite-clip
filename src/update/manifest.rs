@@ -14,10 +14,24 @@ pub struct UpdateManifest {
     #[serde(default)]
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
-    pub minimum_version: Option<String>,
+    #[serde(alias = "minimum_version")]
+    pub minimum_supported_version: Option<String>,
+    #[serde(default)]
+    pub blocked_versions: Vec<String>,
+    #[serde(default)]
+    pub rollout: Option<UpdateManifestRollout>,
+    #[serde(default)]
+    pub mandatory: bool,
+    #[serde(default)]
+    pub message: Option<String>,
     #[serde(default)]
     pub signature: super::types::UpdateSignatureInfo,
     pub assets: Vec<ManifestAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateManifestRollout {
+    pub percentage: u8,
 }
 
 impl UpdateManifest {
@@ -69,6 +83,32 @@ pub async fn fetch_verified_manifest(release: &GithubRelease) -> Result<UpdateMa
 
     if manifest.release_notes_url.trim().is_empty() {
         return Err("update manifest was missing the release notes URL".into());
+    }
+
+    if let Some(minimum_supported_version) = manifest
+        .minimum_supported_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        semver::Version::parse(minimum_supported_version).map_err(|error| {
+            format!("update manifest minimum supported version was invalid: {error}")
+        })?;
+    }
+
+    for version in &manifest.blocked_versions {
+        semver::Version::parse(version.trim()).map_err(|error| {
+            format!(
+                "update manifest blocked version `{}` was invalid: {error}",
+                version
+            )
+        })?;
+    }
+
+    if let Some(rollout) = &manifest.rollout
+        && rollout.percentage > 100
+    {
+        return Err("update manifest rollout percentage must be between 0 and 100".into());
     }
 
     Ok(manifest)
