@@ -311,6 +311,35 @@ fn take_hotkey_config_result(hotkeys: Arc<Mutex<HotkeyManager>>) -> HotkeyManage
     std::mem::replace(&mut *hotkeys, HotkeyManager::disabled())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HotkeyConfigurationFeedback {
+    Success(String),
+    Note(String),
+}
+
+fn hotkey_configuration_feedback(
+    show_success_toast: bool,
+    previous_binding_label: Option<&str>,
+    binding_label: Option<&str>,
+    configuration_note: Option<&str>,
+) -> Option<HotkeyConfigurationFeedback> {
+    if let Some(binding_label) = binding_label {
+        let changed = previous_binding_label != Some(binding_label);
+        if changed && show_success_toast {
+            return Some(HotkeyConfigurationFeedback::Success(format!(
+                "Manual clip hotkey active: {binding_label}"
+            )));
+        }
+        return None;
+    }
+
+    if show_success_toast {
+        return configuration_note.map(|message| HotkeyConfigurationFeedback::Note(message.into()));
+    }
+
+    None
+}
+
 struct PendingRecorderStart {
     id: u64,
     capture_plan: process::CaptureSourcePlan,
@@ -5715,17 +5744,19 @@ impl App {
                 );
                 self.hotkeys = hotkeys;
                 if self.config.manual_clip.enabled {
-                    if let Some(binding_label) = binding_label {
-                        let changed =
-                            previous_binding_label.as_deref() != Some(binding_label.as_str());
-                        let message = format!("Manual clip hotkey active: {binding_label}");
-                        if changed && show_success_toast {
+                    match hotkey_configuration_feedback(
+                        show_success_toast,
+                        previous_binding_label.as_deref(),
+                        binding_label.as_deref(),
+                        configuration_note.as_deref(),
+                    ) {
+                        Some(HotkeyConfigurationFeedback::Success(message)) => {
                             self.set_settings_feedback(message, true);
-                        } else {
-                            self.set_settings_feedback_silent(message, true);
                         }
-                    } else if let Some(configuration_note) = configuration_note {
-                        self.set_settings_feedback_silent(configuration_note, false);
+                        Some(HotkeyConfigurationFeedback::Note(message)) => {
+                            self.set_settings_feedback_silent(message, false);
+                        }
+                        None => {}
                     }
                 }
             }
@@ -7154,6 +7185,47 @@ mod tests {
         assert_eq!(
             app.toasts.toasts()[0].duration,
             Some(App::EXTENDED_MESSAGE_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn hotkey_feedback_ignores_unchanged_binding_labels() {
+        assert_eq!(
+            hotkey_configuration_feedback(true, Some("Ctrl+Shift+F8"), Some("Ctrl+Shift+F8"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn hotkey_feedback_ignores_success_when_not_requested() {
+        assert_eq!(
+            hotkey_configuration_feedback(false, Some("Ctrl+Shift+F8"), Some("Alt+F8"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn hotkey_feedback_reports_changed_binding_labels() {
+        assert_eq!(
+            hotkey_configuration_feedback(true, Some("Ctrl+Shift+F8"), Some("Alt+F8"), None),
+            Some(HotkeyConfigurationFeedback::Success(
+                "Manual clip hotkey active: Alt+F8".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn hotkey_feedback_reports_configuration_notes_when_requested() {
+        assert_eq!(
+            hotkey_configuration_feedback(
+                true,
+                None,
+                None,
+                Some("Assign a shortcut in the portal.")
+            ),
+            Some(HotkeyConfigurationFeedback::Note(
+                "Assign a shortcut in the portal.".into()
+            ))
         );
     }
 

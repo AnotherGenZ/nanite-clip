@@ -12,7 +12,7 @@ use super::super::shared::{
 use super::super::{App, AudioSourceDraft, Message as AppMessage, audio_source_drafts_from_config};
 use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
 use crate::config::{
-    AudioSourceConfig, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
+    AudioSourceConfig, ManualClipConfig, ObsManagementMode, UpdateChannel, YouTubePrivacyStatus,
     legacy_audio_source_kind_from_value,
 };
 use crate::secure_store::SecretKey;
@@ -733,6 +733,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::Save => {
             app.settings_hotkey_capture_active = false;
+            let manual_clip_settings_changed = manual_clip_settings_dirty(app);
             if let Err(error) =
                 crate::clip_naming::validate_template(app.settings_clip_naming_template.as_str())
             {
@@ -897,7 +898,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 Ok(()) => {
                     app.set_settings_feedback_silent("Settings saved.", false);
                     iced::Task::batch([
-                        app.configure_hotkeys(true),
+                        app.configure_hotkeys(manual_clip_settings_changed),
                         app.sync_tray_snapshot(),
                         app.sync_launch_at_login_task(),
                     ])
@@ -1203,10 +1204,7 @@ fn settings_dirty(app: &App) -> bool {
         || app.settings_save_delay_secs != app.config.recorder.save_delay_secs.to_string()
         || app.settings_clip_saved_notifications != app.config.recorder.clip_saved_notifications
         || app.settings_clip_naming_template != app.config.clip_naming_template
-        || app.settings_manual_clip_enabled != app.config.manual_clip.enabled
-        || app.settings_manual_clip_hotkey != app.config.manual_clip.hotkey
-        || app.settings_manual_clip_duration_secs
-            != app.config.manual_clip.duration_secs.to_string()
+        || manual_clip_settings_dirty(app)
         || app.settings_storage_tiering_enabled != app.config.storage_tiering.enabled
         || app.settings_storage_tier_directory
             != app.config.storage_tiering.tier_directory.to_string_lossy()
@@ -1225,6 +1223,26 @@ fn settings_dirty(app: &App) -> bool {
         || app.settings_discord_min_score != app.config.discord_webhook.min_score.to_string()
         || app.settings_discord_include_thumbnail != app.config.discord_webhook.include_thumbnail
         || !app.settings_discord_webhook_input.trim().is_empty()
+}
+
+fn manual_clip_settings_dirty(app: &App) -> bool {
+    manual_clip_settings_dirty_values(
+        app.settings_manual_clip_enabled,
+        app.settings_manual_clip_hotkey.as_str(),
+        app.settings_manual_clip_duration_secs.as_str(),
+        &app.config.manual_clip,
+    )
+}
+
+fn manual_clip_settings_dirty_values(
+    settings_enabled: bool,
+    settings_hotkey: &str,
+    settings_duration_secs: &str,
+    config: &ManualClipConfig,
+) -> bool {
+    settings_enabled != config.enabled
+        || settings_hotkey != config.hotkey
+        || settings_duration_secs != config.duration_secs.to_string()
 }
 
 fn apply_settings_draft_from_config(app: &mut App) {
@@ -3405,11 +3423,11 @@ fn validate_toml_file_selection(selection: Option<String>) -> Result<Option<Stri
 mod tests {
     use super::{
         ApplyDiscoveredAudioSource, apply_discovered_audio_source, audio_source_draft_is_blank,
-        validate_toml_file_selection,
+        manual_clip_settings_dirty_values, validate_toml_file_selection,
     };
     use crate::app::AudioSourceDraft;
     use crate::capture::{DiscoveredAudioKind, DiscoveredAudioSource};
-    use crate::config::AudioSourceKind;
+    use crate::config::{AudioSourceKind, ManualClipConfig};
 
     #[test]
     fn discovered_audio_source_replaces_blank_placeholder_row() {
@@ -3463,6 +3481,37 @@ mod tests {
             source: String::new(),
             ..AudioSourceDraft::default()
         }));
+    }
+
+    #[test]
+    fn manual_clip_settings_dirty_helper_only_flags_real_changes() {
+        let config = ManualClipConfig {
+            enabled: true,
+            hotkey: "Ctrl+Shift+F8".into(),
+            duration_secs: 30,
+        };
+
+        assert!(!manual_clip_settings_dirty_values(
+            true,
+            "Ctrl+Shift+F8",
+            "30",
+            &config,
+        ));
+        assert!(manual_clip_settings_dirty_values(
+            false,
+            "Ctrl+Shift+F8",
+            "30",
+            &config,
+        ));
+        assert!(manual_clip_settings_dirty_values(
+            true, "Alt+F8", "30", &config,
+        ));
+        assert!(manual_clip_settings_dirty_values(
+            true,
+            "Ctrl+Shift+F8",
+            "45",
+            &config,
+        ));
     }
 
     #[test]
