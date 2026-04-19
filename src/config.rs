@@ -9,6 +9,7 @@ use crate::rules::{
     default_auto_switch_rules, default_rule_definitions, default_rule_profiles,
     normalized_active_character_ids, validate_auto_switch_rule,
 };
+use crate::update::{PreparedUpdate, UpdateInstallBehavior};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -326,9 +327,17 @@ pub struct AppUpdateConfig {
     #[serde(default)]
     pub channel: UpdateChannel,
     #[serde(default)]
+    pub install_behavior: UpdateInstallBehavior,
+    #[serde(default)]
     pub skipped_version: Option<String>,
     #[serde(default)]
+    pub remind_later_version: Option<String>,
+    #[serde(default)]
+    pub remind_later_until_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub last_check_utc: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub prepared_update: Option<PreparedUpdate>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -358,7 +367,7 @@ impl Default for Config {
             .map(|profile| profile.id.clone())
             .unwrap_or_default();
         Self {
-            schema_version: 7,
+            schema_version: 8,
             service_id: "s:example".into(),
             characters: Vec::new(),
             rule_definitions: default_rule_definitions(),
@@ -530,8 +539,12 @@ impl Default for AppUpdateConfig {
         Self {
             auto_check: true,
             channel: UpdateChannel::Stable,
+            install_behavior: UpdateInstallBehavior::Manual,
             skipped_version: None,
+            remind_later_version: None,
+            remind_later_until_utc: None,
             last_check_utc: None,
+            prepared_update: None,
         }
     }
 }
@@ -580,7 +593,7 @@ impl Config {
     }
 
     pub fn normalize(&mut self) {
-        self.schema_version = 7;
+        self.schema_version = 8;
 
         if self.recorder.backends.gsr.capture_source.trim().is_empty()
             || self.recorder.backends.gsr.capture_source == "screen"
@@ -802,6 +815,17 @@ impl AppUpdateConfig {
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
         });
+        self.remind_later_version = self.remind_later_version.take().and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        });
+        if self
+            .remind_later_until_utc
+            .is_some_and(|until| until <= Utc::now())
+        {
+            self.remind_later_until_utc = None;
+            self.remind_later_version = None;
+        }
     }
 }
 
@@ -1543,7 +1567,7 @@ mod tests {
 
         config.normalize();
 
-        assert_eq!(config.schema_version, 7);
+        assert_eq!(config.schema_version, 8);
         assert_eq!(
             config.clip_naming_template,
             "{timestamp}_{source}_{character}_{rule}_{score}"
@@ -1558,6 +1582,12 @@ mod tests {
         assert_eq!(config.recorder.audio_sources[0].label, "Default output");
         assert!(!config.launch_at_login.enabled);
         assert_eq!(config.launch_at_login.provider, LaunchAtLoginProvider::Auto);
+        assert_eq!(
+            config.updates.install_behavior,
+            UpdateInstallBehavior::Manual
+        );
+        assert!(config.updates.prepared_update.is_none());
+        assert!(config.updates.remind_later_until_utc.is_none());
     }
 
     #[test]

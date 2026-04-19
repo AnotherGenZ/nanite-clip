@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use iced::{Element, Length, Subscription, Task, Theme, event, window};
 use tracing::{info, warn};
 
@@ -49,7 +49,10 @@ use crate::tray::{TrayController, TrayEvent, TrayProfileOption, TraySnapshot};
 use crate::ui::app::{column, container, stack};
 use crate::ui::layout::tabs::{Tab as NavTab, tabs as nav_tabs};
 use crate::ui::overlay::toast::{self, ToastId, ToastStack, Tone as ToastTone};
-use crate::update::{self, UpdateState};
+use crate::update::{
+    self, UpdateErrorKind, UpdateErrorState, UpdateInstallBehavior, UpdatePhase,
+    UpdateProgressState, UpdateState,
+};
 use crate::uploads::{
     self, CopypartyUploadCredentials, YouTubeOAuthClient, YouTubeUploadCredentials,
 };
@@ -161,6 +164,7 @@ pub struct App {
     settings_minimize_to_tray: bool,
     settings_update_auto_check: bool,
     settings_update_channel: UpdateChannel,
+    settings_update_install_behavior: UpdateInstallBehavior,
     settings_service_id: String,
     settings_capture_backend: String,
     settings_capture_source: String,
@@ -490,6 +494,9 @@ pub enum Message {
     },
     DownloadAvailableUpdate,
     ApplyDownloadedUpdate,
+    InstallDownloadedUpdateWhenIdle,
+    InstallDownloadedUpdateOnNextLaunch,
+    RemindUpdateLater,
     SkipAvailableUpdate,
     OpenUpdateReleaseNotes,
     UpdateReleaseNotesOpened(Result<(), String>),
@@ -575,8 +582,12 @@ impl App {
             config.rule_profiles.clone(),
             config.active_profile_id.clone(),
         );
-        let update_state =
-            UpdateState::new(update::detect_install_channel(), update::current_version());
+        let current_version = update::current_version();
+        let update_state = hydrate_update_state_from_config(
+            &mut config,
+            update::detect_install_channel(),
+            current_version,
+        );
 
         let mut app = Self {
             settings_launch_at_login: config.launch_at_login.enabled,
@@ -585,6 +596,7 @@ impl App {
             settings_minimize_to_tray: config.minimize_to_tray,
             settings_update_auto_check: config.updates.auto_check,
             settings_update_channel: config.updates.channel,
+            settings_update_install_behavior: config.updates.install_behavior,
             settings_service_id: config.service_id.clone(),
             settings_capture_backend: config.capture.backend.clone(),
             settings_capture_source: config.recorder.gsr().capture_source.clone(),
@@ -769,6 +781,7 @@ impl App {
             app.configure_hotkeys(),
             app.resolve_unresolved_characters(),
             initial_window_task,
+            app.maybe_resume_staged_update_task(),
             app.maybe_auto_check_for_updates_task(),
         ]);
 
@@ -786,10 +799,39 @@ impl App {
     fn maybe_auto_check_for_updates_task(&mut self) -> Task<Message> {
         if self.should_auto_check_for_updates() {
             self.update_state.checking = true;
+            self.update_state.phase = UpdatePhase::Checking;
+            self.update_state.progress = Some(UpdateProgressState {
+                detail: "Checking GitHub Releases for a newer version.".into(),
+            });
             self.check_for_updates_task(false)
         } else {
             Task::none()
         }
+    }
+
+    fn maybe_resume_staged_update_task(&mut self) -> Task<Message> {
+        if self.update_state.has_downloaded_update() {
+            let prepared = self
+                .update_state
+                .prepared_update
+                .as_ref()
+                .expect("checked prepared update presence");
+            self.update_state.phase = UpdatePhase::ReadyToInstall;
+            self.update_state.progress = None;
+            self.push_toast(
+                ToastTone::Info,
+                "Update Ready",
+                format!(
+                    "NaniteClip {} is staged and ready to install.",
+                    prepared.version
+                ),
+                true,
+            );
+            if self.should_auto_apply_staged_update() {
+                return Task::done(Message::InstallDownloadedUpdateWhenIdle);
+            }
+        }
+        Task::none()
     }
 
     fn should_auto_check_for_updates(&self) -> bool {
@@ -801,6 +843,80 @@ impl App {
             .updates
             .last_check_utc
             .is_none_or(|last_checked| Utc::now() - last_checked >= chrono::Duration::hours(12))
+    }
+
+    fn can_apply_update_now(&self) -> bool {
+        !matches!(self.state, AppState::Monitoring { .. }) && !self.recorder.has_active_session()
+    }
+
+    fn should_auto_apply_staged_update(&self) -> bool {
+        self.config.updates.install_behavior == UpdateInstallBehavior::WhenIdle
+            && self.can_apply_update_now()
+            && self.update_state.has_downloaded_update()
+            && matches!(self.update_state.phase, UpdatePhase::ReadyToInstall)
+    }
+
+    fn clear_prepared_update(&mut self) {
+        self.update_state.prepared_update = None;
+        if !matches!(self.update_state.phase, UpdatePhase::Failed) {
+            self.update_state.phase = UpdatePhase::Idle;
+        }
+        self.update_state.progress = None;
+        self.config.updates.prepared_update = None;
+        self.persist_update_config();
+    }
+
+    fn persist_update_config(&mut self) {
+        if let Err(error) = self.config.save() {
+            tracing::warn!("Failed to persist updater settings: {error}");
+        }
+    }
+
+    fn is_update_reminder_deferred(&self, version: &str) -> bool {
+        self.config.updates.remind_later_version.as_deref() == Some(version)
+            && self
+                .config
+                .updates
+                .remind_later_until_utc
+                .is_some_and(|until| until > Utc::now())
+    }
+
+    fn set_update_error(&mut self, kind: UpdateErrorKind, detail: impl Into<String>) {
+        self.update_state.phase = UpdatePhase::Failed;
+        self.update_state.progress = None;
+        self.update_state.last_error = Some(UpdateErrorState {
+            kind,
+            detail: detail.into(),
+        });
+    }
+
+    fn apply_prepared_update_now(&mut self, _automatic: bool) -> Task<Message> {
+        if !self.can_apply_update_now() {
+            self.set_status_feedback("Stop monitoring before applying an update.", false);
+            return Task::none();
+        }
+
+        let Some(prepared) = self.update_state.prepared_update.clone() else {
+            self.set_status_feedback("No downloaded update is ready to install.", false);
+            return Task::none();
+        };
+
+        self.update_state.phase = UpdatePhase::Applying;
+        self.update_state.progress = Some(UpdateProgressState {
+            detail: format!("Launching the updater helper for {}.", prepared.version),
+        });
+        self.update_state.last_error = None;
+        self.persist_update_config();
+
+        match update::helper::spawn_apply_helper(&prepared) {
+            Ok(()) => iced::exit(),
+            Err(error) => {
+                let message = format!("Failed to launch the updater helper: {error}");
+                self.set_update_error(UpdateErrorKind::Install, message.clone());
+                self.set_status_feedback(message, false);
+                Task::none()
+            }
+        }
     }
 
     fn check_for_updates_task(&self, manual: bool) -> Task<Message> {
@@ -982,12 +1098,17 @@ impl App {
                     return Task::none();
                 }
                 self.update_state.checking = true;
+                self.update_state.phase = UpdatePhase::Checking;
+                self.update_state.progress = Some(UpdateProgressState {
+                    detail: "Checking GitHub Releases for a newer version.".into(),
+                });
                 self.update_state.last_error = None;
                 self.check_for_updates_task(manual)
             }
 
             Message::UpdateCheckCompleted { manual, result } => {
                 self.update_state.checking = false;
+                self.update_state.progress = None;
                 let checked_at = Utc::now();
                 self.update_state.last_checked_at = Some(checked_at);
                 self.config.updates.last_check_utc = Some(checked_at);
@@ -999,10 +1120,28 @@ impl App {
                                 release.version.to_string() != prepared.version
                             })
                         {
-                            self.update_state.prepared_update = None;
+                            self.clear_prepared_update();
                         }
                         self.update_state.latest_release = latest_release;
                         self.update_state.last_error = None;
+                        self.update_state.phase = if self.update_state.has_downloaded_update() {
+                            UpdatePhase::ReadyToInstall
+                        } else {
+                            UpdatePhase::Idle
+                        };
+
+                        if let Some(release) = &self.update_state.latest_release {
+                            let release_version = release.version.to_string();
+                            if self.config.updates.remind_later_version.as_deref()
+                                != Some(release_version.as_str())
+                            {
+                                self.config.updates.remind_later_version = None;
+                                self.config.updates.remind_later_until_utc = None;
+                            }
+                        } else {
+                            self.config.updates.remind_later_version = None;
+                            self.config.updates.remind_later_until_utc = None;
+                        }
 
                         if manual {
                             if let Some(release) = &self.update_state.latest_release {
@@ -1019,6 +1158,7 @@ impl App {
                             }
                         } else if let Some(release) = &self.update_state.latest_release
                             && !release.skipped
+                            && !self.is_update_reminder_deferred(&release.version.to_string())
                         {
                             self.push_toast(
                                 ToastTone::Info,
@@ -1029,7 +1169,10 @@ impl App {
                         }
                     }
                     Err(error) => {
-                        self.update_state.last_error = Some(error.clone());
+                        self.set_update_error(
+                            classify_update_error(error.as_str(), UpdatePhase::Checking),
+                            error.clone(),
+                        );
                         if manual {
                             self.set_status_feedback(
                                 format!("Failed to check for updates: {error}"),
@@ -1050,29 +1193,76 @@ impl App {
 
             Message::DownloadAvailableUpdate => self.queue_update_download(),
 
-            Message::ApplyDownloadedUpdate => {
-                if matches!(self.state, AppState::Monitoring { .. })
-                    || self.recorder.has_active_session()
-                {
-                    self.set_status_feedback("Stop monitoring before applying an update.", false);
+            Message::ApplyDownloadedUpdate => self.apply_prepared_update_now(false),
+
+            Message::InstallDownloadedUpdateWhenIdle => {
+                if !self.update_state.has_downloaded_update() {
+                    self.set_status_feedback(
+                        "Download an update before scheduling its install.",
+                        false,
+                    );
                     return Task::none();
                 }
+                self.config.updates.install_behavior = UpdateInstallBehavior::WhenIdle;
+                self.settings_update_install_behavior = UpdateInstallBehavior::WhenIdle;
+                self.persist_update_config();
+                if self.can_apply_update_now() {
+                    self.apply_prepared_update_now(true)
+                } else {
+                    if let Some(prepared) = self.update_state.prepared_update.as_ref() {
+                        self.set_status_feedback(
+                            format!(
+                                "NaniteClip {} will install automatically when monitoring is idle.",
+                                prepared.version
+                            ),
+                            true,
+                        );
+                    }
+                    Task::none()
+                }
+            }
 
-                let Some(prepared) = self.update_state.prepared_update.as_ref() else {
-                    self.set_status_feedback("No downloaded update is ready to install.", false);
+            Message::InstallDownloadedUpdateOnNextLaunch => {
+                if !self.update_state.has_downloaded_update() {
+                    self.set_status_feedback(
+                        "Download an update before scheduling its install.",
+                        false,
+                    );
+                    return Task::none();
+                }
+                self.config.updates.install_behavior = UpdateInstallBehavior::OnNextLaunch;
+                self.settings_update_install_behavior = UpdateInstallBehavior::OnNextLaunch;
+                self.persist_update_config();
+                if let Some(prepared) = self.update_state.prepared_update.as_ref() {
+                    self.set_status_feedback(
+                        format!(
+                            "NaniteClip {} is staged and will be ready on the next launch.",
+                            prepared.version
+                        ),
+                        true,
+                    );
+                }
+                Task::none()
+            }
+
+            Message::RemindUpdateLater => {
+                let Some(release) = self.update_state.latest_release.as_ref() else {
                     return Task::none();
                 };
-
-                match update::helper::spawn_apply_helper(prepared) {
-                    Ok(()) => iced::exit(),
-                    Err(error) => {
-                        self.set_status_feedback(
-                            format!("Failed to launch the updater helper: {error}"),
-                            false,
-                        );
-                        Task::none()
-                    }
-                }
+                let version = release.version.to_string();
+                let remind_until = Utc::now() + chrono::Duration::hours(12);
+                self.config.updates.remind_later_version = Some(version.clone());
+                self.config.updates.remind_later_until_utc = Some(remind_until);
+                self.persist_update_config();
+                self.set_status_feedback(
+                    format!(
+                        "Will remind you about {} again after {}.",
+                        version,
+                        tabs::clips::format_timestamp(remind_until)
+                    ),
+                    true,
+                );
+                Task::none()
             }
 
             Message::SkipAvailableUpdate => {
@@ -1080,6 +1270,8 @@ impl App {
                     return Task::none();
                 };
                 self.config.updates.skipped_version = Some(release.version.to_string());
+                self.config.updates.remind_later_version = None;
+                self.config.updates.remind_later_until_utc = None;
                 if let Err(error) = self.config.save() {
                     self.set_status_feedback(
                         format!(
@@ -1101,10 +1293,20 @@ impl App {
             }
 
             Message::OpenUpdateReleaseNotes => {
-                let Some(release) = self.update_state.latest_release.as_ref() else {
+                let Some(url) = self
+                    .update_state
+                    .latest_release
+                    .as_ref()
+                    .map(|release| release.html_url.clone())
+                    .or_else(|| {
+                        self.update_state
+                            .prepared_update
+                            .as_ref()
+                            .map(|prepared| prepared.release_notes_url.clone())
+                    })
+                else {
                     return Task::none();
                 };
-                let url = release.html_url.clone();
                 Task::perform(
                     async move { crate::launcher::open_url(&url) },
                     Message::UpdateReleaseNotesOpened,
@@ -1312,7 +1514,14 @@ impl App {
                 tasks.push(self.evaluate_runtime_auto_switch(Utc::now(), active_character_id));
                 if self.should_auto_check_for_updates() {
                     self.update_state.checking = true;
+                    self.update_state.phase = UpdatePhase::Checking;
+                    self.update_state.progress = Some(UpdateProgressState {
+                        detail: "Checking GitHub Releases for a newer version.".into(),
+                    });
                     tasks.push(self.check_for_updates_task(false));
+                }
+                if self.should_auto_apply_staged_update() {
+                    tasks.push(Task::done(Message::InstallDownloadedUpdateWhenIdle));
                 }
                 Task::batch(tasks)
             }
@@ -3755,6 +3964,17 @@ impl App {
                             ),
                             true,
                         );
+                    } else if matches!(record.kind, BackgroundJobKind::AppUpdateDownload)
+                        && let Some(progress) = &record.progress
+                    {
+                        self.update_state.phase = if progress.message.contains("Verifying") {
+                            UpdatePhase::Verifying
+                        } else {
+                            UpdatePhase::Downloading
+                        };
+                        self.update_state.progress = Some(UpdateProgressState {
+                            detail: progress.message.clone(),
+                        });
                     }
                 }
                 BackgroundJobNotification::Finished {
@@ -3845,8 +4065,45 @@ impl App {
                             }
                         }
                         Some(BackgroundJobSuccess::AppUpdateDownload { prepared, message }) => {
-                            self.update_state.prepared_update = Some(prepared);
-                            self.set_status_feedback(message, false);
+                            self.update_state.prepared_update = Some(prepared.clone());
+                            self.update_state.phase = UpdatePhase::ReadyToInstall;
+                            self.update_state.progress = None;
+                            self.update_state.last_error = None;
+                            self.config.updates.prepared_update = Some(prepared.clone());
+                            self.persist_update_config();
+
+                            let follow_up = match self.config.updates.install_behavior {
+                                UpdateInstallBehavior::Manual => None,
+                                UpdateInstallBehavior::WhenIdle if self.can_apply_update_now() => {
+                                    Some(Task::done(Message::InstallDownloadedUpdateWhenIdle))
+                                }
+                                UpdateInstallBehavior::WhenIdle => {
+                                    self.set_status_feedback(
+                                        format!(
+                                            "{message} It will install automatically when monitoring is idle."
+                                        ),
+                                        false,
+                                    );
+                                    None
+                                }
+                                UpdateInstallBehavior::OnNextLaunch => {
+                                    self.set_status_feedback(
+                                        format!("{message} It is staged for the next launch."),
+                                        false,
+                                    );
+                                    None
+                                }
+                            };
+
+                            if matches!(
+                                self.config.updates.install_behavior,
+                                UpdateInstallBehavior::Manual
+                            ) {
+                                self.set_status_feedback(message, false);
+                            }
+                            if let Some(task) = follow_up {
+                                tasks.push(task);
+                            }
                         }
                         None => {
                             let message = error.unwrap_or_else(|| {
@@ -3864,7 +4121,14 @@ impl App {
                                 }
                             }
                             if matches!(record.kind, BackgroundJobKind::AppUpdateDownload) {
-                                self.update_state.last_error = Some(message.clone());
+                                self.set_update_error(
+                                    classify_update_error(
+                                        message.as_str(),
+                                        self.update_state.phase,
+                                    ),
+                                    message.clone(),
+                                );
+                                self.update_state.progress = None;
                             }
                             self.set_status_feedback(message, false);
                         }
@@ -4063,6 +4327,13 @@ impl App {
     }
 
     fn queue_update_download(&mut self) -> Task<Message> {
+        if matches!(
+            self.update_state.phase,
+            UpdatePhase::Downloading | UpdatePhase::Verifying | UpdatePhase::Applying
+        ) {
+            self.set_status_feedback("An update operation is already in progress.", true);
+            return Task::none();
+        }
         let Some(release) = self.update_state.latest_release.clone() else {
             self.set_status_feedback("Check for updates before downloading one.", false);
             return Task::none();
@@ -4084,6 +4355,12 @@ impl App {
             return Task::none();
         }
 
+        self.update_state.phase = UpdatePhase::Downloading;
+        self.update_state.progress = Some(UpdateProgressState {
+            detail: format!("Preparing to download update {}.", release.version),
+        });
+        self.update_state.last_error = None;
+
         let release_for_job = release.clone();
         let version_label = release.version.to_string();
         let job_id = self.background_jobs.start(
@@ -4098,26 +4375,36 @@ impl App {
                 )?;
                 let prepared =
                     update::download::download_release_asset(&release_for_job, |progress| {
-                        let message = format!(
-                            "Downloading {} ({}).",
-                            release_for_job
-                                .asset
-                                .as_ref()
-                                .map(|asset| asset.kind.label())
-                                .unwrap_or("asset"),
-                            format_update_download_progress(
-                                progress.downloaded_bytes,
-                                progress.total_bytes,
-                            )
-                        );
-                        let step = progress
-                            .total_bytes
-                            .map(|total| {
-                                (((progress.downloaded_bytes as f64 / total.max(1) as f64) * 100.0)
-                                    .round() as u32)
-                                    .clamp(1, 99)
-                            })
-                            .unwrap_or(50);
+                        let (message, step) = match progress.step {
+                            update::DownloadStep::Downloading => {
+                                let message = format!(
+                                    "Downloading {} ({}).",
+                                    release_for_job
+                                        .asset
+                                        .as_ref()
+                                        .map(|asset| asset.kind.label())
+                                        .unwrap_or("asset"),
+                                    format_update_download_progress(
+                                        progress.downloaded_bytes,
+                                        progress.total_bytes,
+                                    )
+                                );
+                                let step = progress
+                                    .total_bytes
+                                    .map(|total| {
+                                        (((progress.downloaded_bytes as f64 / total.max(1) as f64)
+                                            * 90.0)
+                                            .round()
+                                            as u32)
+                                            .clamp(1, 90)
+                                    })
+                                    .unwrap_or(45);
+                                (message, step)
+                            }
+                            update::DownloadStep::Verifying => {
+                                ("Verifying the downloaded update checksum.".into(), 95)
+                            }
+                        };
                         ctx.progress(step, 100, message)
                     })
                     .await?;
@@ -5476,6 +5763,72 @@ fn infer_storage_move_retry_target(record: &BackgroundJobRecord) -> Result<Stora
     }
 }
 
+fn hydrate_update_state_from_config(
+    config: &mut Config,
+    install_channel: update::InstallChannel,
+    current_version: semver::Version,
+) -> UpdateState {
+    let mut update_state = UpdateState::new(install_channel, current_version.clone());
+    update_state.last_checked_at = config.updates.last_check_utc;
+
+    let prepared_update = config.updates.prepared_update.take().and_then(|prepared| {
+        let prepared_version = prepared.parsed_version()?;
+        if prepared_version <= current_version || !prepared.asset_path.exists() {
+            return None;
+        }
+        Some(prepared)
+    });
+
+    if let Some(prepared) = prepared_update {
+        update_state.phase = UpdatePhase::ReadyToInstall;
+        update_state.prepared_update = Some(prepared.clone());
+        config.updates.prepared_update = Some(prepared);
+    }
+
+    if config
+        .updates
+        .remind_later_until_utc
+        .is_some_and(|until| until <= Utc::now())
+    {
+        config.updates.remind_later_until_utc = None;
+        config.updates.remind_later_version = None;
+    }
+
+    update_state
+}
+
+fn classify_update_error(detail: &str, phase: UpdatePhase) -> UpdateErrorKind {
+    let normalized = detail.to_ascii_lowercase();
+    if matches!(phase, UpdatePhase::Applying) {
+        return UpdateErrorKind::Install;
+    }
+    if normalized.contains("signature")
+        || normalized.contains("checksum")
+        || normalized.contains("manifest")
+        || normalized.contains("verification")
+    {
+        return UpdateErrorKind::Verification;
+    }
+    if normalized.contains("download")
+        || normalized.contains("http")
+        || normalized.contains("github")
+        || normalized.contains("network")
+        || normalized.contains("timed out")
+        || normalized.contains("connect")
+    {
+        return UpdateErrorKind::Network;
+    }
+    UpdateErrorKind::Unknown
+}
+
+fn next_automatic_update_check_at(app: &App) -> Option<DateTime<Utc>> {
+    app.config.updates.auto_check.then_some(())?;
+    app.update_state
+        .last_checked_at
+        .or(app.config.updates.last_check_utc)
+        .map(|checked_at| checked_at + chrono::Duration::hours(12))
+}
+
 fn format_update_download_progress(downloaded_bytes: u64, total_bytes: Option<u64>) -> String {
     match total_bytes {
         Some(total_bytes) => format!(
@@ -5590,7 +5943,7 @@ mod tests {
     use crate::rules::{AutoSwitchCondition, AutoSwitchRule, default_rule_profiles};
     use chrono::{Datelike, Timelike};
 
-    fn sample_app(config: Config) -> App {
+    fn sample_app(mut config: Config) -> App {
         let secure_store = SecureStore::new();
         let recorder = Recorder::new(config.capture.clone(), config.recorder.clone());
         let process_watcher = process::default_game_process_watcher();
@@ -5605,8 +5958,12 @@ mod tests {
             .first()
             .and_then(|character| character.character_id)
             .unwrap_or(42);
-        let update_state =
-            UpdateState::new(update::detect_install_channel(), update::current_version());
+        let current_version = update::current_version();
+        let update_state = hydrate_update_state_from_config(
+            &mut config,
+            update::detect_install_channel(),
+            current_version,
+        );
         App {
             settings_launch_at_login: config.launch_at_login.enabled,
             settings_auto_start_monitoring: config.auto_start_monitoring,
@@ -5614,6 +5971,7 @@ mod tests {
             settings_minimize_to_tray: config.minimize_to_tray,
             settings_update_auto_check: config.updates.auto_check,
             settings_update_channel: config.updates.channel,
+            settings_update_install_behavior: config.updates.install_behavior,
             settings_service_id: config.service_id.clone(),
             settings_capture_backend: config.capture.backend.clone(),
             settings_capture_source: config.recorder.gsr().capture_source.clone(),
@@ -5813,6 +6171,18 @@ mod tests {
         }
     }
 
+    fn sample_prepared_update(asset_path: PathBuf) -> update::PreparedUpdate {
+        update::PreparedUpdate {
+            version: "9.9.9".into(),
+            tag_name: "v9.9.9".into(),
+            install_channel: update::InstallChannel::WindowsPortable,
+            asset_kind: update::types::UpdateAssetKind::Exe,
+            asset_name: "nanite-clip.exe".into(),
+            asset_path,
+            release_notes_url: "https://example.invalid/releases/v9.9.9".into(),
+        }
+    }
+
     #[tokio::test]
     async fn deleting_clip_without_saved_file_still_removes_row() {
         let store = ClipStore::open_in_memory().await.unwrap();
@@ -5848,6 +6218,89 @@ mod tests {
         assert_eq!(
             app.toasts.toasts()[0].duration,
             Some(App::EXTENDED_MESSAGE_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn hydrate_update_state_restores_staged_update_when_asset_exists() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "nanite-clip-update-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let asset_path = temp_root.join("nanite-clip.exe");
+        std::fs::write(&asset_path, b"updater").unwrap();
+
+        let mut config = Config::default();
+        config.updates.prepared_update = Some(sample_prepared_update(asset_path.clone()));
+        let update_state = hydrate_update_state_from_config(
+            &mut config,
+            update::InstallChannel::WindowsPortable,
+            update::current_version(),
+        );
+
+        assert!(matches!(update_state.phase, UpdatePhase::ReadyToInstall));
+        assert_eq!(
+            update_state
+                .prepared_update
+                .as_ref()
+                .map(|prepared| &prepared.asset_path),
+            Some(&asset_path)
+        );
+        assert!(config.updates.prepared_update.is_some());
+
+        let _ = std::fs::remove_file(&asset_path);
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn when_idle_updates_only_auto_apply_after_monitoring_stops() {
+        let mut config = Config::default();
+        config.updates.install_behavior = UpdateInstallBehavior::WhenIdle;
+
+        let mut app = sample_app(config);
+        app.update_state.prepared_update =
+            Some(sample_prepared_update(PathBuf::from("staged.exe")));
+        app.update_state.phase = UpdatePhase::ReadyToInstall;
+
+        assert!(!app.should_auto_apply_staged_update());
+
+        app.state = AppState::Idle;
+        app.active_session = None;
+
+        assert!(app.should_auto_apply_staged_update());
+    }
+
+    #[test]
+    fn next_automatic_update_check_uses_last_check_timestamp() {
+        let mut app = sample_app(Config::default());
+        let last_check = Utc::now() - chrono::Duration::hours(3);
+        app.update_state.last_checked_at = Some(last_check);
+
+        let next_check = next_automatic_update_check_at(&app).unwrap();
+
+        assert_eq!(next_check, last_check + chrono::Duration::hours(12));
+    }
+
+    #[test]
+    fn classify_update_error_prefers_verification_and_install_context() {
+        assert_eq!(
+            classify_update_error(
+                "downloaded update checksum mismatch",
+                UpdatePhase::Downloading
+            ),
+            UpdateErrorKind::Verification
+        );
+        assert_eq!(
+            classify_update_error("failed to launch updater helper", UpdatePhase::Applying),
+            UpdateErrorKind::Install
+        );
+        assert_eq!(
+            classify_update_error("GitHub request timed out", UpdatePhase::Checking),
+            UpdateErrorKind::Network
         );
     }
 

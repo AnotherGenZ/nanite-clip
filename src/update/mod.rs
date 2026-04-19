@@ -12,7 +12,10 @@ use semver::Version;
 use crate::config::UpdateChannel;
 
 pub use channel::detect_install_channel;
-pub use types::{AvailableRelease, InstallChannel, PreparedUpdate, UpdateState};
+pub use types::{
+    AvailableRelease, DownloadStep, InstallChannel, PreparedUpdate, UpdateErrorKind,
+    UpdateErrorState, UpdateInstallBehavior, UpdatePhase, UpdateProgressState, UpdateState,
+};
 
 pub const GITHUB_REPO: &str = "AnotherGenZ/nanite-clip";
 pub const MANIFEST_ASSET_NAME: &str = "nanite-clip-update-manifest.json";

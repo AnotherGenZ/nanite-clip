@@ -10,6 +10,7 @@ use crate::ui::layout::toolbar::toolbar;
 use crate::ui::overlay::banner::banner;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
 use crate::ui::theme::{self, Tokens};
+use crate::update::UpdatePhase;
 
 use super::super::shared::{ButtonTone, styled_button, with_tooltip};
 use super::super::{App, AppState, Message};
@@ -160,12 +161,21 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     }
 
     if let Some(release) = &app.update_state.latest_release {
-        let mut actions = row![
+        let next_check_label = super::super::next_automatic_update_check_at(app)
+            .map(|next_check| format!("Next check {}", super::clips::format_timestamp(next_check)))
+            .unwrap_or_else(|| "Automatic checks off".into());
+        let mut actions_top = row![
             with_tooltip(
                 styled_button("Release Notes", ButtonTone::Secondary)
                     .on_press(Message::OpenUpdateReleaseNotes)
                     .into(),
                 "Open the GitHub release page for the latest detected version.",
+            ),
+            with_tooltip(
+                styled_button("Remind Later", ButtonTone::Secondary)
+                    .on_press(Message::RemindUpdateLater)
+                    .into(),
+                "Hide automatic update reminders for the next 12 hours.",
             ),
             with_tooltip(
                 styled_button("Skip", ButtonTone::Danger)
@@ -176,27 +186,34 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
+        let mut actions_bottom = row![].spacing(8).align_y(iced::Alignment::Center);
+        let mut has_bottom_actions = false;
 
         if release.supports_download() {
-            actions = actions.push(with_tooltip(
-                styled_button(
+            actions_top = actions_top.push(with_tooltip(
+                {
+                    let button = styled_button(
+                        if app.update_state.has_downloaded_update() {
+                            "Install and Restart"
+                        } else {
+                            "Download Update"
+                        },
+                        if app.update_state.has_downloaded_update() {
+                            ButtonTone::Success
+                        } else {
+                            ButtonTone::Primary
+                        },
+                    );
                     if app.update_state.has_downloaded_update() {
-                        "Install and Restart"
+                        if matches!(app.update_state.phase, UpdatePhase::Applying) {
+                            button.into()
+                        } else {
+                            button.on_press(Message::ApplyDownloadedUpdate).into()
+                        }
                     } else {
-                        "Download Update"
-                    },
-                    if app.update_state.has_downloaded_update() {
-                        ButtonTone::Success
-                    } else {
-                        ButtonTone::Primary
-                    },
-                )
-                .on_press(if app.update_state.has_downloaded_update() {
-                    Message::ApplyDownloadedUpdate
-                } else {
-                    Message::DownloadAvailableUpdate
-                })
-                .into(),
+                        button.on_press(Message::DownloadAvailableUpdate).into()
+                    }
+                },
                 if app.update_state.has_downloaded_update() {
                     "Apply the downloaded update and relaunch NaniteClip."
                 } else {
@@ -205,18 +222,108 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             ));
         }
 
+        if app.update_state.has_downloaded_update() {
+            has_bottom_actions = true;
+            actions_bottom = actions_bottom
+                .push(with_tooltip(
+                    styled_button("Install When Idle", ButtonTone::Secondary)
+                        .on_press(Message::InstallDownloadedUpdateWhenIdle)
+                        .into(),
+                    "Keep the update staged and apply it automatically when monitoring stops.",
+                ))
+                .push(with_tooltip(
+                    styled_button("Install on Next Launch", ButtonTone::Secondary)
+                        .on_press(Message::InstallDownloadedUpdateOnNextLaunch)
+                        .into(),
+                    "Keep the update staged and prompt you again on the next launch.",
+                ));
+        }
+
+        let phase_description = match app.update_state.phase {
+            UpdatePhase::Checking
+            | UpdatePhase::Downloading
+            | UpdatePhase::Verifying
+            | UpdatePhase::Applying => app
+                .update_state
+                .progress
+                .as_ref()
+                .map(|progress| progress.detail.clone())
+                .unwrap_or_else(|| app.update_state.phase.label().into()),
+            UpdatePhase::ReadyToInstall => app
+                .update_state
+                .prepared_update
+                .as_ref()
+                .map(|prepared| format!("{} is downloaded and ready to install.", prepared.version))
+                .unwrap_or_else(|| "An update is available.".into()),
+            _ => {
+                if release.install_channel.supports_self_update() {
+                    format!(
+                        "{}. Install channel: {}. {}.",
+                        release.release_name,
+                        release.install_channel.label(),
+                        next_check_label
+                    )
+                } else {
+                    format!(
+                        "{} {}",
+                        release.install_channel.update_instructions(),
+                        next_check_label
+                    )
+                }
+            }
+        };
+
         system_panel = system_panel.push(
             banner(format!("Update {} is available", release.version))
                 .warning()
-                .description(if release.install_channel.supports_self_update() {
-                    format!(
-                        "{}. Install channel: {}.",
-                        release.release_name,
-                        release.install_channel.label()
-                    )
-                } else {
-                    release.install_channel.update_instructions().to_string()
-                })
+                .description(phase_description)
+                .build(),
+        );
+        system_panel = system_panel.push(actions_top);
+        if has_bottom_actions {
+            system_panel = system_panel.push(actions_bottom);
+        }
+    } else if let Some(prepared) = &app.update_state.prepared_update {
+        let mut actions = row![
+            with_tooltip(
+                styled_button("Install and Restart", ButtonTone::Success)
+                    .on_press(Message::ApplyDownloadedUpdate)
+                    .into(),
+                "Apply the downloaded update and relaunch NaniteClip.",
+            ),
+            with_tooltip(
+                styled_button("Install When Idle", ButtonTone::Secondary)
+                    .on_press(Message::InstallDownloadedUpdateWhenIdle)
+                    .into(),
+                "Keep the update staged and apply it automatically when monitoring stops.",
+            ),
+            with_tooltip(
+                styled_button("Install on Next Launch", ButtonTone::Secondary)
+                    .on_press(Message::InstallDownloadedUpdateOnNextLaunch)
+                    .into(),
+                "Keep the update staged and prompt you again on the next launch.",
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        if !prepared.release_notes_url.trim().is_empty() {
+            actions = actions.push(with_tooltip(
+                styled_button("Release Notes", ButtonTone::Secondary)
+                    .on_press(Message::OpenUpdateReleaseNotes)
+                    .into(),
+                "Open the GitHub release page for this staged update.",
+            ));
+        }
+
+        system_panel = system_panel.push(
+            banner(format!("Update {} is staged", prepared.version))
+                .warning()
+                .description(format!(
+                    "The downloaded {} is ready to install. Install behavior: {}.",
+                    prepared.asset_kind.label(),
+                    app.config.updates.install_behavior.label()
+                ))
                 .build(),
         );
         system_panel = system_panel.push(actions);
@@ -224,7 +331,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         system_panel = system_panel.push(
             banner("Update check failed")
                 .warning()
-                .description(error.clone())
+                .description(format!("{} issue: {}", error.kind.label(), error.detail))
                 .build(),
         );
     }
