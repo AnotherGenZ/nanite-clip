@@ -46,7 +46,7 @@ impl<'a, Message: 'a> SectionBuilder<'a, Message> {
             });
 
         let mut head: Column<'a, Message> = column![title].spacing(space.xxs);
-        if let Some(desc) = self.description {
+        if let Some(desc) = self.description.filter(|d| !d.is_empty()) {
             head = head.push(text(desc).size(font.size_sm).style(|theme: &iced::Theme| {
                 iced::widget::text::Style {
                     color: Some(theme::tokens_for(theme).color.muted_foreground),

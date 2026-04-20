@@ -74,7 +74,7 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
                     button.into()
                 }
             },
-            "Open the in-app changelog and updater details viewer for the active update target.",
+            "View changelog.",
         ),
     ]
     .spacing(8)
@@ -95,18 +95,17 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             styled_button("Start Monitoring", ButtonTone::Success)
                 .on_press(Message::runtime(RuntimeMessage::StartMonitoring))
                 .into(),
-            "Watch for PlanetSide 2 and start the recorder.",
+            "Start watching for PS2.",
         ),
         _ => with_tooltip(
             styled_button("Stop Monitoring", ButtonTone::Danger)
                 .on_press(Message::runtime(RuntimeMessage::StopMonitoring))
                 .into(),
-            "Stop monitoring and the recorder.",
+            "Stop the recorder.",
         ),
     };
 
     let header = page_header("Status")
-        .subtitle("Application state, sessions, and background jobs.")
         .action(action_button)
         .build();
 
@@ -156,7 +155,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     if let Some(status) = &app.runtime.obs_connection_status {
         system_panel = system_panel.push(match status {
             crate::capture::ObsConnectionStatus::Connected => banner("OBS reconnected")
-                .description("The websocket session was restored and monitoring is running again.")
+                .description("Reconnected successfully.")
                 .success()
                 .build(),
             crate::capture::ObsConnectionStatus::Reconnecting {
@@ -164,12 +163,12 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 next_retry_in_secs,
             } => banner("OBS disconnected")
                 .description(format!(
-                    "Reconnecting in the background (attempt {attempt}, retrying in {next_retry_in_secs}s)."
+                    "Reconnecting... (attempt {attempt}, {next_retry_in_secs}s)"
                 ))
                 .warning()
                 .build(),
             crate::capture::ObsConnectionStatus::Failed { reason } => banner("Cannot reconnect to OBS")
-                .description(format!("{reason}. NaniteClip will keep retrying in the background."))
+                .description(format!("{reason}. Retrying..."))
                 .error()
                 .build(),
         });
@@ -190,9 +189,9 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         AppState::Idle => {}
         _ => {
             let detail = match &app.runtime.lifecycle {
-                AppState::WaitingForGame => "Waiting for PlanetSide 2 to launch...",
+                AppState::WaitingForGame => "Waiting for PlanetSide 2...",
                 AppState::WaitingForLogin => {
-                    "PlanetSide 2 detected \u{2014} waiting for character login..."
+                    "PS2 detected \u{2014} waiting for login..."
                 }
                 _ => "",
             };
@@ -232,7 +231,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                             UpdateMessage::RollbackToPreviousInstalledVersion,
                         ))
                         .into(),
-                    "Download the last installed version and stage it as a rollback target.",
+                    "Revert to previous version.",
                 ),
             ]
             .spacing(8)
@@ -429,7 +428,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
 
     let jobs_content: Element<'_, Message> = if active_jobs.is_empty() && recent_jobs.is_empty() {
         empty_state("No background jobs")
-            .description("Background jobs like montage rendering and uploads will appear here.")
+            .description("Jobs will appear here.")
             .build()
             .into()
     } else {

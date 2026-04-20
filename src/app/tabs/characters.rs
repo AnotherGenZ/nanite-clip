@@ -120,9 +120,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let resolving_count = app.rules.resolving_characters.len();
     let total = app.config.characters.len();
 
-    let header = page_header("Characters")
-        .subtitle("Tracked PlanetSide 2 characters.")
-        .build();
+    let header = page_header("Characters").build();
 
     let status_bar = toolbar()
         .push(char_badge(
@@ -165,7 +163,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
 
     let tracked_section: Element<'_, Message> = if app.config.characters.is_empty() {
         empty_state("No characters tracked")
-            .description("Add a character above to start monitoring PlanetSide 2 events.")
+            .description("Add a character to get started.")
             .build()
             .into()
     } else {

@@ -1130,7 +1130,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         .build();
 
     let header = page_header("Rules")
-        .subtitle("Scoring rules, profiles, and auto-switching.")
+        .subtitle("")
         .action(sub_view_tabs)
         .build();
 
@@ -1193,19 +1193,19 @@ fn rules_split_view(app: &App) -> Element<'_, Message> {
             styled_button_row(icon_label("plus", "New"), ButtonTone::Success)
                 .on_press(Message::CreateRule)
                 .into(),
-            "New scoring rule with default weights.",
+            "Create rule.",
         ),
         with_tooltip(
             styled_button_row(icon_label("copy", "Dupe"), ButtonTone::Secondary)
                 .on_press(Message::DuplicateRule)
                 .into(),
-            "Duplicate the selected rule.",
+            "Duplicate rule.",
         ),
         with_tooltip(
             styled_button_row(icon_label("trash", "Del"), ButtonTone::Danger)
                 .on_press(Message::DeleteRule)
                 .into(),
-            "Delete the selected rule from all profiles.",
+            "Delete rule.",
         ),
     ]
     .spacing(4)
@@ -1216,13 +1216,13 @@ fn rules_split_view(app: &App) -> Element<'_, Message> {
             styled_button_row(icon_label("upload", "Export"), ButtonTone::Secondary)
                 .on_press(Message::ExportSelectedRule)
                 .into(),
-            "Export the selected rule as a standalone TOML bundle.",
+            "Export as TOML.",
         ),
         with_tooltip(
             styled_button_row(icon_label("download", "Import"), ButtonTone::Primary)
                 .on_press(Message::ImportRules)
                 .into(),
-            "Import one or more standalone rules from a TOML bundle.",
+            "Import from TOML.",
         ),
     ]
     .spacing(4)
@@ -1289,10 +1289,10 @@ fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Elemen
     let selected_profile = app.active_profile().map(ProfileOption::from_profile);
 
     let mut profile_section = section("Active Profile")
-        .description("Each profile controls which rules are enabled.")
+        .description("")
         .push(
             row![
-                field_label("Profile", "Switch the active profile.", 200.0),
+                field_label("Profile", "", 200.0),
                 pick_list(profile_options.to_vec(), selected_profile, |option| {
                     Message::SetActiveProfile(option.id)
                 })
@@ -1305,7 +1305,7 @@ fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Elemen
     if let Some(profile) = app.active_profile() {
         profile_section = profile_section.push(settings_text_field(
             "Profile Name",
-            "Rename the active profile.",
+            "",
             &profile.name,
             Message::RenameActiveProfile,
         ));
@@ -1317,31 +1317,31 @@ fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Elemen
                 styled_button("New Profile", ButtonTone::Success)
                     .on_press(Message::CreateProfile)
                     .into(),
-                "Copy the active profile's enabled rules into a new profile.",
+                "Create profile.",
             ),
             with_tooltip(
                 styled_button("Duplicate", ButtonTone::Secondary)
                     .on_press(Message::DuplicateActiveProfile)
                     .into(),
-                "Duplicate the current profile.",
+                "Duplicate profile.",
             ),
             with_tooltip(
                 styled_button("Delete", ButtonTone::Danger)
                     .on_press(Message::DeleteActiveProfile)
                     .into(),
-                "Delete the current profile (at least one must remain).",
+                "Delete profile.",
             ),
             with_tooltip(
                 styled_button("Export Active", ButtonTone::Secondary)
                     .on_press(Message::ExportActiveProfile)
                     .into(),
-                "Export the active profile and the rules it enables.",
+                "Export as TOML.",
             ),
             with_tooltip(
                 styled_button("Import", ButtonTone::Primary)
                     .on_press(Message::ImportProfiles)
                     .into(),
-                "Import one or more profiles and their associated rules from a TOML bundle.",
+                "Import from TOML.",
             ),
         ]
         .spacing(8)
@@ -1360,29 +1360,29 @@ fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Elemen
 
 fn auto_switch_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Element<'a, Message> {
     let mut content = panel("Automatic Profile Switching")
-        .description("Switch the active profile by time or character.");
+        .description("");
 
     if let Some(override_name) = app.manual_profile_override_name() {
         content = content.push(
             banner(format!(
-                "Manual override: auto-switching paused while \"{override_name}\" is pinned."
+                "Auto-switching paused — \"{override_name}\" is pinned."
             ))
             .warning()
-            .description("Auto-switch is paused until the manual pin is cleared.")
+            .description("")
             .build(),
         );
         content = content.push(with_tooltip(
             styled_button("Resume Auto-Switching", ButtonTone::Primary)
                 .on_press(Message::ResumeAutoSwitching)
                 .into(),
-            "Clear the manual pin so auto-switch rules can run.",
+            "Unpins the active profile.",
         ));
     }
 
     if app.config.auto_switch_rules.is_empty() {
         content = content.push(
             empty_state("No auto-switch rules")
-                .description("Switch profiles by schedule or active character.")
+                .description("")
                 .action(
                     styled_button("Add Auto-Switch Rule", ButtonTone::Success)
                         .on_press(Message::CreateAutoSwitchRule),
@@ -1444,7 +1444,7 @@ fn auto_switch_rule_card<'a>(
             styled_button("Delete", ButtonTone::Danger)
                 .on_press(Message::DeleteAutoSwitchRule(rule_id.clone()))
                 .into(),
-            "Delete this auto-switch rule.",
+            "Delete rule.",
         ),
     ]
     .spacing(8)
@@ -1454,7 +1454,7 @@ fn auto_switch_rule_card<'a>(
         header_row,
         settings_text_field(
             "Rule Name",
-            "Rename this auto-switch rule.",
+            "",
             &auto_rule.name,
             {
                 let rule_id = rule_id.clone();
@@ -1464,7 +1464,7 @@ fn auto_switch_rule_card<'a>(
         row![
             field_label(
                 "Target Profile",
-                "Profile that becomes active when this rule matches.",
+                "",
                 200.0,
             ),
             pick_list(profile_options.to_vec(), selected_profile, {
@@ -1478,7 +1478,7 @@ fn auto_switch_rule_card<'a>(
         row![
             field_label(
                 "Condition",
-                "Trigger by weekday/time schedule or monitored character.",
+                "",
                 200.0,
             ),
             pick_list(
@@ -1504,12 +1504,12 @@ fn auto_switch_rule_card<'a>(
                 row![
                     field_label(
                         "Active Characters",
-                        "Switch when any selected character is being monitored.",
+                        "",
                         200.0,
                     ),
                     if character_options.is_empty() {
                         Element::<Message>::from(
-                            text("Resolve at least one tracked character in the Characters tab.")
+                            text("Add a character first.")
                                 .size(13)
                                 .width(Length::Fill),
                         )
@@ -1564,7 +1564,7 @@ fn auto_switch_rule_card<'a>(
             let all_days_selected = weekdays.len() == ScheduleWeekday::ALL.len();
             body = body.push(
                 row![
-                    field_label("Schedule Days", "Weekdays this schedule applies to.", 200.0,),
+                    field_label("Schedule Days", "", 200.0,),
                     styled_button(
                         if all_days_selected {
                             "All Days"
@@ -1600,7 +1600,7 @@ fn auto_switch_rule_card<'a>(
                 row![
                     field_label(
                         "Time Window",
-                        "Local time range that activates this rule on selected days.",
+                        "",
                         200.0,
                     ),
                     styled_button("-", ButtonTone::Secondary)
@@ -1643,7 +1643,7 @@ fn auto_switch_rule_card<'a>(
 fn rule_editor_panel(app: &App) -> Element<'_, Message> {
     let Some(rule) = selected_rule(app) else {
         return empty_state("No rule selected")
-            .description("Pick a rule from the sidebar to configure its scoring behavior.")
+            .description("Select a rule from the sidebar.")
             .build()
             .into();
     };
@@ -1691,34 +1691,34 @@ fn rule_editor_panel(app: &App) -> Element<'_, Message> {
         section("Scoring")
             .push(settings_text_field(
                 "Name",
-                "Rename this rule (ID stays the same).",
+                "",
                 &rule.name,
                 Message::RenameRule,
             ))
             .push(settings_pick_list_field(
                 "Activation Class",
-                "Only score activity from this character class.",
+                "",
                 &ClassFilterChoice::ALL[..],
                 Some(ClassFilterChoice::from_option(rule.activation_class)),
                 Message::ActivationClassChanged,
             ))
             .push(settings_stepper_field(
                 "Lookback Window",
-                "Seconds of recent activity this rule scores at once.",
+                "",
                 rule.lookback_secs,
                 "sec",
                 Message::LookbackStepped,
             ))
             .push(settings_stepper_field(
                 "Trigger Threshold",
-                "Score required inside the window before firing.",
+                "",
                 rule.trigger_threshold,
                 "pts",
                 Message::TriggerThresholdStepped,
             ))
             .push(settings_stepper_field(
                 "Reset Threshold",
-                "Score the window must fall below before firing again.",
+                "",
                 rule.reset_threshold,
                 "pts",
                 Message::ResetThresholdStepped,
@@ -1762,7 +1762,7 @@ fn cooldown_row<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
     row![
         field_label(
             "Cooldown",
-            "Minimum wait after a trigger before firing again.",
+            "",
             200.0,
         ),
         toggle_switch(rule.cooldown_secs.is_some())
@@ -1791,21 +1791,21 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
 
     sec = sec.push(settings_stepper_field(
         "Base Duration",
-        "Minimum clip length before score scaling.",
+        "",
         rule.base_duration_secs,
         "sec",
         Message::BaseDurationStepped,
     ));
     sec = sec.push(settings_stepper_field(
         "Seconds Per Point",
-        "Extra clip time added per score point at trigger time.",
+        "",
         rule.secs_per_point,
         "sec",
         Message::SecondsPerPointStepped,
     ));
     sec = sec.push(settings_stepper_field(
         "Max Duration",
-        "Hard cap for the final computed clip duration.",
+        "",
         rule.max_duration_secs,
         "sec",
         Message::MaxDurationStepped,
@@ -1813,9 +1813,9 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
 
     // Duration preview badge
     let preview_text = if rule.use_full_buffer {
-        "Always saves the full replay buffer".into()
+        "Full buffer on every trigger".into()
     } else if rule.capture_entire_base_cap {
-        "Facility captures use full buffer; other triggers use the score formula".into()
+        "Full buffer on facility capture; score formula otherwise".into()
     } else {
         format!(
             "{}s base + {}s per point, capped at {}s",
@@ -1829,7 +1829,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
         row![
             field_label(
                 "Full Buffer",
-                "Always save the full replay buffer instead of the score formula.",
+                "",
                 200.0,
             ),
             toggle_switch(rule.use_full_buffer)
@@ -1844,7 +1844,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
         row![
             field_label(
                 "Entire Base Cap",
-                "On facility capture, save the full buffer.",
+                "",
                 200.0,
             ),
             toggle_switch(rule.capture_entire_base_cap)
@@ -1864,7 +1864,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
         row![
             field_label(
                 "Auto Extend",
-                "Keep one clip open while matching events continue.",
+                "",
                 200.0,
             ),
             toggle_switch(rule.extension.is_enabled())
@@ -1882,7 +1882,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
     if rule.extension.is_enabled() {
         sec = sec.push(settings_stepper_field(
             "Quiet Window",
-            "Quiet time before the pending clip finalizes.",
+            "",
             rule.extension.window_secs,
             "sec",
             Message::ExtensionWindowStepped,
@@ -1901,7 +1901,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
 
 fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<'a, Message> {
     let mut sec = section("Scored Events")
-        .description("Event types that contribute points within the lookback window.");
+        .description("");
 
     sec = sec.push(
         styled_button_row(icon_label("plus", "Add Event"), ButtonTone::Success)
@@ -1954,9 +1954,9 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                 .interaction(mouse::Interaction::Pointer)
                 .into(),
                 if is_expanded {
-                    "Click to collapse this event's editor."
+                    "Collapse"
                 } else {
-                    "Click to expand this event's editor."
+                    "Expand"
                 },
             ),
             iced::widget::Space::new().width(Length::Fill),
@@ -1973,7 +1973,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                 styled_button_row(icon_label("trash", ""), ButtonTone::Danger)
                     .on_press(Message::DeleteScoredEvent(event_index))
                     .into(),
-                "Remove this scored event.",
+                "Delete event.",
             ),
         ]
         .spacing(6)
@@ -1992,7 +1992,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                 let mut groups_col = column![].spacing(8);
                 if filter_groups.is_empty() {
                     groups_col = groups_col.push(
-                        text("No filter groups yet. Add one to start building AND / OR logic.")
+                        text("No filter groups. Add one below.")
                             .size(12),
                     );
                 } else {
@@ -2010,7 +2010,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                     styled_button_row(icon_label("plus", "Add OR Group"), ButtonTone::Success)
                         .on_press(Message::AddScoredEventFilterGroup(event_index))
                         .into(),
-                    "Add another OR branch (any group matching satisfies the filter).",
+                    "Add OR group.",
                 ));
                 groups_col.into()
             } else if filters_enabled {
@@ -2029,10 +2029,10 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                     .on_press(Message::ToggleFilterExpanded(rule.id.clone(), event_index))
                     .interaction(mouse::Interaction::Pointer)
                     .into(),
-                    "Click to expand the filter editor.",
+                    "Edit filters.",
                 )
             } else {
-                text("No extra filters: any matching event kind contributes.")
+                text("No filters active.")
                     .size(12)
                     .into()
             };
@@ -2042,7 +2042,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                     column![
                         summary_row,
                         row![
-                            field_label("Event Type", "Event type this weight row scores.", 120.0,),
+                            field_label("Event Type", "", 120.0,),
                             pick_list(
                                 &EventKind::ALL[..],
                                 Some(scored_event.event),
@@ -2057,7 +2057,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                         row![
                             field_label(
                                 "Points",
-                                "Points awarded each time this event fires.",
+                                "",
                                 120.0,
                             ),
                             styled_button("-", ButtonTone::Secondary)
@@ -2071,7 +2071,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                         row![
                             field_label(
                                 "Filters",
-                                "Optionally match a target, vehicle, or weapon.",
+                                "",
                                 120.0,
                             ),
                             toggle_switch(filters_enabled)
@@ -2120,7 +2120,7 @@ fn live_runtime_section<'a>(
         "Disarmed"
     };
 
-    let mut sec = section("Live Runtime").description("Real-time scoring state for this rule.");
+    let mut sec = section("Live Runtime").description("");
 
     sec = sec.push(
         row![
@@ -2154,7 +2154,7 @@ fn live_runtime_section<'a>(
     if let Some(extending_until) = status.extending_until {
         sec = sec.push(
             text(format!(
-                "Pending clip stays open until {} unless another matching event refreshes it.",
+                "Extending until {}",
                 extending_until.format("%H:%M:%S UTC")
             ))
             .size(12),
@@ -2425,7 +2425,7 @@ fn profile_import_overwrite_dialog<'a>(
         banner(format!("{conflict_count} existing item(s) already use the same id."))
             .warning()
             .description(
-                "Continuing will replace the matching profiles and rules. Overwritten rules also affect any existing profiles that already enable them.",
+                "Matching profiles and rules will be replaced.",
             )
             .build(),
     ]
@@ -2434,9 +2434,9 @@ fn profile_import_overwrite_dialog<'a>(
 
     if import_decision_shake_offset(app.rules.pending_profile_import_shake_started_at) != 0.0 {
         body = body.push(
-            banner("Choose Overwrite & Import or Cancel.")
+            banner("Choose an action below.")
                 .error()
-                .description("Backdrop clicks will not close this confirmation.")
+                .description("")
                 .build(),
         );
     }
@@ -2490,7 +2490,7 @@ fn rule_import_overwrite_dialog<'a>(
         banner(format!("{conflict_count} existing rule(s) already use the same id."))
             .warning()
             .description(
-                "Continuing will replace the matching rules. Overwritten rules immediately affect any profiles that already enable them.",
+                "Matching rules will be replaced.",
             )
             .build(),
     ]
@@ -2499,9 +2499,9 @@ fn rule_import_overwrite_dialog<'a>(
 
     if import_decision_shake_offset(app.rules.pending_rule_import_shake_started_at) != 0.0 {
         body = body.push(
-            banner("Choose Overwrite & Import or Cancel.")
+            banner("Choose an action below.")
                 .error()
-                .description("Backdrop clicks will not close this confirmation.")
+                .description("")
                 .build(),
         );
     }
@@ -3503,7 +3503,7 @@ fn render_filter_group_editor<'a>(
                         group_index
                     ))
                     .into(),
-                "Add another AND clause to this group.",
+                "Add AND clause.",
             ),
             with_tooltip(
                 styled_button_row(icon_label("trash", "Delete Group"), ButtonTone::Danger)
@@ -3512,7 +3512,7 @@ fn render_filter_group_editor<'a>(
                         group_index
                     ))
                     .into(),
-                "Delete this OR group.",
+                "Delete group.",
             ),
         ]
         .spacing(8)
@@ -3562,7 +3562,7 @@ fn render_filter_clause_editor<'a>(
                 .character_id
                 .map(|id| format!("https://wt.honu.pw/c/{id}")),
             "Target username",
-            "Character name; press Resolve to look up via Census.",
+            "Resolve to look up ID.",
         ),
         ScoredEventFilterClause::TargetOutfit { outfit } => render_text_filter_clause_editor(
             app,
@@ -3573,28 +3573,28 @@ fn render_filter_clause_editor<'a>(
                 .outfit_id
                 .map(|id| format!("https://wt.honu.pw/o/{id}")),
             "Target outfit tag",
-            "Outfit tag; press Resolve to look up via Census.",
+            "Resolve to look up ID.",
         ),
         ScoredEventFilterClause::AttackerVehicle { vehicle } => {
             render_vehicle_filter_clause_editor(
                 app,
                 path.clone(),
                 vehicle,
-                "Match the attacker's vehicle type.",
+                "Attacker vehicle.",
             )
         }
         ScoredEventFilterClause::AttackerWeapon { weapon } => render_weapon_filter_clause_editor(
             app,
             path.clone(),
             weapon,
-            "Match the attacker's weapon.",
+            "Attacker weapon.",
         ),
         ScoredEventFilterClause::DestroyedVehicle { vehicle } => {
             render_vehicle_filter_clause_editor(
                 app,
                 path.clone(),
                 vehicle,
-                "Match the destroyed vehicle type.",
+                "Destroyed vehicle.",
             )
         }
         ScoredEventFilterClause::Any { clauses } => {
@@ -3606,7 +3606,7 @@ fn render_filter_clause_editor<'a>(
         render_drag_handle(
             is_drag_source,
             Message::StartFilterClauseDrag(path.clone()),
-            "Drag to reorder AND conditions.",
+            "Drag to reorder.",
         ),
         text(if path.is_first_in_group() {
             "IF"
@@ -3630,7 +3630,7 @@ fn render_filter_clause_editor<'a>(
             styled_button_row(icon_label("trash", "Delete"), ButtonTone::Danger)
                 .on_press(Message::DeleteScoredEventFilterClause(path.clone()))
                 .into(),
-            "Delete this clause from the group.",
+            "Delete clause.",
         ),
     ]
     .spacing(8)
@@ -3656,7 +3656,7 @@ fn render_nested_any_clause_editor<'a>(
                 styled_button_row(icon_label("plus", "Add OR Clause"), ButtonTone::Secondary)
                     .on_press(Message::AddNestedOrClause(path.clone()))
                     .into(),
-                "Add another OR branch inside this nested clause.",
+                "Add OR clause.",
             ),
         ]
         .spacing(8)
@@ -3710,7 +3710,7 @@ fn render_nested_or_option_editor<'a>(
                 .character_id
                 .map(|id| format!("https://wt.honu.pw/c/{id}")),
             "Target username",
-            "Character name; press Resolve to look up via Census.",
+            "Resolve to look up ID.",
         ),
         ScoredEventFilterClause::TargetOutfit { outfit } => render_text_filter_clause_editor(
             app,
@@ -3721,28 +3721,28 @@ fn render_nested_or_option_editor<'a>(
                 .outfit_id
                 .map(|id| format!("https://wt.honu.pw/o/{id}")),
             "Target outfit tag",
-            "Outfit tag; press Resolve to look up via Census.",
+            "Resolve to look up ID.",
         ),
         ScoredEventFilterClause::AttackerVehicle { vehicle } => {
             render_vehicle_filter_clause_editor(
                 app,
                 path.clone(),
                 vehicle,
-                "Match the attacker's vehicle type.",
+                "Attacker vehicle.",
             )
         }
         ScoredEventFilterClause::AttackerWeapon { weapon } => render_weapon_filter_clause_editor(
             app,
             path.clone(),
             weapon,
-            "Match the attacker's weapon.",
+            "Attacker weapon.",
         ),
         ScoredEventFilterClause::DestroyedVehicle { vehicle } => {
             render_vehicle_filter_clause_editor(
                 app,
                 path.clone(),
                 vehicle,
-                "Match the destroyed vehicle type.",
+                "Destroyed vehicle.",
             )
         }
         ScoredEventFilterClause::Any { clauses } => {
@@ -3754,7 +3754,7 @@ fn render_nested_or_option_editor<'a>(
         render_drag_handle(
             is_drag_source,
             Message::StartFilterClauseDrag(path.clone()),
-            "Drag to reorder OR branches.",
+            "Drag to reorder.",
         ),
         text("OR").width(32),
         pick_list(&FilterClauseKindChoice::NESTED_ALL[..], Some(kind), {
@@ -3767,7 +3767,7 @@ fn render_nested_or_option_editor<'a>(
             styled_button_row(icon_label("trash", "Delete"), ButtonTone::Danger)
                 .on_press(Message::DeleteScoredEventFilterClause(path))
                 .into(),
-            "Delete this OR branch.",
+            "Delete clause.",
         ),
     ]
     .spacing(8)
@@ -3815,14 +3815,14 @@ fn render_text_filter_clause_editor<'a>(
             styled_button("Resolve", ButtonTone::Secondary)
                 .on_press(Message::ResolveRuleFilterDraft(key))
                 .into(),
-            "Look up via Census and store the stable ID.",
+            "Census lookup.",
         ),
         if let Some(url) = honu_url {
             with_tooltip(
                 styled_button("Honu", ButtonTone::Secondary)
                     .on_press(Message::OpenHonuReference(url))
                     .into(),
-                "Open this resolved reference on Honu",
+                "View on Honu.",
             )
         } else {
             styled_button("Honu", ButtonTone::Secondary).into()
@@ -3854,7 +3854,7 @@ fn render_vehicle_filter_clause_editor<'a>(
             })
             .width(170)
             .into(),
-            "Choose a vehicle group first to narrow the list.",
+            "Vehicle category.",
         ),
         with_tooltip(
             pick_list(
@@ -3909,7 +3909,7 @@ fn render_weapon_filter_clause_editor<'a>(
             })
             .width(170)
             .into(),
-            "Choose a broad weapon group first to narrow the list.",
+            "Weapon group.",
         ),
         with_tooltip(
             pick_list(category_choices, Some(category), {
@@ -3918,7 +3918,7 @@ fn render_weapon_filter_clause_editor<'a>(
             })
             .width(190)
             .into(),
-            "Choose a weapon subcategory within that group.",
+            "Weapon category.",
         ),
         with_tooltip(
             pick_list(faction_choices, Some(faction), {
@@ -3927,7 +3927,7 @@ fn render_weapon_filter_clause_editor<'a>(
             })
             .width(130)
             .into(),
-            "Filter that category by faction grouping.",
+            "Faction filter.",
         ),
         with_tooltip(
             pick_list(

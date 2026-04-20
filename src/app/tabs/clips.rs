@@ -473,7 +473,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             };
             let Some(path) = record.path.clone() else {
                 app.set_clip_error(
-                    "This clip does not have a saved file path yet. New clips will populate it after they finish saving.",
+                    "File not saved yet.",
                 );
                 return Task::none();
             };
@@ -514,7 +514,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             };
             let Some(path) = record.path.clone() else {
                 app.set_clip_error(format!(
-                    "Clip #{clip_id} does not have a saved path to retry audio post-processing."
+                    "No file to reprocess."
                 ));
                 return Task::none();
             };
@@ -991,13 +991,13 @@ fn calendar_input(app: &App, field: CalendarField) -> &str {
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let header = {
         let mut builder =
-            page_header("Clips").subtitle("Browse, inspect, and package saved clips.");
+            page_header("Clips");
         if active_filter_count(app) > 0 {
             builder = builder.action(with_tooltip(
                 styled_button("Clear filters", ButtonTone::Secondary)
                     .on_press(Message::ClearFilters)
                     .into(),
-                "Reset search, metadata, and date filters.",
+                "Clear all filters.",
             ));
         }
         builder.build()
@@ -1059,7 +1059,7 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
     // Basic row: search + date preset + profile + rule + character
     let basic_row = row![
         text_input(
-            "Search profiles, rules, characters, servers, bases, events...",
+            "Search...",
             &app.clips.filters.search,
         )
         .on_input(Message::SearchChanged)
@@ -1113,7 +1113,7 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
         styled_button(advanced_label, ButtonTone::Secondary)
             .on_press(Message::ToggleAdvancedFilters)
             .into(),
-        "Target, weapon, alert, overlap, server, continent, and base filters.",
+        "More filters.",
     );
 
     let reset_button: Element<'static, Message> = if active > 0 {
@@ -1121,7 +1121,7 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
             styled_button("Reset", ButtonTone::Secondary)
                 .on_press(Message::ClearFilters)
                 .into(),
-            "Reset every filter back to the defaults.",
+            "Reset filters.",
         )
     } else {
         styled_button("Reset", ButtonTone::Secondary).into()
@@ -1380,7 +1380,7 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
         } else {
             with_tooltip(
                 styled_button("Create montage", ButtonTone::Primary).into(),
-                "Select at least two clips to build a montage.",
+                "Select 2+ clips.",
             )
         };
         bar.trailing(montage_button).build()
@@ -1528,7 +1528,7 @@ fn header_sort_cell(
 fn history_body_rows(app: &App, page: usize, page_size: usize) -> Element<'static, Message> {
     if app.clips.history.is_empty() {
         return empty_state("No matching clips")
-            .description("Adjust the search, widen the range, or clear filters.")
+            .description("Try different filters.")
             .build()
             .into();
     }
@@ -1722,7 +1722,7 @@ fn montage_selection_checkbox(
     };
     with_tooltip(
         checkbox,
-        block_reason.unwrap_or("Select for the montage builder."),
+        block_reason.unwrap_or("Add to montage."),
     )
 }
 
@@ -1758,20 +1758,17 @@ fn flag_badges(record: &ClipRecord) -> Element<'static, Message> {
         crate::db::PostProcessStatus::Failed => {
             items.push(with_tooltip(
                 badge("PP").tone(BadgeTone::Destructive).build().into(),
-                "Audio post-processing failed — see audio recovery in the detail panel.",
+                "Audio processing failed.",
             ));
         }
         crate::db::PostProcessStatus::Pending => {
             items.push(with_tooltip(
                 badge("PP").tone(BadgeTone::Warning).build().into(),
-                "Audio post-processing pending — upload and export may be blocked.",
+                "Audio processing pending.",
             ));
         }
         crate::db::PostProcessStatus::Completed => {
-            items.push(with_tooltip(
-                badge("PP").tone(BadgeTone::Success).build().into(),
-                "Audio post-processing complete.",
-            ));
+            items.push(badge("PP").tone(BadgeTone::Success).build().into());
         }
         _ => {}
     }
@@ -1797,8 +1794,7 @@ fn clip_detail_workspace(app: &App) -> Element<'static, Message> {
     } else if app.clips.detail_loading {
         panel("Clip detail")
             .push(
-                empty_state("Loading clip detail")
-                    .description("Resolving the selected clip from storage.")
+                empty_state("Loading...")
                     .build(),
             )
             .build()
@@ -1808,7 +1804,7 @@ fn clip_detail_workspace(app: &App) -> Element<'static, Message> {
             .push(
                 empty_state("No clip selected")
                     .description(
-                        "Arrow keys navigate, Enter opens, Space toggles montage selection, Delete removes.",
+                        "Arrow keys, Enter, Space, Delete",
                     )
                     .build(),
             )
@@ -1841,21 +1837,13 @@ fn clip_detail_panel(app: &App, detail: &ClipDetailRecord) -> Element<'static, M
     ) {
         content = content.push(
             section("Audio recovery")
-                .description("Audio post-process failed. Retry or keep the original tracks.")
+                .description("Audio post-process failed.")
                 .push(
                     row![
-                        with_tooltip(
-                            styled_button("Retry audio post-process", ButtonTone::Warning)
-                                .on_press(Message::RetryPostProcessRequested(record.id))
-                                .into(),
-                            "Re-run audio post-processing.",
-                        ),
-                        with_tooltip(
-                            styled_button("Use original audio", ButtonTone::Secondary)
-                                .on_press(Message::UseOriginalAudioRequested(record.id))
-                                .into(),
-                            "Keep the original audio.",
-                        ),
+                        styled_button("Retry audio post-process", ButtonTone::Warning)
+                            .on_press(Message::RetryPostProcessRequested(record.id)),
+                        styled_button("Use original audio", ButtonTone::Secondary)
+                            .on_press(Message::UseOriginalAudioRequested(record.id)),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
@@ -1936,20 +1924,16 @@ fn detail_actions_section(
     let clip_id = record.id;
 
     // Primary row — the clip file itself.
-    let open_button = with_tooltip(
-        if record.path.is_some() {
-            styled_button("Open", ButtonTone::Primary)
-                .on_press(Message::OpenRequested(clip_id))
-                .into()
-        } else {
-            styled_button("Open", ButtonTone::Primary).into()
-        },
-        if record.path.is_some() {
-            "Open the saved clip file."
-        } else {
-            "No saved file attached."
-        },
-    );
+    let open_button: Element<'static, Message> = if record.path.is_some() {
+        styled_button("Open", ButtonTone::Primary)
+            .on_press(Message::OpenRequested(clip_id))
+            .into()
+    } else {
+        with_tooltip(
+            styled_button("Open", ButtonTone::Primary).into(),
+            "No saved file attached.",
+        )
+    };
     let delete_label: &'static str = if deleting { "Deleting..." } else { "Delete" };
     let delete_button = with_tooltip(
         if deleting {
@@ -1960,18 +1944,15 @@ fn detail_actions_section(
                 .into()
         },
         if record.path.is_some() {
-            "Delete this clip after confirmation."
+            "Delete clip."
         } else {
-            "Remove this clip row from history."
+            "Remove from history."
         },
     );
     let honu_button: Option<Element<'static, Message>> = record.honu_session_id.map(|id| {
-        with_tooltip(
-            styled_button("Honu session", ButtonTone::Secondary)
-                .on_press(Message::OpenHonuSession(id))
-                .into(),
-            "Open this session on Honu.",
-        )
+        styled_button("Honu session", ButtonTone::Secondary)
+            .on_press(Message::OpenHonuSession(id))
+            .into()
     });
 
     let mut primary_row = row![open_button, delete_button]
@@ -1990,7 +1971,7 @@ fn detail_actions_section(
         } else {
             styled_button("Chapters", ButtonTone::Secondary).into()
         },
-        "Export chapter markers as a sidecar file.",
+        "Export chapters.",
     );
     let subtitle_button = with_tooltip(
         if can_export_timeline {
@@ -2000,7 +1981,7 @@ fn detail_actions_section(
         } else {
             styled_button("Subtitles", ButtonTone::Secondary).into()
         },
-        "Export timeline markers as a sidecar SRT file.",
+        "Export as SRT.",
     );
 
     // Storage tier toggle
@@ -2065,13 +2046,13 @@ fn storage_tier_toggle(clip_id: i64, current: StorageTier) -> Element<'static, M
             "Primary",
             current == StorageTier::Primary,
             Message::SetStorageTier(clip_id, StorageTier::Primary),
-            "Keep on primary (fast) storage.",
+            "Keep on fast storage.",
         ),
         segmented_button(
             "Archive",
             current == StorageTier::Archive,
             Message::SetStorageTier(clip_id, StorageTier::Archive),
-            "Move to archive (cold) storage.",
+            "Move to cold storage.",
         ),
     ]
     .spacing(0)
@@ -2296,7 +2277,7 @@ fn audio_tracks_section(app: &App, detail: &ClipDetailRecord) -> Element<'static
     if !collapsed {
         if count == 0 {
             wrapper = wrapper.push(
-                text("No explicit audio track metadata is recorded for this clip.")
+                text("No audio metadata.")
                     .size(12)
                     .style(|theme: &iced::Theme| TextStyle {
                         color: Some(theme::tokens_for(theme).color.muted_foreground),
@@ -2349,7 +2330,7 @@ fn uploads_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Mes
     if !collapsed {
         if count == 0 {
             wrapper = wrapper.push(
-                text("No upload history recorded for this clip yet.")
+                text("No uploads yet.")
                     .size(12)
                     .style(|theme: &iced::Theme| TextStyle {
                         color: Some(theme::tokens_for(theme).color.muted_foreground),
@@ -2419,7 +2400,7 @@ fn alerts_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Mess
     if !collapsed {
         if count == 0 {
             wrapper = wrapper.push(
-                text("No linked alert context was captured for this clip.")
+                text("No alert context.")
                     .size(12)
                     .style(|theme: &iced::Theme| TextStyle {
                         color: Some(theme::tokens_for(theme).color.muted_foreground),
@@ -2478,7 +2459,7 @@ fn overlaps_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Me
     if !collapsed {
         if count == 0 {
             wrapper = wrapper.push(
-                text("No overlapping saved clips were linked to this record.")
+                text("No overlaps.")
                     .size(12)
                     .style(|theme: &iced::Theme| TextStyle {
                         color: Some(theme::tokens_for(theme).color.muted_foreground),
@@ -2557,7 +2538,7 @@ fn raw_events_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, 
     if !collapsed {
         if total_count == 0 {
             wrapper = wrapper.push(
-                text("No raw event markers were captured for this clip.")
+                text("No events captured.")
                     .size(12)
                     .style(|theme: &iced::Theme| TextStyle {
                         color: Some(theme::tokens_for(theme).color.muted_foreground),
@@ -2660,13 +2641,13 @@ fn montage_queue_dialog(app: &App) -> Element<'static, Message> {
     } else {
         with_tooltip(
             styled_button("Confirm montage", ButtonTone::Primary).into(),
-            "Select at least two clips to build a montage.",
+            "Select 2+ clips.",
         )
     };
 
     let mut content = column![
         text("Create montage").size(20),
-        text("Reorder or remove clips, then confirm to start a background montage job.")
+        text("Reorder clips and confirm.")
             .size(13)
             .style(|theme: &iced::Theme| TextStyle {
                 color: Some(theme::tokens_for(theme).color.muted_foreground),
@@ -2690,7 +2671,7 @@ fn montage_queue_dialog(app: &App) -> Element<'static, Message> {
     if app.clips.montage_selection.is_empty() {
         content = content.push(
             empty_state("No clips selected")
-                .description("Select clips in the history table first.")
+                .description("Select clips first.")
                 .build(),
         );
     } else {
@@ -2715,7 +2696,7 @@ fn montage_queue_dialog(app: &App) -> Element<'static, Message> {
                         character_label(app, record)
                     )
                 })
-                .unwrap_or_else(|| "No longer present in the loaded history.".into());
+                .unwrap_or_else(|| "No longer available.".into());
 
             let badges = row![
                 clips_badge(format!("Position {}", index + 1), BadgeTone::Primary),

@@ -75,10 +75,11 @@ pub(super) fn field_label<'a, M: 'a>(
     description: &'a str,
     width: f32,
 ) -> Element<'a, M> {
-    column![text(label).size(14), text(description).size(12),]
-        .spacing(2)
-        .width(width)
-        .into()
+    let mut col = column![text(label).size(14)].spacing(2).width(width);
+    if !description.is_empty() {
+        col = col.push(text(description).size(12));
+    }
+    col.into()
 }
 
 pub(super) fn settings_text_field<'a, M: Clone + 'a>(

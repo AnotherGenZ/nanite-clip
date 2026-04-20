@@ -186,7 +186,6 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let header = page_header("Stats")
-        .subtitle("Aggregate clip statistics.")
         .action(
             row![
                 with_tooltip(
@@ -254,7 +253,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
             days.reverse();
             content = content.push(histogram_panel(
                 "Clips per day",
-                "Activity over time, one row per day.",
+                "",
                 StatsSection::ClipsPerDay,
                 app,
                 "Day",
@@ -276,7 +275,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         if !section_is_collapsed(app, StatsSection::ClipsPerRule) {
             content = content.push(histogram_panel(
                 "Clips per rule",
-                "Which rules are generating the most clips.",
+                "",
                 StatsSection::ClipsPerRule,
                 app,
                 "Rule",
@@ -298,7 +297,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         if !section_is_collapsed(app, StatsSection::ScoreDistribution) {
             content = content.push(histogram_panel(
                 "Score distribution",
-                "How clip scores are spread across buckets.",
+                "",
                 StatsSection::ScoreDistribution,
                 app,
                 "Range",
@@ -328,7 +327,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 .collect();
             content = content.push(histogram_panel(
                 "Top bases",
-                "Bases where clips are most frequently triggered.",
+                "",
                 StatsSection::TopBases,
                 app,
                 "Base",
@@ -347,7 +346,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         if !section_is_collapsed(app, StatsSection::TopWeapons) {
             content = content.push(histogram_panel(
                 "Top weapons",
-                "Weapons appearing most in clip events.",
+                "",
                 StatsSection::TopWeapons,
                 app,
                 "Weapon",
@@ -369,7 +368,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         if !section_is_collapsed(app, StatsSection::TopTargets) {
             content = content.push(histogram_panel(
                 "Top targets",
-                "Characters you've encountered most in clip events.",
+                "",
                 StatsSection::TopTargets,
                 app,
                 "Character",
@@ -392,7 +391,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         if !raw_events_collapsed {
             content = content.push(histogram_panel(
                 "Raw event kinds (advanced)",
-                "Low-level event types across all clip events. Useful for debugging rules.",
+                "For debugging rules.",
                 StatsSection::RawEventKinds,
                 app,
                 "Event kind",
@@ -412,7 +411,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     } else if !app.stats.loading {
         content = content.push(
             empty_state("No stats yet.")
-                .description("Save a few clips to build a dataset.")
+                .description("Clips will populate this.")
                 .build(),
         );
     }

@@ -988,7 +988,6 @@ pub(in crate::app) fn refresh_audio_sources(app: &mut App) -> iced::Task<AppMess
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
     let header = page_header("Settings")
-        .subtitle("Capture, automation, delivery, and maintenance.")
         .build();
 
     let status_bar = toolbar()
@@ -1111,7 +1110,6 @@ fn settings_sidebar(app: &App) -> Element<'_, Message> {
         .header(
             column![
                 text("Settings Areas").size(13),
-                text("Pick a section to edit on the right.").size(12),
             ]
             .spacing(4),
         )
@@ -1174,19 +1172,14 @@ fn settings_draft_bar(_app: &App) -> Element<'_, Message> {
         row![
             column![
                 text("Unsaved changes").size(14),
-                text(
-                    "Save to persist config changes and refresh integrations, or revert this draft."
-                )
+                text("You have unsaved changes.")
                 .size(12)
                 .width(360),
             ]
             .spacing(4)
             .width(Length::Shrink),
             revert_button,
-            with_tooltip(
-                save_button,
-                "Save settings to disk and refresh integrations.",
-            ),
+            with_tooltip(save_button, "Save and apply changes."),
         ]
         .spacing(12)
         .align_y(iced::Alignment::Center),
@@ -1336,9 +1329,9 @@ fn apply_settings_draft_from_config(app: &mut App) {
 
 fn settings_overview_cards(app: &App) -> Element<'_, Message> {
     let startup_summary = if app.settings.auto_start_monitoring {
-        "Starts monitoring automatically."
+        "Auto-monitors on launch."
     } else {
-        "Launches idle until you start monitoring."
+        "Starts idle."
     };
     let capture_summary = if selected_capture_backend(app) == CaptureBackendPreset::Obs {
         format!(
@@ -1462,29 +1455,29 @@ fn runtime_panel(app: &App) -> Element<'_, Message> {
     panel("Runtime")
         .push(settings_section_block(
             "Lifecycle",
-            "How the app launches and starts monitoring.",
+            "",
             vec![
                 settings_toggle_row(
                     "Launch at Login",
-                    "Launch the app at login using the platform backend.",
+                    "",
                     app.settings.launch_at_login,
                     Message::LaunchAtLoginToggled,
                 ),
                 settings_toggle_row(
                     "Auto-Start Monitoring",
-                    "Start monitoring immediately after launch.",
+                    "",
                     app.settings.auto_start_monitoring,
                     Message::AutoStartMonitoringToggled,
                 ),
                 settings_toggle_row(
                     "Start Minimized",
-                    "Start in the background instead of the main window.",
+                    "",
                     app.settings.start_minimized,
                     Message::StartMinimizedToggled,
                 ),
                 settings_toggle_row(
                     "Minimize to Tray",
-                    "Closing the window keeps the app in the tray.",
+                    "",
                     app.settings.minimize_to_tray,
                     Message::MinimizeToTrayToggled,
                 ),
@@ -1492,10 +1485,10 @@ fn runtime_panel(app: &App) -> Element<'_, Message> {
         ))
         .push(settings_section_block(
             "Census Access",
-            "Daybreak Census credentials for lookups and live events.",
+            "",
             vec![settings_text_field(
                 "Census Service ID",
-                "Daybreak Census service ID for API and realtime events.",
+                "",
                 &app.settings.service_id,
                 Message::ServiceIdChanged,
             )],
@@ -1510,7 +1503,7 @@ fn capture_panel(app: &App) -> Element<'_, Message> {
             row![
                 field_label(
                     "Recorder Backend",
-                    "Stop monitoring before switching capture backends.",
+                    "Stop monitoring first.",
                     200.0,
                 ),
                 text(selected_capture_backend(app).to_string()).size(14),
@@ -1518,14 +1511,11 @@ fn capture_panel(app: &App) -> Element<'_, Message> {
             .spacing(8)
             .align_y(iced::Alignment::Center)
             .into(),
-            text("Stop monitoring before changing capture backends.")
-                .size(12)
-                .into(),
         ]
     } else {
         vec![settings_pick_list_field(
             "Recorder Backend",
-            "Choose the replay-buffer backend NaniteClip controls.",
+            "",
             CaptureBackendPreset::all(),
             Some(selected_capture_backend(app)),
             Message::CaptureBackendSelected,
@@ -1534,7 +1524,7 @@ fn capture_panel(app: &App) -> Element<'_, Message> {
 
     let backend_panel = settings_section_block(
         "Backend",
-        "Select which capture stack NaniteClip controls on this machine.",
+        "",
         backend_controls,
     );
 
@@ -1555,66 +1545,66 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
     let mut video_rows = vec![
         settings_pick_list_field(
             "Capture Source",
-            "How gpu-screen-recorder captures the game window.",
+            "",
             &CaptureSourcePreset::ALL[..],
             Some(CaptureSourcePreset::from_value(
                 app.settings.capture_source.as_str(),
             )),
             Message::CaptureSourcePresetSelected,
         ),
-        text("Automatic: X11 binds the PS2 window; Wayland uses the desktop portal.")
+        text("X11: window bind. Wayland: portal.")
             .size(12)
             .into(),
         settings_text_field_with_button(
             "Save Directory",
-            "Directory where saved clips are written.",
+            "",
             &app.settings.save_dir,
             Message::SaveDirChanged,
             with_tooltip(
                 styled_button("Browse", ButtonTone::Secondary)
                     .on_press(Message::PickSaveDirectory)
                     .into(),
-                "Open a folder picker for the clip save directory.",
+                "Pick save folder.",
             ),
         ),
         settings_stepper_field(
             "Framerate",
-            "Target recording frame rate for the replay buffer.",
+            "",
             current_framerate(app),
             "fps",
             Message::FramerateStepped,
         ),
         settings_pick_list_field(
             "Codec",
-            "Select the video codec used by gpu-screen-recorder.",
+            "",
             &CodecPreset::ALL[..],
             Some(CodecPreset::from_value(app.settings.codec.as_str())),
             Message::CodecPresetSelected,
         ),
         settings_stepper_field(
             "Quality (bitrate)",
-            "Target encoder bitrate in kilobits per second.",
+            "",
             current_quality(app),
             "kbps",
             Message::QualityStepped,
         ),
         settings_pick_list_field(
             "Container Format",
-            "Choose the output container format for saved clips.",
+            "",
             &ContainerPreset::ALL[..],
             Some(ContainerPreset::from_value(app.settings.container.as_str())),
             Message::ContainerPresetSelected,
         ),
         settings_stepper_field(
             "Replay Buffer",
-            "Seconds of recent gameplay kept available for saving.",
+            "",
             current_buffer_secs(app),
             "sec",
             Message::BufferSecsStepped,
         ),
         settings_stepper_field(
             "Save Delay",
-            "Delay after a trigger to include more post-event footage.",
+            "Post-trigger delay.",
             current_save_delay(app),
             "sec",
             Message::SaveDelayStepped,
@@ -1626,7 +1616,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
     {
         video_rows.push(settings_text_field(
             "Custom Capture Source",
-            "Manual source string passed to gpu-screen-recorder.",
+            "",
             &app.settings.capture_source,
             Message::CaptureSourceChanged,
         ));
@@ -1635,7 +1625,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
     if CodecPreset::from_value(app.settings.codec.as_str()) == CodecPreset::Custom {
         video_rows.push(settings_text_field(
             "Custom Codec",
-            "Manual codec name passed to gpu-screen-recorder.",
+            "",
             &app.settings.codec,
             Message::CodecChanged,
         ));
@@ -1644,7 +1634,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
     if ContainerPreset::from_value(app.settings.container.as_str()) == ContainerPreset::Custom {
         video_rows.push(settings_text_field(
             "Custom Container",
-            "Manual container format passed to gpu-screen-recorder.",
+            "",
             &app.settings.container,
             Message::ContainerChanged,
         ));
@@ -1652,7 +1642,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
 
     settings_section_block(
         "gpu-screen-recorder",
-        "Core capture and encoding settings.",
+        "",
         video_rows,
     )
 }
@@ -1661,7 +1651,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
     let mut rows = vec![
         settings_text_field(
             "OBS WebSocket URL",
-            "obs-websocket endpoint, usually ws://127.0.0.1:4455.",
+            "",
             &app.settings.obs_websocket_url,
             Message::ObsWebsocketUrlChanged,
         ),
@@ -1671,7 +1661,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
             } else {
                 "OBS Password"
             },
-            "Paste to replace the stored OBS websocket password. Leave blank to keep the current credential.",
+            "",
             &app.settings.obs_password_input,
             Message::ObsPasswordChanged,
         ),
@@ -1692,13 +1682,13 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
                 styled_button("Clear OBS Password", ButtonTone::Danger)
                     .on_press(Message::ClearObsPassword)
                     .into(),
-                "Remove the stored OBS websocket credential.",
+                "Clear password.",
             ),
             with_tooltip(
                 styled_button("Test Connection", ButtonTone::Secondary)
                     .on_press(Message::ObsTestConnection)
                     .into(),
-                "Connect to OBS and verify the websocket settings before saving.",
+                "Test connection.",
             ),
         ]
         .spacing(8)
@@ -1706,14 +1696,14 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
         .into(),
         settings_pick_list_field(
             "Management Mode",
-            "Bring Your Own only triggers saves; Managed Recording also pushes output settings to the active OBS profile.",
+            "How much NaniteClip controls OBS.",
             &OBS_MANAGEMENT_MODES[..],
             Some(app.settings.obs_management_mode),
             Message::ObsManagementModeSelected,
         ),
         settings_stepper_field(
             "Save Delay",
-            "Delay after a trigger to include more post-event footage.",
+            "Post-trigger delay.",
             current_save_delay(app),
             "sec",
             Message::SaveDelayStepped,
@@ -1723,9 +1713,9 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
     match app.settings.obs_management_mode {
         ObsManagementMode::BringYourOwn => {
             rows.push(
-                banner("OBS owns the scene and replay-buffer setup")
+                banner("Configure scene, audio, and buffer in OBS.")
                     .info()
-                    .description("NaniteClip will only call SaveReplayBuffer when a rule fires. Configure your scene, audio routing, and replay buffer length in OBS.")
+                    .description("")
                     .build()
                     .into(),
             );
@@ -1734,42 +1724,42 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
             rows.extend([
                 settings_text_field_with_button(
                     "Save Directory",
-                    "OBS will record saved clips into this directory.",
+                    "",
                     &app.settings.save_dir,
                     Message::SaveDirChanged,
                     with_tooltip(
                         styled_button("Browse", ButtonTone::Secondary)
                             .on_press(Message::PickSaveDirectory)
                             .into(),
-                        "Open a folder picker for the clip save directory.",
+                        "Pick save folder.",
                     ),
                 ),
                 settings_pick_list_field(
                     "Container Format",
-                    "OBS-managed recording supports mkv, mp4, mov, flv, and ts.",
+                    "",
                     &ObsContainerPreset::ALL[..],
                     Some(ObsContainerPreset::from_value(app.settings.container.as_str())),
                     |preset| Message::ContainerChanged(preset.config_value().to_string()),
                 ),
                 settings_stepper_field(
                     "Replay Buffer",
-                    "Seconds of recent gameplay kept available for saving.",
+                    "",
                     current_buffer_secs(app),
                     "sec",
                     Message::BufferSecsStepped,
                 ),
-                banner("NaniteClip will push output settings to OBS")
+                banner("OBS must use Simple Output mode.")
                     .info()
-                    .description("Your scene, capture source, and audio routing remain under your control in OBS. OBS must be using Simple Output mode for NaniteClip to manage replay-buffer settings.")
+                    .description("")
                     .build()
                     .into(),
             ]);
         }
         ObsManagementMode::FullManagement => {
             rows.push(
-                banner("Full OBS management is not available yet")
+                banner("Full management not available yet.")
                     .warning()
-                    .description("This mode is reserved for a follow-up release. NaniteClip will reject it at runtime for now.")
+                    .description("")
                     .build()
                     .into(),
             );
@@ -1778,7 +1768,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
 
     settings_section_block(
         "OBS Studio",
-        "Connect to OBS and use its replay buffer instead of gpu-screen-recorder.",
+        "",
         rows,
     )
 }
@@ -1802,28 +1792,28 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     let can_add_selected_device_source = selected_device_source.is_some();
     let can_add_selected_application_source = selected_application_source.is_some();
     let device_source_placeholder = if app.settings.audio_discovery_running {
-        "Loading available audio sources..."
+        "Loading..."
     } else if !available_device_sources.is_empty() {
-        "Choose a detected audio device"
+        "Select a device"
     } else if app.settings.discovered_audio_sources.is_empty() {
-        "No audio sources discovered yet"
+        "No sources found"
     } else {
-        "All detected device sources are already configured"
+        "All devices configured"
     };
     let application_source_placeholder = if app.settings.audio_discovery_running {
-        "Loading detected application streams..."
+        "Loading..."
     } else if !available_application_sources.is_empty() {
-        "Choose a detected application stream"
+        "Select an app stream"
     } else if app.settings.discovered_audio_sources.is_empty() {
-        "No audio sources discovered yet"
+        "No sources found"
     } else {
-        "No unconfigured application streams are available"
+        "All app streams configured"
     };
 
     let device_discovery_row: Element<'_, Message> = row![
         field_label(
             "Detected Devices",
-            "Default outputs, inputs, and PipeWire/PulseAudio devices reported by gpu-screen-recorder.",
+            "",
             200.0,
         ),
         pick_list(
@@ -1844,7 +1834,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
                     button.into()
                 }
             },
-            "Add the selected device or default input/output to the track list.",
+            "Add to tracks.",
         ),
     ]
     .spacing(8)
@@ -1853,7 +1843,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     let application_discovery_row: Element<'_, Message> = row![
         field_label(
             "Detected Apps",
-            "Live per-application streams reported by gpu-screen-recorder. Apps only appear while they are producing audio.",
+            "",
             200.0,
         ),
         pick_list(
@@ -1874,7 +1864,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
                     button.into()
                 }
             },
-            "Add the selected application-specific stream to the track list.",
+            "Add to tracks.",
         ),
     ]
     .spacing(8)
@@ -1883,7 +1873,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
 
     let configured_tracks: Element<'_, Message> = if app.settings.audio_sources.is_empty() {
         empty_state("No audio tracks configured.")
-            .description("Add a discovered source above to build a track layout.")
+            .description("Add sources above.")
             .build()
             .into()
     } else {
@@ -1895,9 +1885,6 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     };
 
     let mut discovery_section = section("Source Discovery")
-        .description(
-            "Recorder-managed devices and per-application streams you can add to the layout.",
-        )
         .push(device_discovery_row)
         .push(application_discovery_row);
 
@@ -1911,11 +1898,9 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     }
 
     panel("Audio")
-        .description("Input tracks and premix behavior.")
         .push(discovery_section)
         .push(
             section("Configured Tracks")
-                .description("Saved audio layout for new clips.")
                 .push(configured_tracks),
         )
         .build()
@@ -1926,17 +1911,17 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
     panel("Clip Output")
         .push(settings_section_block(
             "Naming & Notifications",
-            "How saved clips are announced and named.",
+            "",
             vec![
                 settings_toggle_row(
                     "Overlay Notifications",
-                    "Toast clip saves, character confirmation, and profile changes.",
+                    "",
                     app.settings.clip_saved_notifications,
                     Message::ClipSavedNotificationsToggled,
                 ),
                 settings_text_field(
                     "Clip Naming Template",
-                    "Placeholders: {timestamp} {source} {character} {rule} {profile} {server} {continent} {base} {score} {duration}.",
+                    "",
                     &app.settings.clip_naming_template,
                     Message::ClipNamingTemplateChanged,
                 ),
@@ -1945,18 +1930,18 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
         ))
         .push(settings_section_block(
             "Manual Clip",
-            "Global hotkey for manually saving from the replay buffer.",
+            "",
             vec![
                 settings_toggle_row(
                     "Manual Clip Hotkey",
-                    "Save a manual clip while the recorder is running.",
+                    "",
                     app.settings.manual_clip_enabled,
                     Message::ManualClipEnabledToggled,
                 ),
                 hotkey_capture_field(app),
                 settings_stepper_field(
                     "Manual Clip Duration",
-                    "Clip length when the manual hotkey fires.",
+                    "",
                     current_manual_clip_duration(app),
                     "sec",
                     Message::ManualClipDurationStepped,
@@ -1969,10 +1954,9 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
 
 fn delivery_panel(app: &App) -> Element<'_, Message> {
     let mut youtube_section = section("YouTube")
-        .description("OAuth and upload defaults for YouTube.")
         .push(settings_toggle_row(
             "Enable YouTube Uploads",
-            "Allow per-clip YouTube uploads from the Clips tab.",
+            "",
             app.settings.youtube_enabled,
             Message::YouTubeEnabledToggled,
         ));
@@ -1981,7 +1965,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
         youtube_section = youtube_section
             .push(settings_text_field(
                 "YouTube OAuth Client ID",
-                "Google OAuth client ID (Desktop App client recommended).",
+                "Desktop App client recommended.",
                 &app.settings.youtube_client_id,
                 Message::YouTubeClientIdChanged,
             ))
@@ -1991,7 +1975,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 } else {
                     "YouTube OAuth Client Secret"
                 },
-                "Required for confidential OAuth clients. Paste to replace.",
+                "Paste to replace.",
                 &app.settings.youtube_client_secret_input,
                 Message::YouTubeClientSecretChanged,
             ));
@@ -2002,7 +1986,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
             youtube_section = youtube_section.push(
                 banner("Client secret required for some OAuth clients")
                     .warning()
-                    .description("Web application OAuth clients won't connect until you enter the matching secret.")
+                    .description("Required for web OAuth clients.")
                     .build(),
             );
         }
@@ -2010,7 +1994,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
         youtube_section = youtube_section
             .push(settings_pick_list_field(
                 "YouTube Privacy",
-                "Privacy status applied to future YouTube uploads.",
+                "",
                 &[
                     YouTubePrivacyStatus::Public,
                     YouTubePrivacyStatus::Unlisted,
@@ -2042,13 +2026,13 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                                 button.on_press(Message::ConnectYouTube).into()
                             }
                         },
-                        "Open the Google OAuth flow and store a refresh token.",
+                        "Authorize.",
                     ),
                     with_tooltip(
                         styled_button("Disconnect YouTube", ButtonTone::Danger)
                             .on_press(Message::DisconnectYouTube)
                             .into(),
-                        "Remove stored YouTube OAuth credentials.",
+                        "Remove credentials.",
                     ),
                 ]
                 .spacing(8)
@@ -2056,17 +2040,17 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
             );
     } else {
         youtube_section = youtube_section
-            .push(text("Enable YouTube uploads to configure OAuth and upload defaults.").size(12));
+            .push(text("Enable to configure.").size(12));
     }
 
     panel("Delivery & Storage")
         .push(settings_section_block(
             "Storage Tiering",
-            "Move older, low-score clips to archive storage in the background.",
+            "",
             {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Storage Tiering",
-                    "Archive clips that exceed the age and score thresholds.",
+                    "",
                     app.settings.storage_tiering_enabled,
                     Message::StorageTieringEnabledToggled,
                 )];
@@ -2075,26 +2059,26 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     rows.extend([
                         settings_text_field_with_button(
                             "Archive Directory",
-                            "Directory used for lower-cost clip storage.",
+                            "",
                             &app.settings.storage_tier_directory,
                             Message::StorageTierDirectoryChanged,
                             with_tooltip(
                                 styled_button("Browse", ButtonTone::Secondary)
                                     .on_press(Message::PickStorageTierDirectory)
                                     .into(),
-                                "Open a folder picker for the archive directory.",
+                                "Pick archive folder.",
                             ),
                         ),
                         settings_stepper_field(
                             "Archive After",
-                            "Minimum clip age before archive is eligible.",
+                            "",
                             current_storage_min_age_days(app),
                             "days",
                             Message::StorageMinAgeDaysStepped,
                         ),
                         settings_stepper_field(
                             "Archive Score Ceiling",
-                            "Only clips at or below this score are archived.",
+                            "",
                             current_storage_max_score(app),
                             "pts",
                             Message::StorageMaxScoreStepped,
@@ -2103,14 +2087,12 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                             styled_button("Run Tiering Sweep", ButtonTone::Secondary)
                                 .on_press(Message::RunStorageTieringSweep)
                                 .into(),
-                            "Queue a sweep that archives all currently eligible clips.",
+                            "Archive eligible clips now.",
                         ),
                     ]);
                 } else {
                     rows.push(
-                        text(
-                            "Enable storage tiering to configure archive location and thresholds.",
-                        )
+                        text("Enable to configure.")
                         .size(12)
                         .into(),
                     );
@@ -2121,11 +2103,11 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
         ))
         .push(settings_section_block(
             "Copyparty",
-            "Secrets are stored in the secure credential backend, not config.toml.",
+            "Credentials stored securely.",
             {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Copyparty Uploads",
-                    "Allow per-clip Copyparty uploads from the Clips tab.",
+                    "",
                     app.settings.copyparty_enabled,
                     Message::CopypartyEnabledToggled,
                 )];
@@ -2134,19 +2116,19 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     rows.extend([
                         settings_text_field(
                             "Copyparty Upload URL",
-                            "Upload URL, e.g. `https://clips.example.com/up/`.",
+                            "e.g. https://clips.example.com/up/",
                             &app.settings.copyparty_upload_url,
                             Message::CopypartyUploadUrlChanged,
                         ),
                         settings_text_field(
                             "Copyparty Public Base URL",
-                            "Optional public base URL when the server returns a relative path.",
+                            "For relative server paths.",
                             &app.settings.copyparty_public_base_url,
                             Message::CopypartyPublicBaseUrlChanged,
                         ),
                         settings_text_field(
                             "Copyparty Username",
-                            "Optional username for basic auth or `--usernames`.",
+                            "For basic auth.",
                             &app.settings.copyparty_username,
                             Message::CopypartyUsernameChanged,
                         ),
@@ -2156,7 +2138,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                             } else {
                                 "Copyparty Password"
                             },
-                            "Paste to replace the stored password. Blank keeps the current one.",
+                            "Paste to replace.",
                             &app.settings.copyparty_password_input,
                             Message::CopypartyPasswordChanged,
                         ),
@@ -2177,7 +2159,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                                 styled_button("Clear Copyparty Password", ButtonTone::Danger)
                                     .on_press(Message::ClearCopypartyPassword)
                                     .into(),
-                                "Remove the stored Copyparty credential.",
+                                "Clear password.",
                             ),
                         ]
                         .spacing(8)
@@ -2186,7 +2168,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     ]);
                 } else {
                     rows.push(
-                        text("Enable Copyparty uploads to configure URLs and credentials.")
+                        text("Enable to configure.")
                             .size(12)
                             .into(),
                     );
@@ -2198,11 +2180,11 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
         .push(youtube_section)
         .push(settings_section_block(
             "Discord Webhook",
-            "Webhook notifications for high-value clips after they save.",
+            "",
             {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Discord Webhook",
-                    "Post qualifying clips to a stored Discord webhook.",
+                    "",
                     app.settings.discord_enabled,
                     Message::DiscordWebhookEnabledToggled,
                 )];
@@ -2211,14 +2193,14 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     rows.extend([
                         settings_stepper_field(
                             "Minimum Score",
-                            "Only clips at or above this score fire the webhook.",
+                            "",
                             current_discord_min_score(app),
                             "pts",
                             Message::DiscordMinScoreStepped,
                         ),
                         settings_toggle_row(
                             "Attach Thumbnail",
-                            "Extract a thumbnail with ffmpeg and attach it.",
+                            "",
                             app.settings.discord_include_thumbnail,
                             Message::DiscordIncludeThumbnailToggled,
                         ),
@@ -2228,7 +2210,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                             } else {
                                 "Discord Webhook URL"
                             },
-                            "Paste to store or replace. Blank keeps the current one.",
+                            "Paste to replace.",
                             &app.settings.discord_webhook_input,
                             Message::DiscordWebhookUrlChanged,
                         ),
@@ -2249,7 +2231,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                                 styled_button("Clear Discord Webhook", ButtonTone::Danger)
                                     .on_press(Message::ClearDiscordWebhook)
                                     .into(),
-                                "Remove the stored webhook URL.",
+                                "Clear stored URL.",
                             ),
                         ]
                         .spacing(8)
@@ -2258,7 +2240,7 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                     ]);
                 } else {
                     rows.push(
-                        text("Enable the Discord webhook to configure thresholds and credentials.")
+                        text("Enable to configure.")
                             .size(12)
                             .into(),
                     );
@@ -2354,7 +2336,7 @@ fn update_action_controls(app: &App) -> Element<'_, Message> {
                     button.into()
                 }
             },
-            "Open the in-app changelog and updater details viewer for the active release target.",
+            "View changelog.",
         ),
     ]
     .spacing(8)
@@ -2551,7 +2533,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
             styled_button("Check for Updates", ButtonTone::Secondary)
                 .on_press(Message::CheckForUpdates)
                 .into(),
-            "Query the latest GitHub Release for the selected channel.",
+            "Check now.",
         ),]
         .spacing(8)
         .into(),
@@ -2571,7 +2553,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
     panel("Application Updates")
         .push(settings_section_block(
             "Preferences",
-            "How NaniteClip checks GitHub Releases and which release stream it follows.",
+            "",
             vec![
                 text(format!(
                     "Current version: {} · Install channel: {}",
@@ -2582,20 +2564,20 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                 .into(),
                 settings_toggle_row(
                     "Automatic Update Checks",
-                    "Check GitHub Releases in the background and show an update banner when a newer version is available.",
+                    "",
                     app.settings.update_auto_check,
                     Message::UpdateAutoCheckToggled,
                 ),
                 settings_pick_list_field(
                     "Release Channel",
-                    "Choose which release channel to check. Stable ignores GitHub prereleases. Beta includes them.",
+                    "Stable or Beta.",
                     &[UpdateChannel::Stable, UpdateChannel::Beta][..],
                     Some(app.settings.update_channel),
                     Message::UpdateChannelSelected,
                 ),
                 settings_pick_list_field(
                     "Downloaded Update Behavior",
-                    "Choose what NaniteClip should do after an update is downloaded.",
+                    "After download.",
                     &[
                         UpdateInstallBehavior::Manual,
                         UpdateInstallBehavior::WhenIdle,
@@ -2610,19 +2592,19 @@ fn update_panel(app: &App) -> Element<'_, Message> {
         ))
         .push(settings_section_block(
             "Available Release",
-            "Check, download, and apply updates for this installation.",
+            "",
             available_release_rows,
         ))
         .push(settings_section_block(
             "Rollback",
-            "Rollback to the previous installed version or choose a specific older GitHub Release.",
+            "",
             vec![
                 text(previous_installed_summary).size(12).into(),
                 text(selected_rollback_summary).size(12).into(),
                 text(rollback_catalog_summary).size(12).into(),
                 settings_pick_list_field(
                     "Rollback Target",
-                    "Choose a specific older release to download and install for this channel.",
+                    "",
                     app.updates.state.rollback_candidates.as_slice(),
                     app.settings.selected_rollback_release.clone(),
                     |value| Message::RollbackReleaseSelected(Box::new(value)),
@@ -2632,7 +2614,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                         styled_button("Refresh Versions", ButtonTone::Secondary)
                             .on_press(Message::RefreshRollbackCatalog)
                             .into(),
-                        "Load older signed releases and their matching assets for this install channel.",
+                        "Fetch available versions.",
                     ),
                     with_tooltip(
                         {
@@ -2648,7 +2630,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                                 button.into()
                             }
                         },
-                        "Download the last installed version and stage it as a rollback target.",
+                        "Reinstall previous version.",
                     ),
                     with_tooltip(
                         {
@@ -2669,7 +2651,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                                 button.into()
                             }
                         },
-                        "Download the selected older release and stage it for rollback.",
+                        "Install selected version.",
                     ),
                 ]
                 .spacing(8)
@@ -2684,36 +2666,33 @@ fn maintenance_panel(app: &App) -> Element<'_, Message> {
     panel("Database Maintenance")
         .push(settings_section_block(
             "Maintenance Actions",
-            "Schema upgrades create a timestamped SQLite backup first.",
+            "",
             vec![
                 row![
                     with_tooltip(
                         styled_button("Backup Database", ButtonTone::Secondary)
                             .on_press(Message::BackupDatabase)
                             .into(),
-                        "Write a SQLite backup next to the save directory.",
+                        "Save a database backup.",
                     ),
                     with_tooltip(
                         styled_button("Export JSON", ButtonTone::Secondary)
                             .on_press(Message::ExportJson)
                             .into(),
-                        "Export clip metadata and aggregate events as JSON.",
+                        "Export as JSON.",
                     ),
                     with_tooltip(
                         styled_button("Export CSV", ButtonTone::Secondary)
                             .on_press(Message::ExportCsv)
                             .into(),
-                        "Export clip metadata and aggregate events as CSV.",
+                        "Export as CSV.",
                     ),
                 ]
                 .spacing(8)
                 .into(),
-                text(format!(
-                    "Exports and backups are written under {}.",
-                    app.settings.save_dir
-                ))
-                .size(12)
-                .into(),
+                text(format!("Output: {}", app.settings.save_dir))
+                    .size(12)
+                    .into(),
             ],
         ))
         .build()
@@ -2742,13 +2721,14 @@ fn settings_toggle_row<'a>(
     value: bool,
     on_toggle: impl Fn(bool) -> Message + 'a,
 ) -> Element<'a, Message> {
-    row![
-        column![
-            text(title).size(14),
-            text(description).size(12).width(Length::Fill),
-        ]
+    let mut label_col = column![text(title).size(14)]
         .spacing(4)
-        .width(Length::Fill),
+        .width(Length::Fill);
+    if !description.is_empty() {
+        label_col = label_col.push(text(description).size(12).width(Length::Fill));
+    }
+    row![
+        label_col,
         toggle_switch(value)
             .label(if value { "On" } else { "Off" })
             .on_toggle(on_toggle),
@@ -2787,7 +2767,7 @@ fn clip_naming_preview_card(app: &App) -> Element<'_, Message> {
 
     card()
         .title("Template Preview")
-        .description("Use this to validate naming tokens before saving.")
+        .description("")
         .body(lines)
         .width(Length::Fill)
         .build()
@@ -2803,7 +2783,7 @@ fn configured_audio_source_count(app: &App) -> usize {
 }
 
 fn hotkey_capture_field(app: &App) -> Element<'_, Message> {
-    let description = "Click and press a key combination. X11 uses the direct backend; Wayland uses the desktop portal.";
+    let description = "";
     let binding_label = if app.settings.hotkey_capture_active {
         "Press the desired key combination..."
     } else if app.settings.manual_clip_hotkey.trim().is_empty() {
@@ -2812,9 +2792,9 @@ fn hotkey_capture_field(app: &App) -> Element<'_, Message> {
         app.settings.manual_clip_hotkey.as_str()
     };
     let status = if app.settings.hotkey_capture_active {
-        "Listening — click again to cancel."
+        "Listening..."
     } else {
-        "Click and press the combination you want."
+        "Click to record."
     };
     let on_press = if app.settings.hotkey_capture_active {
         Message::CancelHotkeyCapture
@@ -2845,7 +2825,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
         audio_source.label.clone()
     };
     let description = if audio_source.source.trim().is_empty() {
-        "Choose a discovered source above or enter a custom backend source string.".into()
+        "No source configured.".into()
     } else {
         format!("Source: {}", audio_source.source)
     };
@@ -2858,7 +2838,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                 row![
                     field_label(
                         "Track Label",
-                        "Label written into the saved track metadata.",
+                        "",
                         200.0,
                     ),
                     text_input("Game / Mic / Discord", &audio_source.label)
@@ -2870,7 +2850,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                 row![
                     field_label(
                         "Source",
-                        "Backend source string, e.g. default_output, app:Discord, device:alsa_output.",
+                        "",
                         200.0,
                     ),
                     text_input("default_output", &audio_source.source)
@@ -2882,7 +2862,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                 row![
                     field_label(
                         "Premix Gain",
-                        "Gain applied when this track is in the premix.",
+                        "",
                         200.0,
                     ),
                     styled_button("-", ButtonTone::Secondary)
@@ -2901,7 +2881,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                                 Message::AudioSourceIncludedInPremixToggled(index, value)
                             })
                             .into(),
-                        "Feed this track into the generated premix stream.",
+                        "Include in premix.",
                     ),
                     with_tooltip(
                         checkbox(audio_source.muted_in_premix)
@@ -2910,7 +2890,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                                 Message::AudioSourceMutedInPremixToggled(index, value)
                             })
                             .into(),
-                        "Keep the original track but omit it from the premix.",
+                        "Mute in premix.",
                     ),
                 ]
                 .spacing(12)

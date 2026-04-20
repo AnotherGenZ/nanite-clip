@@ -53,7 +53,7 @@ impl<'a, Message: 'a> PanelBuilder<'a, Message> {
                     color: Some(theme::tokens_for(theme).color.foreground),
                 }),
         );
-        if let Some(desc) = self.description {
+        if let Some(desc) = self.description.filter(|d| !d.is_empty()) {
             head = head.push(text(desc).size(font.size_sm).style(|theme: &iced::Theme| {
                 iced::widget::text::Style {
                     color: Some(theme::tokens_for(theme).color.muted_foreground),
