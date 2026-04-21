@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use reqwest::multipart::{Form, Part};
@@ -7,7 +6,7 @@ use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::background_jobs::BackgroundJobContext;
-use crate::command_runner;
+use crate::thumbnails;
 
 #[derive(Debug, Clone)]
 pub struct DiscordWebhookRequest {
@@ -140,25 +139,7 @@ async fn post_webhook_with_retries(
 }
 
 fn extract_thumbnail(path: &Path) -> Result<Option<PathBuf>, String> {
-    let output_path = path.with_extension("discord-thumb.png");
-    let mut command = Command::new("ffmpeg");
-    command
-        .arg("-y")
-        .arg("-ss")
-        .arg("00:00:01")
-        .arg("-i")
-        .arg(path)
-        .arg("-frames:v")
-        .arg("1")
-        .arg(&output_path);
-    let status = command_runner::status(&mut command)
-        .map_err(|error| format!("failed to launch ffmpeg thumbnail extraction: {error}"))?;
-
-    if status.success() && output_path.exists() {
-        Ok(Some(output_path))
-    } else {
-        Ok(None)
-    }
+    thumbnails::extract_discord_thumbnail(path)
 }
 
 #[derive(Debug, Serialize)]

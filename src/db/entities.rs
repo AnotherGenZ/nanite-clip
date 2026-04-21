@@ -395,6 +395,7 @@ pub mod clips {
         #[sea_orm(indexed)]
         pub profile_id: String,
         pub path: Option<String>,
+        pub thumbnail_path: Option<String>,
         pub score: i64,
         pub honu_session_id: Option<i64>,
         #[sea_orm(indexed)]

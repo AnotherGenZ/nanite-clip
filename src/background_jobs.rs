@@ -25,6 +25,7 @@ impl std::fmt::Display for BackgroundJobId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackgroundJobKind {
     StorageTiering,
+    ThumbnailBackfill,
     Upload,
     Montage,
     DiscordWebhook,
@@ -36,6 +37,7 @@ impl BackgroundJobKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StorageTiering => "storage_tiering",
+            Self::ThumbnailBackfill => "thumbnail_backfill",
             Self::Upload => "upload",
             Self::Montage => "montage",
             Self::DiscordWebhook => "discord_webhook",
@@ -46,6 +48,7 @@ impl BackgroundJobKind {
 
     pub fn from_db(value: &str) -> Self {
         match value {
+            "thumbnail_backfill" => Self::ThumbnailBackfill,
             "upload" => Self::Upload,
             "montage" => Self::Montage,
             "discord_webhook" => Self::DiscordWebhook,
@@ -58,6 +61,7 @@ impl BackgroundJobKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::StorageTiering => "Storage Tiering",
+            Self::ThumbnailBackfill => "Thumbnail Backfill",
             Self::Upload => "Upload",
             Self::Montage => "Montage",
             Self::DiscordWebhook => "Discord Webhook",
@@ -134,6 +138,10 @@ pub struct BackgroundJobRecord {
 pub enum BackgroundJobSuccess {
     StorageTiering {
         moved_clip_ids: Vec<i64>,
+        message: String,
+    },
+    ThumbnailBackfill {
+        updated_clip_ids: Vec<i64>,
         message: String,
     },
     Upload {
@@ -479,6 +487,7 @@ impl BackgroundJobManager {
                         };
                         entry.record.detail = Some(match success.as_ref() {
                             BackgroundJobSuccess::StorageTiering { message, .. }
+                            | BackgroundJobSuccess::ThumbnailBackfill { message, .. }
                             | BackgroundJobSuccess::Upload { message, .. }
                             | BackgroundJobSuccess::Montage { message, .. }
                             | BackgroundJobSuccess::DiscordWebhook { message, .. }
@@ -553,6 +562,10 @@ fn default_kind_limits() -> HashMap<BackgroundJobKind, std::sync::Arc<Semaphore>
     );
     kind_limits.insert(
         BackgroundJobKind::StorageTiering,
+        std::sync::Arc::new(Semaphore::new(1)),
+    );
+    kind_limits.insert(
+        BackgroundJobKind::ThumbnailBackfill,
         std::sync::Arc::new(Semaphore::new(1)),
     );
     kind_limits.insert(

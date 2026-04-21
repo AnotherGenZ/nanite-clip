@@ -165,6 +165,7 @@ impl<'de> Deserialize<'de> for RecorderConfig {
             audio_sources: normalize_audio_sources(audio_sources),
             post_processing: config.post_processing,
             clip_saved_notifications: config.clip_saved_notifications,
+            auto_generate_thumbnails: config.auto_generate_thumbnails,
             save_delay_secs: config.save_delay_secs,
             backends,
         })
@@ -229,6 +230,8 @@ struct RecorderConfigSerde {
     post_processing: PostProcessingConfig,
     #[serde(default = "default_clip_saved_notifications")]
     clip_saved_notifications: bool,
+    #[serde(default = "default_true")]
+    auto_generate_thumbnails: bool,
     #[serde(default = "default_save_delay_secs")]
     save_delay_secs: u32,
     #[serde(default)]

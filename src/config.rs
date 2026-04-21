@@ -76,6 +76,8 @@ pub struct RecorderConfig {
     pub post_processing: PostProcessingConfig,
     #[serde(default = "default_clip_saved_notifications")]
     pub clip_saved_notifications: bool,
+    #[serde(default = "default_true")]
+    pub auto_generate_thumbnails: bool,
     #[serde(default = "default_save_delay_secs")]
     pub save_delay_secs: u32,
     #[serde(default)]
@@ -428,6 +430,7 @@ impl Default for RecorderConfig {
             )],
             post_processing: PostProcessingConfig::default(),
             clip_saved_notifications: default_clip_saved_notifications(),
+            auto_generate_thumbnails: true,
             save_delay_secs: default_save_delay_secs(),
             backends: BackendConfigs::default(),
         }

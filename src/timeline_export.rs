@@ -221,6 +221,7 @@ mod tests {
                 score: 10,
                 honu_session_id: None,
                 path: Some("/tmp/example.mkv".into()),
+                thumbnail_path: None,
                 file_size_bytes: None,
                 favorited: false,
                 overlap_count: 0,

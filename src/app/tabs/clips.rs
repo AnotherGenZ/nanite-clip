@@ -1,11 +1,14 @@
 mod library;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
-use iced::widget::{Space, button, operation as widget_operation, scrollable as widget_scrollable};
-use iced::{Alignment, Background, Color, Element, Length, Padding, Task};
+use iced::widget::{
+    Row, Space, button, image, operation as widget_operation, scrollable as widget_scrollable,
+};
+use iced::{Alignment, Background, Color, ContentFit, Element, Length, Padding, Task};
 
 use crate::census;
 use crate::db::{
@@ -27,6 +30,7 @@ use crate::ui::layout::toolbar::toolbar;
 use crate::ui::overlay::modal::modal;
 use crate::ui::pickers::date::date_picker;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
+use crate::ui::primitives::switch::switch as toggle_switch;
 use crate::ui::primitives::tag::tag;
 use crate::ui::theme;
 use library::*;
@@ -59,10 +63,13 @@ pub const PAGE_SIZE_OPTIONS: [usize; 4] = [25, 50, 100, 200];
 const SEARCH_DEBOUNCE_MS: u64 = 180;
 const CLIP_HISTORY_SCROLLABLE_ID: &str = "clips-history-scrollable";
 const CLIP_HISTORY_ROW_SPACING: f32 = 2.0;
+const GALLERY_CARD_WIDTH: f32 = 320.0;
+const GALLERY_CARD_SPACING: f32 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HistoryViewportState {
     offset_y: f32,
+    viewport_width: f32,
     viewport_height: f32,
     content_height: f32,
 }
@@ -75,6 +82,7 @@ impl From<widget_scrollable::Viewport> for HistoryViewportState {
 
         Self {
             offset_y: offset.y,
+            viewport_width: bounds.width,
             viewport_height: bounds.height,
             content_height: content_bounds.height,
         }
@@ -85,6 +93,10 @@ impl From<widget_scrollable::Viewport> for HistoryViewportState {
 pub enum Message {
     // Data loading
     Loaded(u64, Result<Vec<ClipRecord>, String>),
+    ThumbnailHandleLoaded {
+        path: String,
+        result: Result<image::Handle, String>,
+    },
 
     // Filters
     SearchChanged(String),
@@ -118,6 +130,7 @@ pub enum Message {
     SortColumnClicked(ClipSortColumn),
     PageChanged(usize),
     PageSizeChanged(usize),
+    BrowserModeToggled(bool),
     HistoryScrolled(HistoryViewportState),
 
     // Selection and row actions
@@ -153,13 +166,19 @@ pub enum Message {
     RawEventFilterChanged(String),
     TagInputChanged(String),
     AddTagRequested(i64),
-    RemoveTagRequested { clip_id: i64, tag_name: String },
+    RemoveTagRequested {
+        clip_id: i64,
+        tag_name: String,
+    },
     TagOptionSelected(String),
     CollectionAddSelectionChanged(CollectionSelectOption),
     DetailCollectionNameChanged(String),
     CollectionOptionSelected(CollectionSelectOption),
     AddClipToCollectionRequested(i64),
-    RemoveClipFromCollectionRequested { clip_id: i64, collection_id: i64 },
+    RemoveClipFromCollectionRequested {
+        clip_id: i64,
+        collection_id: i64,
+    },
     NewCollectionNameChanged(String),
     CreateCollectionRequested,
     SubmitCollectionMembershipRequested(i64),
@@ -270,6 +289,13 @@ pub enum DetailSection {
     RawEvents,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipBrowserMode {
+    #[default]
+    List,
+    Gallery,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyNav {
     SelectNext,
@@ -350,6 +376,106 @@ pub(in crate::app) fn refresh_history(app: &mut App) -> Task<AppMessage> {
     )
 }
 
+pub(in crate::app) fn prime_thumbnail_cache_for_visible_items(app: &mut App) -> Task<AppMessage> {
+    retain_thumbnail_handles_for_current_view(app);
+
+    let mut wanted_paths = BTreeSet::new();
+
+    for record in visible_history_slice(app) {
+        if let Some(path) = existing_thumbnail_path(record) {
+            wanted_paths.insert(path.to_string());
+        }
+    }
+
+    if let Some(detail) = app.clips.selected_detail.as_ref()
+        && let Some(path) = existing_thumbnail_path(&detail.clip)
+    {
+        wanted_paths.insert(path.to_string());
+    }
+
+    let tasks: Vec<Task<AppMessage>> = wanted_paths
+        .into_iter()
+        .filter_map(|path| queue_thumbnail_handle_load(app, path))
+        .collect();
+
+    Task::batch(tasks)
+}
+
+fn visible_history_slice(app: &App) -> &[ClipRecord] {
+    let page_size = app.clips.history_page_size.max(1);
+    let start = app.clips.history_page * page_size;
+    let end = (start + page_size).min(app.clips.history.len());
+
+    if start >= end {
+        &[]
+    } else {
+        &app.clips.history[start..end]
+    }
+}
+
+fn existing_thumbnail_path(record: &ClipRecord) -> Option<&str> {
+    let path = record.thumbnail_path.as_deref()?;
+    std::path::Path::new(path).exists().then_some(path)
+}
+
+fn retain_thumbnail_handles_for_current_view(app: &mut App) {
+    let mut referenced_paths = BTreeSet::new();
+
+    for record in visible_history_slice(app) {
+        if let Some(path) = existing_thumbnail_path(record) {
+            referenced_paths.insert(path.to_string());
+        }
+    }
+
+    if let Some(detail) = app.clips.selected_detail.as_ref()
+        && let Some(path) = existing_thumbnail_path(&detail.clip)
+    {
+        referenced_paths.insert(path.to_string());
+    }
+
+    app.clips
+        .thumbnail_handles
+        .retain(|path, _| referenced_paths.contains(path));
+    app.clips
+        .thumbnail_loads_in_flight
+        .retain(|path| referenced_paths.contains(path));
+}
+
+fn queue_thumbnail_handle_load(app: &mut App, path: String) -> Option<Task<AppMessage>> {
+    if app.clips.thumbnail_handles.contains_key(&path)
+        || app.clips.thumbnail_loads_in_flight.contains(&path)
+    {
+        return None;
+    }
+
+    app.clips.thumbnail_loads_in_flight.insert(path.clone());
+
+    Some(Task::perform(
+        {
+            let path = path.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let bytes = std::fs::read(&path)
+                        .map_err(|error| format!("failed to read thumbnail bytes: {error}"))?;
+                    let decoded = ::image::load_from_memory(&bytes)
+                        .map_err(|error| format!("failed to decode thumbnail image: {error}"))?
+                        .into_rgba8();
+                    let (width, height) = decoded.dimensions();
+                    Ok(image::Handle::from_rgba(width, height, decoded.into_raw()))
+                })
+                .await
+                .map_err(|error| format!("thumbnail decode task failed: {error}"))?
+            }
+        },
+        move |result| {
+            AppMessage::Clips(Message::ThumbnailHandleLoaded {
+                path: path.clone(),
+                result,
+            })
+        },
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Update
 // ---------------------------------------------------------------------------
@@ -366,11 +492,27 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                     rebuild_history(app);
                     app.clear_clip_error();
                     let lookup_clips = app.clips.history_source.clone();
-                    return app.schedule_clip_record_lookup_resolutions(&lookup_clips);
+                    return Task::batch([
+                        app.schedule_clip_record_lookup_resolutions(&lookup_clips),
+                        prime_thumbnail_cache_for_visible_items(app),
+                    ]);
                 }
                 Err(error) => {
                     app.set_clip_error(error.clone());
                     tracing::error!("Failed to load clip history: {error}");
+                }
+            }
+            Task::none()
+        }
+        Message::ThumbnailHandleLoaded { path, result } => {
+            app.clips.thumbnail_loads_in_flight.remove(&path);
+            match result {
+                Ok(handle) => {
+                    app.clips.thumbnail_handles.insert(path, handle);
+                }
+                Err(error) => {
+                    app.clips.thumbnail_handles.remove(&path);
+                    tracing::warn!("Failed to preload thumbnail {path}: {error}");
                 }
             }
             Task::none()
@@ -391,6 +533,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         Message::SearchDebounceFired(revision) => {
             if revision == app.clips.search_revision {
                 rebuild_history(app);
+                return prime_thumbnail_cache_for_visible_items(app);
             }
             Task::none()
         }
@@ -423,32 +566,32 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
         Message::ProfileFilterChanged(value) => {
             app.clips.filters.profile = filter_value_from_selection(value, ALL_PROFILES_LABEL);
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::RuleFilterChanged(value) => {
             app.clips.filters.rule = filter_value_from_selection(value, ALL_RULES_LABEL);
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::CharacterFilterChanged(value) => {
             app.clips.filters.character = filter_value_from_selection(value, ALL_CHARACTERS_LABEL);
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::ServerFilterChanged(value) => {
             app.clips.filters.server = filter_value_from_selection(value, ALL_SERVERS_LABEL);
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::ContinentFilterChanged(value) => {
             app.clips.filters.continent = filter_value_from_selection(value, ALL_CONTINENTS_LABEL);
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::BaseFilterChanged(value) => {
             app.clips.filters.base = filter_value_from_selection(value, ALL_BASES_LABEL);
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::CollectionSelected(collection_id) => {
             app.clips.filters.collection_id = collection_id;
@@ -512,19 +655,45 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 );
             }
             rebuild_history(app);
-            Task::none()
+            prime_thumbnail_cache_for_visible_items(app)
         }
         Message::PageChanged(page) => {
             let total_pages = total_pages(app);
             app.clips.history_page = page.saturating_sub(1).min(total_pages.saturating_sub(1));
             app.clips.history_viewport = None;
-            scroll_history_to_top()
+            Task::batch([
+                scroll_history_to_top(),
+                prime_thumbnail_cache_for_visible_items(app),
+            ])
         }
         Message::PageSizeChanged(size) => {
             app.clips.history_page_size = size.max(1);
             app.clips.history_page = 0;
             app.clips.history_viewport = None;
-            scroll_history_to_top()
+            Task::batch([
+                scroll_history_to_top(),
+                prime_thumbnail_cache_for_visible_items(app),
+            ])
+        }
+        Message::BrowserModeToggled(is_gallery) => {
+            app.clips.browser_mode = if is_gallery {
+                ClipBrowserMode::Gallery
+            } else {
+                ClipBrowserMode::List
+            };
+            app.clips.history_viewport = None;
+            let scroll_task = app
+                .clips
+                .selected_id
+                .and_then(|clip_id| {
+                    app.clips
+                        .history
+                        .iter()
+                        .position(|record| record.id == clip_id)
+                })
+                .map(|index| scroll_history_to_index(app, index))
+                .unwrap_or_else(Task::none);
+            Task::batch([prime_thumbnail_cache_for_visible_items(app), scroll_task])
         }
         Message::HistoryScrolled(viewport) => {
             app.clips.history_viewport = Some(viewport);
@@ -533,11 +702,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
 
         Message::RowSelected(clip_id) => {
             app.clear_clip_error();
-            if app.clips.selected_id == Some(clip_id) {
-                app.load_clip_detail(None)
-            } else {
-                app.load_clip_detail(Some(clip_id))
-            }
+            app.load_clip_detail(Some(clip_id))
         }
         Message::OpenRequested(clip_id) => {
             let Some(record) = app.clips.history.iter().find(|record| record.id == clip_id) else {
@@ -1185,6 +1350,10 @@ fn select_at_offset(app: &mut App, index: isize, force: bool) -> Task<AppMessage
 }
 
 fn scroll_history_to_index(app: &App, index: usize) -> Task<AppMessage> {
+    if app.clips.browser_mode == ClipBrowserMode::Gallery {
+        return scroll_gallery_to_index(app, index);
+    }
+
     let page_size = app.clips.history_page_size.max(1);
     let page_start = app.clips.history_page * page_size;
     let page_end = (page_start + page_size).min(app.clips.history.len());
@@ -1192,6 +1361,28 @@ fn scroll_history_to_index(app: &App, index: usize) -> Task<AppMessage> {
     let page_row_index = index.saturating_sub(page_start);
 
     scroll_history_to_row(page_row_index, page_row_count)
+}
+
+fn scroll_gallery_to_index(app: &App, index: usize) -> Task<AppMessage> {
+    let page_size = app.clips.history_page_size.max(1);
+    let page_start = app.clips.history_page * page_size;
+    let page_end = (page_start + page_size).min(app.clips.history.len());
+    let page_item_count = page_end.saturating_sub(page_start);
+    if page_item_count == 0 {
+        return Task::none();
+    }
+
+    let page_item_index = index.saturating_sub(page_start);
+    let column_count = gallery_column_count(
+        app.clips
+            .history_viewport
+            .map(|viewport| viewport.viewport_width)
+            .unwrap_or(0.0),
+    );
+    let row_count = page_item_count.div_ceil(column_count);
+    let row_index = page_item_index / column_count;
+
+    scroll_history_to_row(row_index, row_count)
 }
 
 fn scroll_history_to_top() -> Task<AppMessage> {
@@ -1240,13 +1431,48 @@ fn history_row_is_visible(app: &App, index: usize) -> bool {
         return false;
     }
 
-    history_page_row_is_visible(viewport, index - page_start, page_row_count)
+    if app.clips.browser_mode == ClipBrowserMode::Gallery {
+        gallery_page_item_is_visible(viewport, index - page_start, page_row_count)
+    } else {
+        history_page_row_is_visible(viewport, index - page_start, page_row_count)
+    }
 }
 
 fn history_page_row_is_visible(
     viewport: HistoryViewportState,
     row_index: usize,
     row_count: usize,
+) -> bool {
+    page_row_is_visible(viewport, row_index, row_count, CLIP_HISTORY_ROW_SPACING)
+}
+
+fn gallery_page_item_is_visible(
+    viewport: HistoryViewportState,
+    item_index: usize,
+    item_count: usize,
+) -> bool {
+    let column_count = gallery_column_count(viewport.viewport_width);
+    let row_count = item_count.div_ceil(column_count);
+    let row_index = item_index / column_count;
+
+    page_row_is_visible(viewport, row_index, row_count, GALLERY_CARD_SPACING)
+}
+
+fn gallery_column_count(viewport_width: f32) -> usize {
+    if viewport_width <= 0.0 {
+        return 3;
+    }
+
+    ((viewport_width + GALLERY_CARD_SPACING) / (GALLERY_CARD_WIDTH + GALLERY_CARD_SPACING))
+        .floor()
+        .max(1.0) as usize
+}
+
+fn page_row_is_visible(
+    viewport: HistoryViewportState,
+    row_index: usize,
+    row_count: usize,
+    row_spacing: f32,
 ) -> bool {
     if row_count == 0 {
         return false;
@@ -1256,13 +1482,13 @@ fn history_page_row_is_visible(
         return true;
     }
 
-    let spacing_total = CLIP_HISTORY_ROW_SPACING * row_count.saturating_sub(1) as f32;
+    let spacing_total = row_spacing * row_count.saturating_sub(1) as f32;
     let row_height = (viewport.content_height - spacing_total) / row_count as f32;
     if row_height <= 0.0 {
         return false;
     }
 
-    let row_pitch = row_height + CLIP_HISTORY_ROW_SPACING;
+    let row_pitch = row_height + row_spacing;
     let row_top = row_index.min(row_count.saturating_sub(1)) as f32 * row_pitch;
     let row_bottom = row_top + row_height;
     let visible_top = viewport.offset_y;
@@ -1745,6 +1971,7 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
             .iter()
             .find(|option| Some(option.id) == app.clips.selected_collection_add_id)
             .cloned();
+        let gallery_enabled = app.clips.browser_mode == ClipBrowserMode::Gallery;
         let detail_label: &'static str = if app.clips.detail_loading {
             "Detail loading"
         } else if app.clips.selected_id.is_some() {
@@ -1791,13 +2018,24 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
             }
         };
 
+        let browser_switch: Element<'static, Message> = row![
+            text("Gallery view").size(12),
+            toggle_switch(gallery_enabled).on_toggle(Message::BrowserModeToggled),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into();
+
         let summary_bar = if montage_count == 0 {
-            bar.trailing(build_montage_button()).build()
+            bar.trailing(build_montage_button())
+                .trailing(browser_switch)
+                .build()
         } else {
             bar.push(clips_badge(
                 format!("{montage_count} in montage queue"),
                 BadgeTone::Success,
             ))
+            .trailing(browser_switch)
             .build()
         };
 
@@ -1875,14 +2113,21 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
         }
     };
 
-    let header_row = history_header_row(app);
+    let header_row = if app.clips.browser_mode == ClipBrowserMode::List {
+        Some(history_header_row(app))
+    } else {
+        None
+    };
     let body_rows = history_body_rows(app, page, page_size);
 
     let footer = history_footer_row(app, page, page_size, total_pages);
 
-    panel("Clip history")
-        .push(status_row)
-        .push(header_row)
+    let mut panel_builder = panel("Clip history").push(status_row);
+    if let Some(header_row) = header_row {
+        panel_builder = panel_builder.push(header_row);
+    }
+
+    panel_builder
         .push(
             container(body_rows)
                 .width(Length::Fill)
@@ -2033,6 +2278,10 @@ fn history_body_rows(app: &App, page: usize, page_size: usize) -> Element<'stati
     let end = (start + page_size).min(app.clips.history.len());
     let slice = &app.clips.history[start..end];
 
+    if app.clips.browser_mode == ClipBrowserMode::Gallery {
+        return gallery_body_rows(app, slice);
+    }
+
     let rows: Vec<Element<'static, Message>> = slice
         .iter()
         .map(|record| dense_history_row(app, record, app.clips.selected_id == Some(record.id)))
@@ -2043,6 +2292,30 @@ fn history_body_rows(app: &App, page: usize, page_size: usize) -> Element<'stati
         .height(Length::Fill)
         .on_scroll(|viewport| Message::HistoryScrolled(viewport.into()))
         .into()
+}
+
+fn gallery_body_rows(app: &App, slice: &[ClipRecord]) -> Element<'static, Message> {
+    let cards: Vec<Element<'static, Message>> = slice
+        .iter()
+        .map(|record| gallery_card(app, record, app.clips.selected_id == Some(record.id)))
+        .collect();
+
+    let gallery = Row::with_children(cards)
+        .spacing(GALLERY_CARD_SPACING)
+        .width(Length::Fill)
+        .wrap()
+        .vertical_spacing(GALLERY_CARD_SPACING)
+        .align_x(iced::alignment::Horizontal::Center);
+
+    container(
+        scrollable(gallery)
+            .id(CLIP_HISTORY_SCROLLABLE_ID)
+            .height(Length::Fill)
+            .on_scroll(|viewport| Message::HistoryScrolled(viewport.into())),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn history_footer_row(
@@ -2147,6 +2420,60 @@ fn dense_history_row(app: &App, record: &ClipRecord, selected: bool) -> Element<
         .into()
 }
 
+fn gallery_card(app: &App, record: &ClipRecord, selected: bool) -> Element<'static, Message> {
+    let clip_id = record.id;
+    let montage_selected = app.clips.montage_selection.contains(&clip_id);
+    let post_process_block = super::super::clip_post_process_block_reason(record);
+
+    let header = row![
+        montage_selection_checkbox(clip_id, montage_selected, post_process_block.as_deref()),
+        Space::new().width(Length::Fill),
+        favorite_icon_button(record.favorited, Message::ToggleFavorite(clip_id)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let summary = column![
+        text_non_selectable(rule_label(app, record)).size(14),
+        text_non_selectable(character_label(app, record))
+            .size(12)
+            .style(|theme: &iced::Theme| TextStyle {
+                color: Some(theme::tokens_for(theme).color.muted_foreground),
+            }),
+        text_non_selectable(format_smart_timestamp(record.trigger_event_at))
+            .size(12)
+            .style(|theme: &iced::Theme| TextStyle {
+                color: Some(theme::tokens_for(theme).color.muted_foreground),
+            }),
+        row![
+            clips_badge(format!("Score {}", record.score), BadgeTone::Info),
+            clips_badge(short_duration_label(record), BadgeTone::Outline),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+        container(flag_badges(record)).width(Length::Fill),
+    ]
+    .spacing(6);
+
+    let content = column![
+        header,
+        clip_thumbnail_preview(app, record, Length::Fill, 160.0, ContentFit::Cover, false),
+        summary,
+    ]
+    .spacing(10)
+    .width(Length::Fill);
+
+    mouse_area(
+        container(content)
+            .width(Length::Fixed(GALLERY_CARD_WIDTH))
+            .padding([12, 12])
+            .style(move |theme: &iced::Theme| gallery_card_style(theme, selected)),
+    )
+    .on_press(Message::RowSelected(clip_id))
+    .interaction(iced::mouse::Interaction::Pointer)
+    .into()
+}
+
 fn dense_text_cell(value: impl Into<String>, width: Length) -> Element<'static, Message> {
     container(
         text_non_selectable(value.into())
@@ -2180,6 +2507,131 @@ fn clip_list_row_style(theme: &iced::Theme, selected: bool) -> ContainerStyle {
         border: theme::border(border_color, 1.0, theme::RADIUS.md),
         ..Default::default()
     }
+}
+
+fn gallery_card_style(theme: &iced::Theme, selected: bool) -> ContainerStyle {
+    let c = &theme::tokens_for(theme).color;
+    ContainerStyle {
+        text_color: Some(c.foreground),
+        background: Some(Background::Color(if selected {
+            c.muted
+        } else {
+            c.background
+        })),
+        border: theme::border(
+            if selected { c.primary } else { c.border },
+            1.0,
+            theme::RADIUS.lg,
+        ),
+        ..Default::default()
+    }
+}
+
+fn clip_thumbnail_preview(
+    app: &App,
+    record: &ClipRecord,
+    width: Length,
+    height: f32,
+    content_fit: ContentFit,
+    allow_path_fallback: bool,
+) -> Element<'static, Message> {
+    if let Some(path) = record.thumbnail_path.as_deref()
+        && std::path::Path::new(path).exists()
+    {
+        if let Some(handle) = app.clips.thumbnail_handles.get(path) {
+            return container(
+                image(handle.clone())
+                    .width(Length::Fill)
+                    .height(height)
+                    .content_fit(content_fit),
+            )
+            .width(width)
+            .height(height)
+            .style(|theme: &iced::Theme| ContainerStyle {
+                background: Some(Background::Color(theme::tokens_for(theme).color.muted)),
+                border: theme::border(theme::tokens_for(theme).color.border, 1.0, theme::RADIUS.md),
+                ..Default::default()
+            })
+            .into();
+        }
+
+        if allow_path_fallback {
+            return container(
+                image(image::Handle::from_path(path))
+                    .width(Length::Fill)
+                    .height(height)
+                    .content_fit(content_fit),
+            )
+            .width(width)
+            .height(height)
+            .style(|theme: &iced::Theme| ContainerStyle {
+                background: Some(Background::Color(theme::tokens_for(theme).color.muted)),
+                border: theme::border(theme::tokens_for(theme).color.border, 1.0, theme::RADIUS.md),
+                ..Default::default()
+            })
+            .into();
+        }
+
+        if app.clips.thumbnail_loads_in_flight.contains(path) {
+            return container(
+                center(text_non_selectable("Loading thumbnail...").size(12).style(
+                    |theme: &iced::Theme| TextStyle {
+                        color: Some(theme::tokens_for(theme).color.muted_foreground),
+                    },
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill),
+            )
+            .width(width)
+            .height(height)
+            .style(|theme: &iced::Theme| ContainerStyle {
+                background: Some(Background::Color(theme::tokens_for(theme).color.muted)),
+                border: theme::border(theme::tokens_for(theme).color.border, 1.0, theme::RADIUS.md),
+                ..Default::default()
+            })
+            .into();
+        }
+
+        return container(
+            center(
+                text_non_selectable("Preparing thumbnail...")
+                    .size(12)
+                    .style(|theme: &iced::Theme| TextStyle {
+                        color: Some(theme::tokens_for(theme).color.muted_foreground),
+                    }),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .width(width)
+        .height(height)
+        .style(|theme: &iced::Theme| ContainerStyle {
+            background: Some(Background::Color(theme::tokens_for(theme).color.muted)),
+            border: theme::border(theme::tokens_for(theme).color.border, 1.0, theme::RADIUS.md),
+            ..Default::default()
+        })
+        .into();
+    }
+
+    container(
+        center(
+            text_non_selectable("No thumbnail")
+                .size(12)
+                .style(|theme: &iced::Theme| TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                }),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill),
+    )
+    .width(width)
+    .height(height)
+    .style(|theme: &iced::Theme| ContainerStyle {
+        background: Some(Background::Color(theme::tokens_for(theme).color.muted)),
+        border: theme::border(theme::tokens_for(theme).color.border, 1.0, theme::RADIUS.md),
+        ..Default::default()
+    })
+    .into()
 }
 
 fn montage_selection_checkbox(
@@ -2333,6 +2785,7 @@ fn clip_detail_panel<'a>(app: &'a App, detail: &'a ClipDetailRecord) -> Element<
     let can_export_timeline = record.path.is_some() && !detail.raw_events.is_empty();
 
     let mut content: Column<'_, Message> = column![].spacing(12);
+    content = content.push(detail_visual_header(app, record));
     content = content.push(detail_summary_card(app, record, storage_tier));
 
     content = content.push(detail_actions_section(
@@ -2374,6 +2827,21 @@ fn clip_detail_panel<'a>(app: &'a App, detail: &'a ClipDetailRecord) -> Element<
 
     panel(format!("Clip #{} detail", record.id))
         .push(scrollable(content).height(Length::Fill))
+        .build()
+        .into()
+}
+
+fn detail_visual_header(app: &App, record: &ClipRecord) -> Element<'static, Message> {
+    section("Preview")
+        .description("Representative frame captured near the trigger moment.")
+        .push(clip_thumbnail_preview(
+            app,
+            record,
+            Length::Fill,
+            270.0,
+            ContentFit::Contain,
+            true,
+        ))
         .build()
         .into()
 }

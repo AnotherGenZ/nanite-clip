@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Instant;
 
 use chrono::NaiveDate;
-use iced::widget::combo_box;
+use iced::widget::{combo_box, image};
 use iced::window;
 
 use crate::capture;
@@ -56,6 +56,8 @@ pub(crate) struct ClipLibraryState {
     pub recent: Vec<ClipRecord>,
     pub history_source: Vec<ClipRecord>,
     pub history: Vec<ClipRecord>,
+    pub thumbnail_handles: BTreeMap<String, image::Handle>,
+    pub thumbnail_loads_in_flight: BTreeSet<String>,
     pub filter_options: ClipFilterOptions,
     pub tag_editor_options: combo_box::State<String>,
     pub collection_editor_options: combo_box::State<tabs::clips::CollectionSelectOption>,
@@ -76,6 +78,7 @@ pub(crate) struct ClipLibraryState {
     pub history_page: usize,
     pub history_page_size: usize,
     pub history_viewport: Option<tabs::clips::HistoryViewportState>,
+    pub browser_mode: tabs::clips::ClipBrowserMode,
     pub advanced_filters_open: bool,
     pub search_revision: u64,
     pub raw_event_filter: String,
@@ -169,6 +172,7 @@ pub(crate) struct SettingsState {
     pub buffer_secs: String,
     pub save_delay_secs: String,
     pub clip_saved_notifications: bool,
+    pub auto_generate_thumbnails: bool,
     pub clip_naming_template: String,
     pub manual_clip_enabled: bool,
     pub manual_clip_hotkey: String,

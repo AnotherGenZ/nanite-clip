@@ -23,7 +23,7 @@ use crate::background_jobs::{
     BackgroundJobState,
 };
 
-const CLIP_STORE_SCHEMA_VERSION: i64 = 16;
+const CLIP_STORE_SCHEMA_VERSION: i64 = 17;
 const CHARACTER_OUTFIT_CACHE_TTL_MS: i64 = 2 * 60 * 60 * 1000;
 const INTERRUPTED_BACKGROUND_JOB_DETAIL: &str =
     "Interrupted because nanite-clip closed before the background job finished.";
@@ -589,6 +589,7 @@ pub struct ClipRecord {
     pub score: u32,
     pub honu_session_id: Option<i64>,
     pub path: Option<String>,
+    pub thumbnail_path: Option<String>,
     pub file_size_bytes: Option<u64>,
     pub favorited: bool,
     pub overlap_count: u32,
@@ -976,6 +977,7 @@ impl ClipStore {
             facility_id: Set(clip.facility_id.map(i64::from)),
             profile_id: Set(clip.profile_id),
             path: Set(clip.path),
+            thumbnail_path: Set(None),
             score: Set(i64::from(clip.score)),
             honu_session_id: Set(clip.honu_session_id),
             favorited: Set(false),
@@ -2364,6 +2366,14 @@ impl ClipStore {
         clips_repo::update_clip_path(self, clip_id, path).await
     }
 
+    pub async fn update_clip_thumbnail_path(
+        &self,
+        clip_id: i64,
+        thumbnail_path: Option<&str>,
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::update_clip_thumbnail_path(self, clip_id, thumbnail_path).await
+    }
+
     pub async fn insert_audio_tracks(
         &self,
         clip_id: i64,
@@ -2641,6 +2651,7 @@ impl ClipStore {
                     score: clip.score as u32,
                     honu_session_id: clip.honu_session_id,
                     path,
+                    thumbnail_path: clip.thumbnail_path,
                     file_size_bytes: file_size_bytes_for_path(clip.path.as_deref()),
                     favorited: clip.favorited,
                     overlap_count: overlap_counts.remove(&clip.id).unwrap_or_default(),
@@ -2714,6 +2725,7 @@ struct ClipExportRecord {
     score: u32,
     honu_session_id: Option<i64>,
     path: Option<String>,
+    thumbnail_path: Option<String>,
     file_size_bytes: Option<u64>,
     favorited: bool,
     tags: Vec<String>,

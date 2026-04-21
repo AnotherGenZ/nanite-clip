@@ -23,7 +23,7 @@ pub(super) async fn export_csv_to(
     validate_output_destination(destination)?;
 
     let mut csv = String::from(
-        "id,trigger_event_at,clip_start_at,clip_end_at,saved_at,origin,profile_id,rule_id,clip_duration_secs,session_id,character_id,world_id,zone_id,facility_id,score,honu_session_id,path,file_size_bytes,events_json\n",
+        "id,trigger_event_at,clip_start_at,clip_end_at,saved_at,origin,profile_id,rule_id,clip_duration_secs,session_id,character_id,world_id,zone_id,facility_id,score,honu_session_id,path,thumbnail_path,file_size_bytes,events_json\n",
     );
 
     for record in export_records(store).await? {
@@ -57,6 +57,7 @@ pub(super) async fn export_csv_to(
                     .map(|value| value.to_string())
                     .unwrap_or_default(),
                 record.path.unwrap_or_default(),
+                record.thumbnail_path.unwrap_or_default(),
                 record
                     .file_size_bytes
                     .map(|value| value.to_string())

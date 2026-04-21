@@ -112,6 +112,24 @@ pub(super) async fn update_clip_path(
     Ok(())
 }
 
+pub(super) async fn update_clip_thumbnail_path(
+    store: &ClipStore,
+    clip_id: i64,
+    thumbnail_path: Option<&str>,
+) -> Result<(), ClipStoreError> {
+    let Some(existing) = entities::clips::Entity::find_by_id(clip_id)
+        .one(&store.pool)
+        .await?
+    else {
+        return Ok(());
+    };
+    let mut model: entities::clips::ActiveModel = existing.into();
+    model.thumbnail_path = Set(thumbnail_path.map(str::to_string));
+    model.update(&store.pool).await?;
+
+    Ok(())
+}
+
 pub(super) async fn insert_audio_tracks(
     store: &ClipStore,
     clip_id: i64,

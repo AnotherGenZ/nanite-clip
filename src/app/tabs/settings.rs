@@ -92,6 +92,7 @@ pub enum Message {
     BufferSecsStepped(i32),
     SaveDelayStepped(i32),
     ClipSavedNotificationsToggled(bool),
+    AutoGenerateThumbnailsToggled(bool),
     ClipNamingTemplateChanged(String),
     ManualClipEnabledToggled(bool),
     BeginHotkeyCapture,
@@ -105,6 +106,7 @@ pub enum Message {
     StorageMinAgeDaysStepped(i32),
     StorageMaxScoreStepped(i32),
     RunStorageTieringSweep,
+    BackfillThumbnails,
     CopypartyEnabledToggled(bool),
     CopypartyUploadUrlChanged(String),
     CopypartyPublicBaseUrlChanged(String),
@@ -349,6 +351,10 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             app.settings.clip_saved_notifications = value;
             iced::Task::none()
         }
+        Message::AutoGenerateThumbnailsToggled(value) => {
+            app.settings.auto_generate_thumbnails = value;
+            iced::Task::none()
+        }
         Message::ClipNamingTemplateChanged(value) => {
             app.settings.clip_naming_template = value;
             iced::Task::none()
@@ -446,6 +452,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             iced::Task::none()
         }
         Message::RunStorageTieringSweep => iced::Task::done(AppMessage::RunStorageTieringSweep),
+        Message::BackfillThumbnails => iced::Task::done(AppMessage::RunThumbnailBackfill),
         Message::CopypartyEnabledToggled(value) => {
             app.settings.copyparty_enabled = value;
             iced::Task::none()
@@ -874,6 +881,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 .parse()
                 .unwrap_or(app.config.recorder.save_delay_secs);
             app.config.recorder.clip_saved_notifications = app.settings.clip_saved_notifications;
+            app.config.recorder.auto_generate_thumbnails = app.settings.auto_generate_thumbnails;
 
             if !app.settings.obs_password_input.trim().is_empty() {
                 if let Err(error) = app.platform.secure_store().set(
@@ -1216,6 +1224,7 @@ fn settings_dirty(app: &App) -> bool {
         || app.settings.buffer_secs != app.config.recorder.replay_buffer_secs.to_string()
         || app.settings.save_delay_secs != app.config.recorder.save_delay_secs.to_string()
         || app.settings.clip_saved_notifications != app.config.recorder.clip_saved_notifications
+        || app.settings.auto_generate_thumbnails != app.config.recorder.auto_generate_thumbnails
         || app.settings.clip_naming_template != app.config.clip_naming_template
         || manual_clip_settings_dirty(app)
         || app.settings.storage_tiering_enabled != app.config.storage_tiering.enabled
@@ -1287,6 +1296,7 @@ fn apply_settings_draft_from_config(app: &mut App) {
     app.settings.buffer_secs = app.config.recorder.replay_buffer_secs.to_string();
     app.settings.save_delay_secs = app.config.recorder.save_delay_secs.to_string();
     app.settings.clip_saved_notifications = app.config.recorder.clip_saved_notifications;
+    app.settings.auto_generate_thumbnails = app.config.recorder.auto_generate_thumbnails;
     app.settings.clip_naming_template = app.config.clip_naming_template.clone();
     app.settings.manual_clip_enabled = app.config.manual_clip.enabled;
     app.settings.manual_clip_hotkey = app.config.manual_clip.hotkey.clone();
@@ -1881,6 +1891,12 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
                     "",
                     app.settings.clip_saved_notifications,
                     Message::ClipSavedNotificationsToggled,
+                ),
+                settings_toggle_row(
+                    "Auto-Generate Thumbnails",
+                    "",
+                    app.settings.auto_generate_thumbnails,
+                    Message::AutoGenerateThumbnailsToggled,
                 ),
                 settings_text_field(
                     "Clip Naming Template",
@@ -2624,6 +2640,12 @@ fn maintenance_panel(app: &App) -> Element<'_, Message> {
                             .on_press(Message::ExportCsv)
                             .into(),
                         "Export as CSV.",
+                    ),
+                    with_tooltip(
+                        styled_button("Backfill Thumbnails", ButtonTone::Secondary)
+                            .on_press(Message::BackfillThumbnails)
+                            .into(),
+                        "Generate thumbnails for saved clips that do not have one yet.",
                     ),
                 ]
                 .spacing(8)

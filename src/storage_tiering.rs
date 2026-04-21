@@ -239,6 +239,7 @@ mod tests {
             score,
             honu_session_id: None,
             path: Some(path.into()),
+            thumbnail_path: None,
             file_size_bytes: None,
             favorited: false,
             overlap_count: 0,

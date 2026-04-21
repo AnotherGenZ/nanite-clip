@@ -49,6 +49,7 @@ use crate::rules::switching::choose_runtime_rule;
 use crate::rules::{ClassifiedEvent, ClipAction, ClipActionLifecycle, ClipLength, RuleProfile};
 use crate::secure_store::SecretKey;
 use crate::storage_tiering::{self, StorageTier};
+use crate::thumbnails;
 use crate::tray::{TrayEvent, TrayProfileOption, TraySnapshot};
 use crate::ui::app::{column, container, row, scrollable, stack, text};
 use crate::ui::layout::tabs::{Tab as NavTab, tabs as nav_tabs};
@@ -312,6 +313,7 @@ pub enum Message {
         result: Result<String, String>,
     },
     RunStorageTieringSweep,
+    RunThumbnailBackfill,
     MoveClipToTier {
         clip_id: i64,
         target_tier: StorageTier,
@@ -344,6 +346,10 @@ pub enum Message {
         trim: Option<TrimSpec>,
         audio_layout: Vec<AudioSourceConfig>,
         result: Result<(), String>,
+    },
+    ClipThumbnailGenerated {
+        clip_id: i64,
+        result: Result<Option<String>, String>,
     },
     ClipResolutionInspected {
         path: String,
@@ -440,6 +446,7 @@ impl Message {
 #[derive(Debug, Clone)]
 pub(crate) enum BackgroundJobRetryPlan {
     StorageTieringSweep,
+    ThumbnailBackfill,
     StorageMove {
         clip_id: i64,
         target_tier: StorageTier,
@@ -559,6 +566,8 @@ impl App {
                 recent: Vec::new(),
                 history_source: Vec::new(),
                 history: Vec::new(),
+                thumbnail_handles: BTreeMap::new(),
+                thumbnail_loads_in_flight: BTreeSet::new(),
                 filter_options: ClipFilterOptions::default(),
                 tag_editor_options: iced::widget::combo_box::State::new(Vec::new()),
                 collection_editor_options: iced::widget::combo_box::State::new(Vec::new()),
@@ -579,6 +588,7 @@ impl App {
                 history_page: 0,
                 history_page_size: tabs::clips::DEFAULT_PAGE_SIZE,
                 history_viewport: None,
+                browser_mode: tabs::clips::ClipBrowserMode::List,
                 advanced_filters_open: false,
                 search_revision: 0,
                 raw_event_filter: String::new(),
@@ -665,6 +675,7 @@ impl App {
                 buffer_secs: config.recorder.replay_buffer_secs.to_string(),
                 save_delay_secs: config.recorder.save_delay_secs.to_string(),
                 clip_saved_notifications: config.recorder.clip_saved_notifications,
+                auto_generate_thumbnails: config.recorder.auto_generate_thumbnails,
                 clip_naming_template: config.clip_naming_template.clone(),
                 manual_clip_enabled: config.manual_clip.enabled,
                 manual_clip_hotkey: config.manual_clip.hotkey.clone(),
@@ -1354,6 +1365,7 @@ impl App {
                     self.update_clip_path_in_memory(clip_id, Some(&path));
                     Task::batch([
                         self.inspect_saved_clip_resolution(path.clone()),
+                        self.queue_thumbnail_generation_for_clip(clip_id, &path),
                         self.queue_post_process_for_clip(
                             clip_id,
                             PathBuf::from(path),
@@ -1365,6 +1377,18 @@ impl App {
                 Err(error) => {
                     self.set_clip_error(error.clone());
                     tracing::error!("Failed to store clip path for clip #{clip_id}: {error}");
+                    Task::none()
+                }
+            },
+
+            Message::ClipThumbnailGenerated { clip_id, result } => match result {
+                Ok(Some(thumbnail_path)) => {
+                    self.update_clip_thumbnail_path_in_memory(clip_id, Some(&thumbnail_path));
+                    Task::none()
+                }
+                Ok(None) => Task::none(),
+                Err(error) => {
+                    tracing::warn!("Failed to generate thumbnail for clip #{clip_id}: {error}");
                     Task::none()
                 }
             },
@@ -1478,6 +1502,7 @@ impl App {
             }
 
             Message::RunStorageTieringSweep => self.queue_storage_tiering_sweep(),
+            Message::RunThumbnailBackfill => self.queue_thumbnail_backfill(),
 
             Message::MoveClipToTier {
                 clip_id,
@@ -1701,7 +1726,10 @@ impl App {
                         self.clips.selected_detail = detail;
                         self.clear_clip_error();
                         if let Some(detail) = self.clips.selected_detail.clone() {
-                            return self.schedule_clip_detail_lookup_resolutions(&detail);
+                            return Task::batch([
+                                self.schedule_clip_detail_lookup_resolutions(&detail),
+                                tabs::clips::prime_thumbnail_cache_for_visible_items(self),
+                            ]);
                         }
                     }
                     Err(error) => {
@@ -3264,6 +3292,57 @@ impl App {
                 clip.file_size_bytes = file_size_bytes;
             }
         }
+
+        if let Some(detail) = self.clips.selected_detail.as_mut()
+            && detail.clip.id == clip_id
+        {
+            detail.clip.path = path;
+            detail.clip.file_size_bytes = file_size_bytes;
+        }
+    }
+
+    fn update_clip_thumbnail_path_in_memory(&mut self, clip_id: i64, thumbnail_path: Option<&str>) {
+        let thumbnail_path = thumbnail_path.map(str::to_string);
+
+        for clip in &mut self.clips.recent {
+            if clip.id == clip_id {
+                clip.thumbnail_path = thumbnail_path.clone();
+            }
+        }
+
+        for clip in &mut self.clips.history_source {
+            if clip.id == clip_id {
+                clip.thumbnail_path = thumbnail_path.clone();
+            }
+        }
+
+        for clip in &mut self.clips.history {
+            if clip.id == clip_id {
+                clip.thumbnail_path = thumbnail_path.clone();
+            }
+        }
+
+        if let Some(detail) = self.clips.selected_detail.as_mut()
+            && detail.clip.id == clip_id
+        {
+            detail.clip.thumbnail_path = thumbnail_path;
+        }
+    }
+
+    fn queue_thumbnail_generation_for_clip(&self, clip_id: i64, path: &str) -> Task<Message> {
+        if !self.config.recorder.auto_generate_thumbnails {
+            return Task::none();
+        }
+
+        let Some(store) = self.clip_store.clone() else {
+            return Task::none();
+        };
+
+        let clip_path = path.to_string();
+        Task::perform(
+            async move { generate_thumbnail_for_clip(store, clip_id, clip_path).await },
+            move |result| Message::ClipThumbnailGenerated { clip_id, result },
+        )
     }
 
     fn inspect_saved_clip_resolution(&self, path: String) -> Task<Message> {
@@ -3745,6 +3824,19 @@ impl App {
                                 tasks.push(self.load_clip_detail(self.clips.selected_id));
                             }
                         }
+                        Some(BackgroundJobSuccess::ThumbnailBackfill {
+                            updated_clip_ids,
+                            message,
+                        }) => {
+                            self.set_status_feedback(message, false);
+                            tasks.push(tabs::clips::reload_views(self));
+                            if self.clips.selected_id.is_some()
+                                && updated_clip_ids
+                                    .contains(&self.clips.selected_id.unwrap_or_default())
+                            {
+                                tasks.push(self.load_clip_detail(self.clips.selected_id));
+                            }
+                        }
                         Some(BackgroundJobSuccess::Upload {
                             clip_id,
                             provider_label,
@@ -3806,6 +3898,9 @@ impl App {
                             self.set_clip_filter_feedback(
                                 format!("{message} Stored {track_summary}; {plan_summary}."),
                                 false,
+                            );
+                            tasks.push(
+                                self.queue_thumbnail_generation_for_clip(clip_id, &final_path),
                             );
                             tasks.push(tabs::clips::reload_views(self));
                             if self.clips.selected_id == Some(clip_id) {
@@ -3946,6 +4041,12 @@ impl App {
                 };
                 Task::done(Message::BackgroundJobRetryPrepared { job_id, result })
             }
+            BackgroundJobKind::ThumbnailBackfill => {
+                Task::done(Message::BackgroundJobRetryPrepared {
+                    job_id,
+                    result: Ok(BackgroundJobRetryPlan::ThumbnailBackfill),
+                })
+            }
             BackgroundJobKind::Montage => {
                 let result = if record.related_clip_ids.len() >= 2 {
                     Ok(BackgroundJobRetryPlan::Montage {
@@ -4051,6 +4152,7 @@ impl App {
     fn execute_background_job_retry(&mut self, plan: BackgroundJobRetryPlan) -> Task<Message> {
         match plan {
             BackgroundJobRetryPlan::StorageTieringSweep => self.queue_storage_tiering_sweep(),
+            BackgroundJobRetryPlan::ThumbnailBackfill => self.queue_thumbnail_backfill(),
             BackgroundJobRetryPlan::StorageMove {
                 clip_id,
                 target_tier,
@@ -4216,6 +4318,96 @@ impl App {
             format!("Queued {action_label} download for {}.", release.version),
             true,
         );
+        self.persist_background_job_snapshot(job_id)
+    }
+
+    fn queue_thumbnail_backfill(&mut self) -> Task<Message> {
+        let Some(store) = self.clip_store.clone() else {
+            self.set_settings_feedback("Clip database is unavailable.", false);
+            return Task::none();
+        };
+
+        let job_id = self.background_jobs.start(
+            BackgroundJobKind::ThumbnailBackfill,
+            "Backfill clip thumbnails",
+            Vec::new(),
+            move |ctx| async move {
+                ctx.progress(1, 2, "Loading clips that need thumbnails.")?;
+                let clips = store.all_clips().await.map_err(|error| {
+                    format!("failed to load clips for thumbnail backfill: {error}")
+                })?;
+
+                let candidates = clips
+                    .into_iter()
+                    .filter(|clip| {
+                        clip.path
+                            .as_ref()
+                            .is_some_and(|path| !path.trim().is_empty())
+                    })
+                    .filter(|clip| {
+                        clip.thumbnail_path
+                            .as_deref()
+                            .is_none_or(|path| !std::path::Path::new(path).exists())
+                    })
+                    .collect::<Vec<_>>();
+
+                if candidates.is_empty() {
+                    return Ok(BackgroundJobSuccess::ThumbnailBackfill {
+                        updated_clip_ids: Vec::new(),
+                        message: "All saved clips already have thumbnails.".into(),
+                    });
+                }
+
+                let total_steps = candidates.len() as u32 + 1;
+                let mut updated_clip_ids = Vec::new();
+                let mut skipped_missing_files = 0_u32;
+
+                for (index, clip) in candidates.into_iter().enumerate() {
+                    let clip_id = clip.id;
+                    let Some(path) = clip.path.clone() else {
+                        continue;
+                    };
+                    ctx.progress(
+                        index as u32 + 2,
+                        total_steps,
+                        format!("Generating thumbnail for clip #{clip_id}."),
+                    )?;
+
+                    if !std::path::Path::new(&path).exists() {
+                        skipped_missing_files += 1;
+                        continue;
+                    }
+
+                    if generate_thumbnail_for_clip_with_timing(
+                        store.clone(),
+                        clip_id,
+                        path,
+                        clip.trigger_event_at,
+                        clip.clip_start_at,
+                        clip.clip_end_at,
+                    )
+                    .await?
+                    .is_some()
+                    {
+                        updated_clip_ids.push(clip_id);
+                    }
+                }
+
+                let mut message = format!("Generated {} thumbnail(s).", updated_clip_ids.len());
+                if skipped_missing_files > 0 {
+                    message.push_str(&format!(
+                        " Skipped {skipped_missing_files} clip(s) with missing files."
+                    ));
+                }
+
+                Ok(BackgroundJobSuccess::ThumbnailBackfill {
+                    updated_clip_ids,
+                    message,
+                })
+            },
+        );
+
+        self.set_settings_feedback("Queued thumbnail backfill.", true);
         self.persist_background_job_snapshot(job_id)
     }
 
@@ -5443,11 +5635,76 @@ fn clip_draft_from_request(
     }
 }
 
+async fn generate_thumbnail_for_clip(
+    store: ClipStore,
+    clip_id: i64,
+    clip_path: String,
+) -> Result<Option<String>, String> {
+    let Some(detail) = store.clip_detail(clip_id).await.map_err(|error| {
+        format!("failed to load clip #{clip_id} for thumbnail generation: {error}")
+    })?
+    else {
+        return Ok(None);
+    };
+    let clip = detail.clip;
+
+    generate_thumbnail_for_clip_with_timing(
+        store,
+        clip_id,
+        clip_path,
+        clip.trigger_event_at,
+        clip.clip_start_at,
+        clip.clip_end_at,
+    )
+    .await
+}
+
+async fn generate_thumbnail_for_clip_with_timing(
+    store: ClipStore,
+    clip_id: i64,
+    clip_path: String,
+    trigger_event_at: chrono::DateTime<Utc>,
+    clip_start_at: chrono::DateTime<Utc>,
+    clip_end_at: chrono::DateTime<Utc>,
+) -> Result<Option<String>, String> {
+    let clip_path = PathBuf::from(clip_path);
+    if !clip_path.exists() {
+        return Ok(None);
+    }
+
+    let thumbnail_path = thumbnails::generate_clip_thumbnail(
+        clip_id,
+        &clip_path,
+        trigger_event_at,
+        clip_start_at,
+        clip_end_at,
+    )?;
+
+    if let Some(thumbnail_path) = thumbnail_path {
+        let thumbnail_string = thumbnail_path.to_string_lossy().into_owned();
+        store
+            .update_clip_thumbnail_path(clip_id, Some(&thumbnail_string))
+            .await
+            .map_err(|error| {
+                format!("failed to store thumbnail path for clip #{clip_id}: {error}")
+            })?;
+        Ok(Some(thumbnail_string))
+    } else {
+        Ok(None)
+    }
+}
+
 async fn delete_clip_file_and_unlink(
     store: ClipStore,
     clip_id: i64,
     path: Option<&std::path::Path>,
 ) -> Result<(), String> {
+    let thumbnail_path = store
+        .clip_detail(clip_id)
+        .await
+        .map_err(|error| format!("failed to load clip #{clip_id} before deletion: {error}"))?
+        .and_then(|detail| detail.clip.thumbnail_path.map(PathBuf::from));
+
     if let Some(path) = path {
         match std::fs::remove_file(path) {
             Ok(()) => {}
@@ -5456,6 +5713,19 @@ async fn delete_clip_file_and_unlink(
                 return Err(format!(
                     "failed to delete clip file {}: {error}",
                     path.display()
+                ));
+            }
+        }
+    }
+
+    if let Some(thumbnail_path) = thumbnail_path {
+        match std::fs::remove_file(&thumbnail_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to delete thumbnail {}: {error}",
+                    thumbnail_path.display()
                 ));
             }
         }

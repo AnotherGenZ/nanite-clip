@@ -29,6 +29,7 @@ mod rules;
 mod secure_store;
 mod session_report;
 mod storage_tiering;
+mod thumbnails;
 mod timeline_export;
 mod tray;
 mod ui;

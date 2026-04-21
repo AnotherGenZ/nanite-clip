@@ -13,7 +13,7 @@ use sea_orm_migration::{
 
 use super::*;
 
-const MIGRATION_NAMES: [&str; 16] = [
+const MIGRATION_NAMES: [&str; 17] = [
     "m20240408_000001_create_initial_schema",
     "m20240408_000002_add_honu_session_id",
     "m20240408_000003_add_clip_origin",
@@ -30,6 +30,7 @@ const MIGRATION_NAMES: [&str; 16] = [
     "m20240408_000014_create_background_jobs_table",
     "m20240408_000015_create_clip_audio_tracks_and_post_process_state",
     "m20240408_000016_create_clip_organization_tables",
+    "m20240408_000017_add_clip_thumbnail_path",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,7 @@ impl MigratorTrait for Migrator {
             Box::new(CreateBackgroundJobsTable),
             Box::new(CreateClipAudioTracksAndPostProcessState),
             Box::new(CreateClipOrganizationTables),
+            Box::new(AddClipThumbnailPath),
         ]
     }
 }
@@ -354,6 +356,13 @@ pub(super) async fn inspect_legacy_schema(
             "idx_collection_clips_collection_sequence",
         )
         .await?;
+    let has_clip_thumbnail_path = has_clips_table
+        && manager
+            .has_column(
+                entities::clips::Entity.table_name(),
+                entities::clips::Column::ThumbnailPath.to_string(),
+            )
+            .await?;
 
     let applied_prefix = [
         has_initial_schema,
@@ -372,6 +381,7 @@ pub(super) async fn inspect_legacy_schema(
         has_background_jobs_table,
         has_clip_audio_tracks_table,
         has_clip_organization_tables,
+        has_clip_thumbnail_path,
     ]
     .into_iter()
     .take_while(|applied| *applied)
@@ -450,6 +460,7 @@ named_migration!(
     MIGRATION_NAMES[14]
 );
 named_migration!(CreateClipOrganizationTables, MIGRATION_NAMES[15]);
+named_migration!(AddClipThumbnailPath, MIGRATION_NAMES[16]);
 
 #[async_trait::async_trait]
 impl MigrationTrait for CreateInitialSchema {
@@ -1166,6 +1177,28 @@ impl MigrationTrait for CreateClipOrganizationTables {
             create_collection_clips_collection_sequence_index(),
         )
         .await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for AddClipThumbnailPath {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if manager
+            .has_column(
+                entities::clips::Entity.table_name(),
+                entities::clips::Column::ThumbnailPath.to_string(),
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        manager
+            .get_connection()
+            .execute_unprepared("ALTER TABLE clips ADD COLUMN thumbnail_path TEXT NULL")
+            .await?;
 
         Ok(())
     }

@@ -166,16 +166,18 @@ Clip lists today are walls of text metadata. A single representative frame per c
 
 A basic version of thumbnail extraction already exists in `src/discord.rs` (`extract_thumbnail`) for Discord webhook embeds: it calls ffmpeg to grab a single frame at the 1-second mark and writes it as a PNG. This feature generalizes that pattern, extracts at the trigger moment instead of a fixed offset, persists the thumbnail path, and integrates it into the clips list and detail view.
 
-- [ ] Add a `thumbnail_path` column to the `clips` table with a non-destructive schema migration. Existing clips get `NULL`; the UI handles missing thumbnails gracefully.
-- [ ] Extract the thumbnail extraction logic from `src/discord.rs` into a shared utility in a new `src/thumbnails.rs` module. Parameterize the extraction timestamp (trigger-event offset within the clip window) and output format (JPEG for size, configurable quality).
-- [ ] Generate a thumbnail automatically after each clip save completes, as a lightweight post-save step. Use the trigger-event timestamp offset within the clip as the seek point, falling back to the midpoint if the offset is invalid or extraction fails.
-- [ ] Store thumbnails in a `thumbnails/` subdirectory alongside the clip save directory, named by clip ID, to avoid polluting the clips directory.
-- [ ] Update `ClipRecord` and clip queries to include `thumbnail_path`. Load thumbnails lazily in the clips list using iced's `image::Handle` to avoid blocking the UI with disk I/O for large lists.
-- [ ] Display thumbnails as small previews in the clips list rows. Use a fixed aspect ratio (16:9) with a fallback placeholder for clips without thumbnails.
-- [ ] Display the thumbnail prominently in the clip detail panel as a visual header.
-- [ ] Add a background job or on-demand action to bulk-generate thumbnails for existing clips that predate this feature.
-- [ ] Add a Settings toggle to disable automatic thumbnail generation for users who prefer smaller disk footprint.
-- [ ] Add tests for thumbnail path construction, offset calculation from trigger time, and missing-ffmpeg fallback behavior.
+- [x] Add a `thumbnail_path` column to the `clips` table with a non-destructive schema migration. Existing clips get `NULL`; the UI handles missing thumbnails gracefully.
+- [x] Extract the thumbnail extraction logic from `src/discord.rs` into a shared utility in a new `src/thumbnails.rs` module. Parameterize the extraction timestamp (trigger-event offset within the clip window) and output format (JPEG for size, configurable quality).
+- [x] Generate a thumbnail automatically after each clip save completes, as a lightweight post-save step. Use the trigger-event timestamp offset within the clip as the seek point, falling back to the midpoint if the offset is invalid or extraction fails.
+- [x] Store thumbnails in a `thumbnails/` subdirectory alongside the clip save directory, named by clip ID, to avoid polluting the clips directory.
+- [x] Update `ClipRecord` and clip queries to include `thumbnail_path`. Load thumbnails lazily in the clips list using iced's `image::Handle` to avoid blocking the UI with disk I/O for large lists.
+- [x] Display thumbnails as small previews in the clips list rows. The shipped UX uses a list/gallery browser toggle, with thumbnails shown in gallery cards and a fallback placeholder for clips without thumbnails.
+- [x] Display the thumbnail prominently in the clip detail panel as a visual header.
+- [x] Add a background job or on-demand action to bulk-generate thumbnails for existing clips that predate this feature.
+- [x] Add a Settings toggle to disable automatic thumbnail generation for users who prefer smaller disk footprint.
+- [x] Add tests for thumbnail path construction, offset calculation from trigger time, and missing-ffmpeg fallback behavior.
+
+Progress note: VIS-01 is now shipped. New clips generate representative JPEG thumbnails after save, the Clips tab supports both the original table view and a gallery view backed by wrapped thumbnail cards, existing clips can be backfilled from Settings, and the UI now caches decoded thumbnail handles plus preserves keyboard-driven scroll visibility in gallery mode.
 
 Done when: new clips automatically get a thumbnail displayed in the clips list and detail view, and existing clips can have thumbnails generated retroactively.
 
@@ -443,7 +445,7 @@ Done when: users can share a local URL that renders a rich clip page with thumbn
 
 ### Wave 7B: Visual Foundation
 
-- [ ] VIS-01 Thumbnail extraction and display
+- [x] VIS-01 Thumbnail extraction and display
 - [x] ORG-02 Favorites and pinning
 - [ ] ORG-03 Clip notes
 - [ ] QOL-01 Soft delete and undo

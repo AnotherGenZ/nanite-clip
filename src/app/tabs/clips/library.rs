@@ -733,6 +733,7 @@ mod tests {
     fn visible_history_row_does_not_require_scroll() {
         let viewport = HistoryViewportState {
             offset_y: 64.0,
+            viewport_width: 960.0,
             viewport_height: 96.0,
             content_height: 238.0,
         };
@@ -744,6 +745,7 @@ mod tests {
     fn row_above_viewport_requires_scroll() {
         let viewport = HistoryViewportState {
             offset_y: 96.0,
+            viewport_width: 960.0,
             viewport_height: 96.0,
             content_height: 238.0,
         };
@@ -755,6 +757,7 @@ mod tests {
     fn row_below_viewport_requires_scroll() {
         let viewport = HistoryViewportState {
             offset_y: 0.0,
+            viewport_width: 960.0,
             viewport_height: 96.0,
             content_height: 238.0,
         };
@@ -766,6 +769,7 @@ mod tests {
     fn non_scrollable_history_always_keeps_rows_visible() {
         let viewport = HistoryViewportState {
             offset_y: 0.0,
+            viewport_width: 960.0,
             viewport_height: 220.0,
             content_height: 180.0,
         };
