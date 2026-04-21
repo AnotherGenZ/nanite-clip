@@ -61,6 +61,9 @@ pub fn clip_path_storage_tier(path: &Path, config: &StorageTieringConfig) -> Sto
 }
 
 pub fn tiering_candidate_from_clip(record: &ClipRecord) -> Option<StorageTieringCandidate> {
+    if record.favorited {
+        return None;
+    }
     Some(StorageTieringCandidate {
         clip_id: record.id,
         path: PathBuf::from(record.path.as_ref()?),
@@ -237,10 +240,14 @@ mod tests {
             honu_session_id: None,
             path: Some(path.into()),
             file_size_bytes: None,
+            favorited: false,
             overlap_count: 0,
             alert_count: 0,
+            collection_count: 0,
+            collection_sequence_index: None,
             post_process_status: crate::db::PostProcessStatus::Legacy,
             post_process_error: None,
+            tags: Vec::new(),
             events: vec![ClipEventContribution {
                 event_kind: "kill".into(),
                 occurrences: 1,
@@ -277,5 +284,13 @@ mod tests {
 
         assert_eq!(plan.target_tier, StorageTier::Primary);
         assert_eq!(plan.destination_path, PathBuf::from("/clips/example.mkv"));
+    }
+
+    #[test]
+    fn favorited_clips_are_not_tiering_candidates() {
+        let mut clip = sample_clip("/clips/favorite.mkv", 10, 30);
+        clip.favorited = true;
+
+        assert!(tiering_candidate_from_clip(&clip).is_none());
     }
 }

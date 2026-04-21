@@ -12,6 +12,9 @@ pub(super) fn active_filter_count(app: &App) -> usize {
         + usize::from(!filters.target.trim().is_empty())
         + usize::from(!filters.weapon.trim().is_empty())
         + usize::from(!filters.alert.trim().is_empty())
+        + usize::from(!filters.tag.trim().is_empty())
+        + usize::from(filters.favorites_only)
+        + usize::from(filters.collection_id.is_some())
         + usize::from(filters.overlap_state != OverlapFilterState::All)
         + usize::from(!filters.profile.trim().is_empty())
         + usize::from(!filters.rule.trim().is_empty())
@@ -40,6 +43,7 @@ pub(in crate::app) fn rebuild_history(app: &mut App) {
         &mut filtered,
         app.clips.sort_column,
         app.clips.sort_descending,
+        &app.clips.filters,
         &app.config,
         &app.runtime.lifecycle,
     );
@@ -58,10 +62,24 @@ fn sort_clip_history(
     records: &mut [ClipRecord],
     column: ClipSortColumn,
     descending: bool,
+    filters: &crate::db::ClipFilters,
     config: &crate::config::Config,
     state: &AppState,
 ) {
     records.sort_by(|a, b| {
+        if filters.collection_id.is_some() {
+            return a
+                .collection_sequence_index
+                .cmp(&b.collection_sequence_index)
+                .then(a.trigger_event_at.cmp(&b.trigger_event_at))
+                .then(a.id.cmp(&b.id));
+        }
+
+        let favorite_order = b.favorited.cmp(&a.favorited);
+        if favorite_order != std::cmp::Ordering::Equal {
+            return favorite_order;
+        }
+
         let order = match column {
             ClipSortColumn::When => a.trigger_event_at.cmp(&b.trigger_event_at),
             ClipSortColumn::Rule => rule_label_from(config, a).cmp(&rule_label_from(config, b)),
@@ -93,6 +111,7 @@ pub(super) fn build_filter_options(app: &App) -> ClipFilterOptions {
     let mut targets = std::collections::BTreeSet::new();
     let mut weapons = std::collections::BTreeSet::new();
     let mut alerts = std::collections::BTreeSet::new();
+    let mut tags = std::collections::BTreeSet::new();
 
     for profile in &app.config.rule_profiles {
         profiles.insert(profile.name.clone());
@@ -123,6 +142,9 @@ pub(super) fn build_filter_options(app: &App) -> ClipFilterOptions {
     }
     for alert in &app.clips.filter_options.alerts {
         alerts.insert(alert.clone());
+    }
+    for tag in &app.clips.filter_options.tags {
+        tags.insert(tag.clone());
     }
 
     ClipFilterOptions {
@@ -159,6 +181,8 @@ pub(super) fn build_filter_options(app: &App) -> ClipFilterOptions {
             .into_iter()
             .filter(|value| !value.is_empty())
             .collect(),
+        tags: tags.into_iter().filter(|value| !value.is_empty()).collect(),
+        collections: app.clips.filter_options.collections.clone(),
     }
 }
 
@@ -176,6 +200,7 @@ fn clip_matches_filters(app: &App, record: &ClipRecord) -> bool {
         && exact_filter_matches(&app.clips.filters.server, &server)
         && exact_filter_matches(&app.clips.filters.continent, &continent)
         && exact_filter_matches(&app.clips.filters.base, &location)
+        && tag_filter_matches(&app.clips.filters.tag, &record.tags)
         && quick_search_matches(
             &app.clips.filters.search,
             record,
@@ -191,6 +216,11 @@ fn clip_matches_filters(app: &App, record: &ClipRecord) -> bool {
 fn exact_filter_matches(filter: &str, value: &str) -> bool {
     let filter = normalize(filter);
     filter.is_empty() || filter == normalize(value)
+}
+
+fn tag_filter_matches(filter: &str, tags: &[String]) -> bool {
+    let filter = normalize(filter);
+    filter.is_empty() || tags.iter().any(|tag| normalize(tag).contains(&filter))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -226,6 +256,7 @@ fn quick_search_matches(
             .facility_id
             .map(|id| id.to_string())
             .unwrap_or_default(),
+        record.tags.join(" "),
     ]
     .join(" ");
 
@@ -661,6 +692,7 @@ pub(in crate::app) fn subscription_event_handler(
         (Key::Named(Named::PageUp), false) => KeyNav::PreviousPage,
         (Key::Named(Named::Home), false) => KeyNav::First,
         (Key::Named(Named::End), false) => KeyNav::Last,
+        (Key::Named(Named::Enter), true) => KeyNav::SubmitActiveOrganizationInput,
         (Key::Named(Named::Enter), false) => KeyNav::OpenSelected,
         (Key::Named(Named::Delete), false) => KeyNav::DeleteSelected,
         (Key::Named(Named::Escape), _) => KeyNav::Escape,

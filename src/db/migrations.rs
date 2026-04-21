@@ -13,7 +13,7 @@ use sea_orm_migration::{
 
 use super::*;
 
-const MIGRATION_NAMES: [&str; 15] = [
+const MIGRATION_NAMES: [&str; 16] = [
     "m20240408_000001_create_initial_schema",
     "m20240408_000002_add_honu_session_id",
     "m20240408_000003_add_clip_origin",
@@ -29,6 +29,7 @@ const MIGRATION_NAMES: [&str; 15] = [
     "m20240408_000013_create_montages_table",
     "m20240408_000014_create_background_jobs_table",
     "m20240408_000015_create_clip_audio_tracks_and_post_process_state",
+    "m20240408_000016_create_clip_organization_tables",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,7 @@ impl MigratorTrait for Migrator {
             Box::new(CreateMontagesTable),
             Box::new(CreateBackgroundJobsTable),
             Box::new(CreateClipAudioTracksAndPostProcessState),
+            Box::new(CreateClipOrganizationTables),
         ]
     }
 }
@@ -294,6 +296,64 @@ pub(super) async fn inspect_legacy_schema(
                 entities::clips::Column::PostProcessError.to_string(),
             )
             .await?;
+    let has_clip_organization_tables = has_clips_table
+        && manager
+            .has_column(
+                entities::clips::Entity.table_name(),
+                entities::clips::Column::Favorited.to_string(),
+            )
+            .await?
+        && manager
+            .has_table(entities::clip_tags::Entity.table_name())
+            .await?
+        && has_column_indexes(
+            &manager,
+            entities::clip_tags::Entity.table_name(),
+            clip_tags_index_columns(),
+        )
+        .await?
+        && has_named_index(
+            &manager,
+            entities::clip_tags::Entity.table_name(),
+            "idx_clip_tags_clip_tag",
+        )
+        .await?
+        && manager
+            .has_table(entities::collections::Entity.table_name())
+            .await?
+        && has_column_indexes(
+            &manager,
+            entities::collections::Entity.table_name(),
+            collections_index_columns(),
+        )
+        .await?
+        && has_named_index(
+            &manager,
+            entities::collections::Entity.table_name(),
+            "idx_collections_name",
+        )
+        .await?
+        && manager
+            .has_table(entities::collection_clips::Entity.table_name())
+            .await?
+        && has_column_indexes(
+            &manager,
+            entities::collection_clips::Entity.table_name(),
+            collection_clips_index_columns(),
+        )
+        .await?
+        && has_named_index(
+            &manager,
+            entities::collection_clips::Entity.table_name(),
+            "idx_collection_clips_clip_id",
+        )
+        .await?
+        && has_named_index(
+            &manager,
+            entities::collection_clips::Entity.table_name(),
+            "idx_collection_clips_collection_sequence",
+        )
+        .await?;
 
     let applied_prefix = [
         has_initial_schema,
@@ -311,6 +371,7 @@ pub(super) async fn inspect_legacy_schema(
         has_montages_tables,
         has_background_jobs_table,
         has_clip_audio_tracks_table,
+        has_clip_organization_tables,
     ]
     .into_iter()
     .take_while(|applied| *applied)
@@ -388,6 +449,7 @@ named_migration!(
     CreateClipAudioTracksAndPostProcessState,
     MIGRATION_NAMES[14]
 );
+named_migration!(CreateClipOrganizationTables, MIGRATION_NAMES[15]);
 
 #[async_trait::async_trait]
 impl MigrationTrait for CreateInitialSchema {
@@ -554,6 +616,21 @@ fn clip_uploads_index_columns() -> [entities::clip_uploads::Column; 1] {
 
 fn clip_audio_tracks_index_columns() -> [entities::clip_audio_tracks::Column; 1] {
     [entities::clip_audio_tracks::Column::ClipId]
+}
+
+fn clip_tags_index_columns() -> [entities::clip_tags::Column; 2] {
+    [
+        entities::clip_tags::Column::ClipId,
+        entities::clip_tags::Column::TagName,
+    ]
+}
+
+fn collections_index_columns() -> [entities::collections::Column; 1] {
+    [entities::collections::Column::Name]
+}
+
+fn collection_clips_index_columns() -> [entities::collection_clips::Column; 1] {
+    [entities::collection_clips::Column::ClipId]
 }
 
 fn montage_clips_index_columns() -> [entities::montage_clips::Column; 1] {
@@ -996,6 +1073,99 @@ impl MigrationTrait for CreateClipAudioTracksAndPostProcessState {
                 .execute_unprepared("ALTER TABLE clips ADD COLUMN post_process_error TEXT NULL")
                 .await?;
         }
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for CreateClipOrganizationTables {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if !manager
+            .has_column(
+                entities::clips::Entity.table_name(),
+                entities::clips::Column::Favorited.to_string(),
+            )
+            .await?
+        {
+            manager
+                .get_connection()
+                .execute_unprepared(
+                    "ALTER TABLE clips ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0",
+                )
+                .await?;
+        }
+
+        if !manager
+            .has_table(entities::clip_tags::Entity.table_name())
+            .await?
+        {
+            manager.create_table(create_clip_tags_table()).await?;
+        }
+        ensure_column_indexes(
+            manager,
+            entities::clip_tags::Entity.table_name(),
+            clip_tags_index_columns(),
+        )
+        .await?;
+        ensure_named_index(
+            manager,
+            entities::clip_tags::Entity.table_name(),
+            "idx_clip_tags_clip_tag",
+            create_clip_tags_clip_tag_unique_index(),
+        )
+        .await?;
+
+        if !manager
+            .has_table(entities::collections::Entity.table_name())
+            .await?
+        {
+            manager
+                .create_table(entity_table(entities::collections::Entity))
+                .await?;
+        }
+        ensure_column_indexes(
+            manager,
+            entities::collections::Entity.table_name(),
+            collections_index_columns(),
+        )
+        .await?;
+        ensure_named_index(
+            manager,
+            entities::collections::Entity.table_name(),
+            "idx_collections_name",
+            create_collections_name_unique_index(),
+        )
+        .await?;
+
+        if !manager
+            .has_table(entities::collection_clips::Entity.table_name())
+            .await?
+        {
+            manager
+                .create_table(create_collection_clips_table())
+                .await?;
+        }
+        ensure_column_indexes(
+            manager,
+            entities::collection_clips::Entity.table_name(),
+            collection_clips_index_columns(),
+        )
+        .await?;
+        ensure_named_index(
+            manager,
+            entities::collection_clips::Entity.table_name(),
+            "idx_collection_clips_clip_id",
+            create_collection_clips_clip_sequence_index(),
+        )
+        .await?;
+        ensure_named_index(
+            manager,
+            entities::collection_clips::Entity.table_name(),
+            "idx_collection_clips_collection_sequence",
+            create_collection_clips_collection_sequence_index(),
+        )
+        .await?;
 
         Ok(())
     }

@@ -207,15 +207,15 @@ Follow-ons: ORG-02, SHARE-01
 
 The existing filter system is query-based and powerful, but users have no way to persistently organize clips by intent. Tags and collections give users a personal organizational layer on top of the metadata-driven filters.
 
-- [ ] Add a `clip_tags` table: `(id, clip_id, tag_name, created_ts)` with a unique constraint on `(clip_id, tag_name)` and an index on `tag_name` for fast lookups. Add a `collections` table: `(id, name, description, created_ts)` and a `collection_clips` junction table: `(collection_id, clip_id, added_ts, sequence_index)`.
-- [ ] Add `ClipStore` methods for tag CRUD: `add_tag(clip_id, tag_name)`, `remove_tag(clip_id, tag_name)`, `list_tags() -> Vec<String>`, and `clips_by_tag(tag_name)`. Add collection CRUD: `create_collection`, `add_clip_to_collection`, `remove_clip_from_collection`, `list_collections`, `collection_clips`.
-- [ ] Add a tag filter to `ClipFilters` and integrate it into `search_clips` using the same pattern as the existing alert or weapon filters (join against `clip_tags`, LIKE on `tag_name`).
-- [ ] Add tag display in the clip detail panel as small badges, with an inline tag editor: type-to-search existing tags or create new ones. Keep the interaction lightweight (no modal).
-- [ ] Add a tag column or badge indicator in the clips list rows for at-a-glance visibility.
-- [ ] Add a collections sidebar or tab section in the Clips view that lists saved collections. Selecting a collection filters the clip list to its members, ordered by `sequence_index`.
-- [ ] Support adding clips to collections from the clip detail panel and from the montage-style multi-select flow.
-- [ ] Support drag-to-reorder within a collection view for manual sequencing.
-- [ ] Add tests for tag uniqueness constraints, collection ordering, cascade delete behavior (clip deletion should cascade to tags and collection membership), and filter integration.
+- [x] Add a `clip_tags` table: `(id, clip_id, tag_name, created_ts)` with a unique constraint on `(clip_id, tag_name)` and an index on `tag_name` for fast lookups. Add a `collections` table: `(id, name, description, created_ts)` and a `collection_clips` junction table: `(collection_id, clip_id, added_ts, sequence_index)`.
+- [x] Add `ClipStore` methods for tag CRUD and collection membership management: `add_tag(clip_id, tag_name)`, `remove_tag(clip_id, tag_name)`, `list_tags() -> Vec<String>`, `create_collection`, `add_clip_to_collection`, `remove_clip_from_collection`, `list_collections`, and collection resequencing support.
+- [x] Add a tag filter to `ClipFilters` and integrate it into `search_clips` using the same pattern as the existing alert or weapon filters (join against `clip_tags`, LIKE on `tag_name`).
+- [x] Add tag display in the clip detail panel as small badges, with an inline tag editor: type-to-search existing tags or create new ones. Keep the interaction lightweight (no modal).
+- [x] Add a tag column or badge indicator in the clips list rows for at-a-glance visibility.
+- [x] Add collection filtering in the Clips view so selecting a collection filters the clip list to its members, ordered by `sequence_index`. Final UX uses the existing filter surface and collection pickers instead of a dedicated sidebar/sub-tab.
+- [x] Support adding clips to collections from the clip detail panel and from the montage-style multi-select flow.
+- [~] Support drag-to-reorder within a collection view for manual sequencing. Backend resequencing support exists; the collection-view drag UI is still pending.
+- [x] Add tests for tag uniqueness constraints, collection ordering, cascade delete behavior (clip deletion should cascade to tags and collection membership), and filter integration.
 
 Done when: users can tag clips with free-text labels, create named collections of clips, filter by tag, and browse collections as curated clip sets.
 
@@ -226,13 +226,13 @@ Follow-ons: ORG-01
 
 A minimal organizational primitive: a boolean "favorite" flag that prevents storage tiering archival and surfaces clips quickly. Simpler than full tagging for users who want a one-click way to mark important clips.
 
-- [ ] Add a `favorited` boolean column to the `clips` table (default `false`), with a non-destructive migration.
-- [ ] Add a favorite toggle action in the clip detail panel and as an inline icon in the clips list rows. Use a star or pin icon from the existing Font Awesome icon set.
-- [ ] Add a "Favorites" filter preset to the clips view (similar to the overlap filter toggle) that shows only favorited clips.
-- [ ] Exclude favorited clips from storage tiering eligibility in `src/storage_tiering.rs`. The tiering sweep should skip clips where `favorited = true` regardless of age or score thresholds.
-- [ ] Add a sort option or sort priority that surfaces favorited clips first within any sort order.
-- [ ] Support bulk favorite/unfavorite through the multi-select flow.
-- [ ] Add tests for tiering exclusion, filter behavior, and migration of existing clips.
+- [x] Add a `favorited` boolean column to the `clips` table (default `false`), with a non-destructive migration.
+- [x] Add a favorite toggle action in the clip detail panel and as an inline icon in the clips list rows. Use a star or pin icon from the existing Font Awesome icon set.
+- [x] Add a "Favorites" filter preset to the clips view (similar to the overlap filter toggle) that shows only favorited clips.
+- [x] Exclude favorited clips from storage tiering eligibility in `src/storage_tiering.rs`. The tiering sweep should skip clips where `favorited = true` regardless of age or score thresholds.
+- [x] Add a sort option or sort priority that surfaces favorited clips first within any sort order.
+- [x] Support bulk favorite/unfavorite through the multi-select flow.
+- [x] Add tests for tiering exclusion, filter behavior, and migration of existing clips.
 
 Done when: users can favorite clips with one click, filter to favorites, and trust that favorited clips will not be auto-archived.
 
@@ -444,7 +444,7 @@ Done when: users can share a local URL that renders a rich clip page with thumbn
 ### Wave 7B: Visual Foundation
 
 - [ ] VIS-01 Thumbnail extraction and display
-- [ ] ORG-02 Favorites and pinning
+- [x] ORG-02 Favorites and pinning
 - [ ] ORG-03 Clip notes
 - [ ] QOL-01 Soft delete and undo
 - [ ] QOL-04 Clip integrity checker
@@ -452,7 +452,7 @@ Done when: users can share a local URL that renders a rich clip page with thumbn
 ### Wave 7C: Organization and Intelligence
 
 - [ ] VIS-02 Scrubbing preview
-- [ ] ORG-01 Tags and collections
+- [~] ORG-01 Tags and collections
 - [ ] INTEL-01 Kill streak and multi-kill detection
 - [ ] INTEL-02 Auto-highlight scoring
 - [ ] QOL-02 Bulk operations on filtered results

@@ -560,6 +560,15 @@ impl App {
                 history_source: Vec::new(),
                 history: Vec::new(),
                 filter_options: ClipFilterOptions::default(),
+                tag_editor_options: iced::widget::combo_box::State::new(Vec::new()),
+                collection_editor_options: iced::widget::combo_box::State::new(Vec::new()),
+                selected_collection_add_id: None,
+                pending_collection_membership_clip_id: None,
+                active_organization_editor: None,
+                pending_organization_input_clear: None,
+                tag_input: String::new(),
+                new_collection_name: String::new(),
+                new_collection_description: String::new(),
                 selected_id: None,
                 selected_detail: None,
                 detail_loading: false,
@@ -1710,6 +1719,9 @@ impl App {
                         self.clips.filter_options.targets = options.targets;
                         self.clips.filter_options.weapons = options.weapons;
                         self.clips.filter_options.alerts = options.alerts;
+                        self.clips.filter_options.tags = options.tags;
+                        self.clips.filter_options.collections = options.collections;
+                        tabs::clips::sync_editor_options(self);
                     }
                     Err(error) => {
                         tracing::warn!("Failed to load clip filter options: {error}");
@@ -2863,6 +2875,9 @@ impl App {
         let Some(store) = self.clip_store.clone() else {
             self.clips.filter_options.targets.clear();
             self.clips.filter_options.weapons.clear();
+            self.clips.filter_options.alerts.clear();
+            self.clips.filter_options.tags.clear();
+            self.clips.filter_options.collections.clear();
             return Task::none();
         };
 

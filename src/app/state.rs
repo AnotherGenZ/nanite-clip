@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::time::Instant;
 
 use chrono::NaiveDate;
+use iced::widget::combo_box;
 use iced::window;
 
 use crate::capture;
@@ -56,6 +57,15 @@ pub(crate) struct ClipLibraryState {
     pub history_source: Vec<ClipRecord>,
     pub history: Vec<ClipRecord>,
     pub filter_options: ClipFilterOptions,
+    pub tag_editor_options: combo_box::State<String>,
+    pub collection_editor_options: combo_box::State<tabs::clips::CollectionSelectOption>,
+    pub selected_collection_add_id: Option<i64>,
+    pub pending_collection_membership_clip_id: Option<i64>,
+    pub active_organization_editor: Option<tabs::clips::OrganizationEditor>,
+    pub pending_organization_input_clear: Option<tabs::clips::OrganizationEditor>,
+    pub tag_input: String,
+    pub new_collection_name: String,
+    pub new_collection_description: String,
     pub selected_id: Option<i64>,
     pub selected_detail: Option<ClipDetailRecord>,
     pub detail_loading: bool,

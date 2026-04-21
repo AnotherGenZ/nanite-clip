@@ -1288,19 +1288,17 @@ fn rules_badge<'a>(label: impl Into<String>, tone: BadgeTone) -> Element<'a, Mes
 fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Element<'a, Message> {
     let selected_profile = app.active_profile().map(ProfileOption::from_profile);
 
-    let mut profile_section = section("Active Profile")
-        .description("")
-        .push(
-            row![
-                field_label("Profile", "", 200.0),
-                pick_list(profile_options.to_vec(), selected_profile, |option| {
-                    Message::SetActiveProfile(option.id)
-                })
-                .width(280),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        );
+    let mut profile_section = section("Active Profile").description("").push(
+        row![
+            field_label("Profile", "", 200.0),
+            pick_list(profile_options.to_vec(), selected_profile, |option| {
+                Message::SetActiveProfile(option.id)
+            })
+            .width(280),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+    );
 
     if let Some(profile) = app.active_profile() {
         profile_section = profile_section.push(settings_text_field(
@@ -1359,8 +1357,7 @@ fn profiles_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Elemen
 // ---------------------------------------------------------------------------
 
 fn auto_switch_panel<'a>(app: &'a App, profile_options: &[ProfileOption]) -> Element<'a, Message> {
-    let mut content = panel("Automatic Profile Switching")
-        .description("");
+    let mut content = panel("Automatic Profile Switching").description("");
 
     if let Some(override_name) = app.manual_profile_override_name() {
         content = content.push(
@@ -1452,21 +1449,12 @@ fn auto_switch_rule_card<'a>(
 
     let mut body = column![
         header_row,
-        settings_text_field(
-            "Rule Name",
-            "",
-            &auto_rule.name,
-            {
-                let rule_id = rule_id.clone();
-                move |value| Message::RenameAutoSwitchRule(rule_id.clone(), value)
-            }
-        ),
+        settings_text_field("Rule Name", "", &auto_rule.name, {
+            let rule_id = rule_id.clone();
+            move |value| Message::RenameAutoSwitchRule(rule_id.clone(), value)
+        }),
         row![
-            field_label(
-                "Target Profile",
-                "",
-                200.0,
-            ),
+            field_label("Target Profile", "", 200.0,),
             pick_list(profile_options.to_vec(), selected_profile, {
                 let rule_id = rule_id.clone();
                 move |profile| Message::AutoSwitchTargetProfileChanged(rule_id.clone(), profile.id)
@@ -1476,11 +1464,7 @@ fn auto_switch_rule_card<'a>(
         .spacing(8)
         .align_y(iced::Alignment::Center),
         row![
-            field_label(
-                "Condition",
-                "",
-                200.0,
-            ),
+            field_label("Condition", "", 200.0,),
             pick_list(
                 &AutoSwitchConditionChoice::ALL[..],
                 Some(selected_condition),
@@ -1502,16 +1486,10 @@ fn auto_switch_rule_card<'a>(
                 && selected_character_ids.len() == character_options.len();
             body = body.push(
                 row![
-                    field_label(
-                        "Active Characters",
-                        "",
-                        200.0,
-                    ),
+                    field_label("Active Characters", "", 200.0,),
                     if character_options.is_empty() {
                         Element::<Message>::from(
-                            text("Add a character first.")
-                                .size(13)
-                                .width(Length::Fill),
+                            text("Add a character first.").size(13).width(Length::Fill),
                         )
                     } else {
                         row![
@@ -1598,11 +1576,7 @@ fn auto_switch_rule_card<'a>(
             );
             body = body.push(
                 row![
-                    field_label(
-                        "Time Window",
-                        "",
-                        200.0,
-                    ),
+                    field_label("Time Window", "", 200.0,),
                     styled_button("-", ButtonTone::Secondary)
                         .on_press(Message::AutoSwitchStartTimeStepped(rule_id.clone(), -1,)),
                     text(format!(
@@ -1760,11 +1734,7 @@ fn rule_editor_panel(app: &App) -> Element<'_, Message> {
 
 fn cooldown_row<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
     row![
-        field_label(
-            "Cooldown",
-            "",
-            200.0,
-        ),
+        field_label("Cooldown", "", 200.0,),
         toggle_switch(rule.cooldown_secs.is_some())
             .label(if rule.cooldown_secs.is_some() {
                 "On"
@@ -1827,11 +1797,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
     // Overrides — toggles that bypass the score formula
     sec = sec.push(
         row![
-            field_label(
-                "Full Buffer",
-                "",
-                200.0,
-            ),
+            field_label("Full Buffer", "", 200.0,),
             toggle_switch(rule.use_full_buffer)
                 .label(if rule.use_full_buffer { "On" } else { "Off" })
                 .on_toggle(Message::ToggleFullBuffer),
@@ -1842,11 +1808,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
 
     sec = sec.push(
         row![
-            field_label(
-                "Entire Base Cap",
-                "",
-                200.0,
-            ),
+            field_label("Entire Base Cap", "", 200.0,),
             toggle_switch(rule.capture_entire_base_cap)
                 .label(if rule.capture_entire_base_cap {
                     "On"
@@ -1862,11 +1824,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
     // Auto-extend — flattened inline
     sec = sec.push(
         row![
-            field_label(
-                "Auto Extend",
-                "",
-                200.0,
-            ),
+            field_label("Auto Extend", "", 200.0,),
             toggle_switch(rule.extension.is_enabled())
                 .label(if rule.extension.is_enabled() {
                     "On"
@@ -1900,8 +1858,7 @@ fn clip_formula_section<'a>(rule: &RuleDefinition) -> Element<'a, Message> {
 }
 
 fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<'a, Message> {
-    let mut sec = section("Scored Events")
-        .description("");
+    let mut sec = section("Scored Events").description("");
 
     sec = sec.push(
         styled_button_row(icon_label("plus", "Add Event"), ButtonTone::Success)
@@ -1953,11 +1910,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                 .on_press(Message::ToggleEventExpanded(rule.id.clone(), event_index))
                 .interaction(mouse::Interaction::Pointer)
                 .into(),
-                if is_expanded {
-                    "Collapse"
-                } else {
-                    "Expand"
-                },
+                if is_expanded { "Collapse" } else { "Expand" },
             ),
             iced::widget::Space::new().width(Length::Fill),
             with_tooltip(
@@ -1991,10 +1944,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
             let filter_controls: Element<'_, Message> = if filters_enabled && filters_expanded {
                 let mut groups_col = column![].spacing(8);
                 if filter_groups.is_empty() {
-                    groups_col = groups_col.push(
-                        text("No filter groups. Add one below.")
-                            .size(12),
-                    );
+                    groups_col = groups_col.push(text("No filter groups. Add one below.").size(12));
                 } else {
                     for (group_index, group) in filter_groups.iter().enumerate() {
                         groups_col = groups_col.push(render_filter_group_editor(
@@ -2032,9 +1982,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                     "Edit filters.",
                 )
             } else {
-                text("No filters active.")
-                    .size(12)
-                    .into()
+                text("No filters active.").size(12).into()
             };
 
             card()
@@ -2055,11 +2003,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
                         row![
-                            field_label(
-                                "Points",
-                                "",
-                                120.0,
-                            ),
+                            field_label("Points", "", 120.0,),
                             styled_button("-", ButtonTone::Secondary)
                                 .on_press(Message::ScoredEventPointsStepped(event_index, -1,)),
                             text(format!("{} pts", scored_event.points)).width(90),
@@ -2069,11 +2013,7 @@ fn scored_events_section<'a>(app: &'a App, rule: &'a RuleDefinition) -> Element<
                         .spacing(8)
                         .align_y(iced::Alignment::Center),
                         row![
-                            field_label(
-                                "Filters",
-                                "",
-                                120.0,
-                            ),
+                            field_label("Filters", "", 120.0,),
                             toggle_switch(filters_enabled)
                                 .label(if filters_enabled { "Active" } else { "Off" })
                                 .on_toggle(move |enabled| {
@@ -2422,12 +2362,12 @@ fn profile_import_overwrite_dialog<'a>(
             pending.bundle.rules.len()
         ))
         .size(14),
-        banner(format!("{conflict_count} existing item(s) already use the same id."))
-            .warning()
-            .description(
-                "Matching profiles and rules will be replaced.",
-            )
-            .build(),
+        banner(format!(
+            "{conflict_count} existing item(s) already use the same id."
+        ))
+        .warning()
+        .description("Matching profiles and rules will be replaced.",)
+        .build(),
     ]
     .spacing(12)
     .width(Length::Fill);
@@ -2487,12 +2427,12 @@ fn rule_import_overwrite_dialog<'a>(
             pending.bundle.rules.len()
         ))
         .size(14),
-        banner(format!("{conflict_count} existing rule(s) already use the same id."))
-            .warning()
-            .description(
-                "Matching rules will be replaced.",
-            )
-            .build(),
+        banner(format!(
+            "{conflict_count} existing rule(s) already use the same id."
+        ))
+        .warning()
+        .description("Matching rules will be replaced.",)
+        .build(),
     ]
     .spacing(12)
     .width(Length::Fill);
@@ -3576,26 +3516,13 @@ fn render_filter_clause_editor<'a>(
             "Resolve to look up ID.",
         ),
         ScoredEventFilterClause::AttackerVehicle { vehicle } => {
-            render_vehicle_filter_clause_editor(
-                app,
-                path.clone(),
-                vehicle,
-                "Attacker vehicle.",
-            )
+            render_vehicle_filter_clause_editor(app, path.clone(), vehicle, "Attacker vehicle.")
         }
-        ScoredEventFilterClause::AttackerWeapon { weapon } => render_weapon_filter_clause_editor(
-            app,
-            path.clone(),
-            weapon,
-            "Attacker weapon.",
-        ),
+        ScoredEventFilterClause::AttackerWeapon { weapon } => {
+            render_weapon_filter_clause_editor(app, path.clone(), weapon, "Attacker weapon.")
+        }
         ScoredEventFilterClause::DestroyedVehicle { vehicle } => {
-            render_vehicle_filter_clause_editor(
-                app,
-                path.clone(),
-                vehicle,
-                "Destroyed vehicle.",
-            )
+            render_vehicle_filter_clause_editor(app, path.clone(), vehicle, "Destroyed vehicle.")
         }
         ScoredEventFilterClause::Any { clauses } => {
             render_nested_any_clause_editor(app, path.clone(), clauses)
@@ -3724,26 +3651,13 @@ fn render_nested_or_option_editor<'a>(
             "Resolve to look up ID.",
         ),
         ScoredEventFilterClause::AttackerVehicle { vehicle } => {
-            render_vehicle_filter_clause_editor(
-                app,
-                path.clone(),
-                vehicle,
-                "Attacker vehicle.",
-            )
+            render_vehicle_filter_clause_editor(app, path.clone(), vehicle, "Attacker vehicle.")
         }
-        ScoredEventFilterClause::AttackerWeapon { weapon } => render_weapon_filter_clause_editor(
-            app,
-            path.clone(),
-            weapon,
-            "Attacker weapon.",
-        ),
+        ScoredEventFilterClause::AttackerWeapon { weapon } => {
+            render_weapon_filter_clause_editor(app, path.clone(), weapon, "Attacker weapon.")
+        }
         ScoredEventFilterClause::DestroyedVehicle { vehicle } => {
-            render_vehicle_filter_clause_editor(
-                app,
-                path.clone(),
-                vehicle,
-                "Destroyed vehicle.",
-            )
+            render_vehicle_filter_clause_editor(app, path.clone(), vehicle, "Destroyed vehicle.")
         }
         ScoredEventFilterClause::Any { clauses } => {
             render_nested_any_clause_editor(app, path.clone(), clauses)

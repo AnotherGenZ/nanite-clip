@@ -112,6 +112,21 @@ pub(crate) fn create_clip_overlaps_table() -> TableCreateStatement {
     table
 }
 
+pub(crate) fn create_clip_tags_table() -> TableCreateStatement {
+    let mut table = entity_table(entities::clip_tags::Entity);
+    table.foreign_key(
+        ForeignKey::create()
+            .name("fk_clip_tags_clip_id")
+            .from(
+                entities::clip_tags::Entity,
+                entities::clip_tags::Column::ClipId,
+            )
+            .to(entities::clips::Entity, entities::clips::Column::Id)
+            .on_delete(ForeignKeyAction::Cascade),
+    );
+    table
+}
+
 pub(crate) fn create_clip_alert_links_table() -> TableCreateStatement {
     let mut table = entity_table(entities::clip_alert_links::Entity);
     table.foreign_key(
@@ -124,6 +139,35 @@ pub(crate) fn create_clip_alert_links_table() -> TableCreateStatement {
             .to(entities::clips::Entity, entities::clips::Column::Id)
             .on_delete(ForeignKeyAction::Cascade),
     );
+    table
+}
+
+pub(crate) fn create_collection_clips_table() -> TableCreateStatement {
+    let mut table = entity_table(entities::collection_clips::Entity);
+    table
+        .foreign_key(
+            ForeignKey::create()
+                .name("fk_collection_clips_collection_id")
+                .from(
+                    entities::collection_clips::Entity,
+                    entities::collection_clips::Column::CollectionId,
+                )
+                .to(
+                    entities::collections::Entity,
+                    entities::collections::Column::Id,
+                )
+                .on_delete(ForeignKeyAction::Cascade),
+        )
+        .foreign_key(
+            ForeignKey::create()
+                .name("fk_collection_clips_clip_id")
+                .from(
+                    entities::collection_clips::Entity,
+                    entities::collection_clips::Column::ClipId,
+                )
+                .to(entities::clips::Entity, entities::clips::Column::Id)
+                .on_delete(ForeignKeyAction::Cascade),
+        );
     table
 }
 
@@ -230,6 +274,51 @@ pub(crate) fn create_montage_clips_clip_sequence_index() -> IndexCreateStatement
     index.to_owned()
 }
 
+pub(crate) fn create_clip_tags_clip_tag_unique_index() -> IndexCreateStatement {
+    let mut index = Index::create();
+    index
+        .name("idx_clip_tags_clip_tag")
+        .table(entities::clip_tags::Entity)
+        .if_not_exists()
+        .col(entities::clip_tags::Column::ClipId)
+        .col(entities::clip_tags::Column::TagName)
+        .unique();
+    index.to_owned()
+}
+
+pub(crate) fn create_collections_name_unique_index() -> IndexCreateStatement {
+    let mut index = Index::create();
+    index
+        .name("idx_collections_name")
+        .table(entities::collections::Entity)
+        .if_not_exists()
+        .col(entities::collections::Column::Name)
+        .unique();
+    index.to_owned()
+}
+
+pub(crate) fn create_collection_clips_clip_sequence_index() -> IndexCreateStatement {
+    let mut index = Index::create();
+    index
+        .name("idx_collection_clips_clip_id")
+        .table(entities::collection_clips::Entity)
+        .if_not_exists()
+        .col(entities::collection_clips::Column::ClipId)
+        .col(entities::collection_clips::Column::SequenceIndex);
+    index.to_owned()
+}
+
+pub(crate) fn create_collection_clips_collection_sequence_index() -> IndexCreateStatement {
+    let mut index = Index::create();
+    index
+        .name("idx_collection_clips_collection_sequence")
+        .table(entities::collection_clips::Entity)
+        .if_not_exists()
+        .col(entities::collection_clips::Column::CollectionId)
+        .col(entities::collection_clips::Column::SequenceIndex);
+    index.to_owned()
+}
+
 impl From<ClipRecord> for ClipExportRecord {
     fn from(record: ClipRecord) -> Self {
         Self {
@@ -251,6 +340,8 @@ impl From<ClipRecord> for ClipExportRecord {
             honu_session_id: record.honu_session_id,
             path: record.path,
             file_size_bytes: record.file_size_bytes,
+            favorited: record.favorited,
+            tags: record.tags,
             events: record.events,
         }
     }
@@ -388,11 +479,18 @@ pub(crate) fn rows_to_clip_records(
                 score: row.try_get::<i64>("score")? as u32,
                 honu_session_id: row.try_get::<Option<i64>>("honu_session_id")?,
                 file_size_bytes: file_size_bytes_for_path(path.as_deref()),
+                favorited: row.try_get("favorited")?,
                 overlap_count: row.try_get::<i64>("overlap_count")? as u32,
                 alert_count: row.try_get::<i64>("alert_count")? as u32,
+                collection_count: row.try_get::<Option<i64>>("collection_count")?.unwrap_or(0)
+                    as u32,
+                collection_sequence_index: row
+                    .try_get::<Option<i64>>("collection_sequence_index")?
+                    .map(|value| value as u32),
                 post_process_status: PostProcessStatus::Legacy,
                 post_process_error: None,
                 path,
+                tags: Vec::new(),
                 events: Vec::new(),
             });
         }
@@ -677,6 +775,8 @@ pub enum ClipStoreError {
     InvalidOutputPath(String),
     #[error("automatic pre-migration backup failed: {0}")]
     MigrationBackupFailed(String),
+    #[error("invalid clip organization input: {0}")]
+    InvalidInput(String),
 }
 
 impl From<DbErr> for ClipStoreError {
@@ -965,6 +1065,108 @@ mod tests {
         assert_eq!(detail.alerts.len(), 1);
         assert_eq!(detail.alerts[0].winner_faction.as_deref(), Some("VS"));
         assert_eq!(detail.alerts[0].state_name, "ended");
+    }
+
+    #[tokio::test]
+    async fn favorites_tags_and_collections_round_trip_through_filters() {
+        let store = open_test_store().await;
+        let clip_id = store.insert_clip(sample_clip()).await.unwrap();
+
+        store.add_tag(clip_id, "Outfit Ops").await.unwrap();
+        store.set_clip_favorited(clip_id, true).await.unwrap();
+        let collection = store
+            .create_collection("Highlights", Some("Main set"))
+            .await
+            .unwrap();
+        store
+            .add_clip_to_collection(collection.id, clip_id)
+            .await
+            .unwrap();
+
+        let filtered = store
+            .search_clips(
+                &ClipFilters {
+                    tag: "ops".into(),
+                    favorites_only: true,
+                    collection_id: Some(collection.id),
+                    ..ClipFilters::default()
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].favorited);
+        assert_eq!(filtered[0].tags, vec!["Outfit Ops".to_string()]);
+        assert_eq!(filtered[0].collection_count, 1);
+        assert_eq!(filtered[0].collection_sequence_index, Some(0));
+
+        let detail = store.clip_detail(clip_id).await.unwrap().unwrap();
+        assert_eq!(detail.tags, vec!["Outfit Ops".to_string()]);
+        assert_eq!(detail.collections.len(), 1);
+        assert_eq!(detail.collections[0].name, "Highlights");
+    }
+
+    #[tokio::test]
+    async fn tag_uniqueness_collection_ordering_and_clip_delete_cascade_hold() {
+        let store = open_test_store().await;
+        let first_id = store.insert_clip(sample_clip()).await.unwrap();
+
+        let mut second = sample_clip();
+        second.trigger_event_at += chrono::Duration::seconds(60);
+        second.clip_start_at += chrono::Duration::seconds(60);
+        second.clip_end_at += chrono::Duration::seconds(60);
+        second.saved_at += chrono::Duration::seconds(60);
+        second.rule_id = "rule_second".into();
+        let second_id = store.insert_clip(second).await.unwrap();
+
+        store.add_tag(first_id, "Focus").await.unwrap();
+        store.add_tag(first_id, "Focus").await.unwrap();
+        assert_eq!(store.list_tags().await.unwrap(), vec!["Focus".to_string()]);
+
+        let collection = store.create_collection("Queue", None).await.unwrap();
+        store
+            .add_clips_to_collection(collection.id, &[second_id, first_id])
+            .await
+            .unwrap();
+        store
+            .move_clip_within_collection(collection.id, first_id, -1)
+            .await
+            .unwrap();
+
+        let ordered = store
+            .search_clips(
+                &ClipFilters {
+                    collection_id: Some(collection.id),
+                    ..ClipFilters::default()
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ordered.iter().map(|clip| clip.id).collect::<Vec<_>>(),
+            vec![first_id, second_id]
+        );
+
+        store.delete_clip(first_id).await.unwrap();
+
+        let remaining = store
+            .search_clips(
+                &ClipFilters {
+                    collection_id: Some(collection.id),
+                    ..ClipFilters::default()
+                },
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining.iter().map(|clip| clip.id).collect::<Vec<_>>(),
+            vec![second_id]
+        );
+        assert!(store.list_tags().await.unwrap().is_empty());
+        assert_eq!(store.list_collections().await.unwrap()[0].clip_count, 1);
     }
 
     #[tokio::test]

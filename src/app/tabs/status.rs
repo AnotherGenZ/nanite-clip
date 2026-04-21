@@ -105,9 +105,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         ),
     };
 
-    let header = page_header("Status")
-        .action(action_button)
-        .build();
+    let header = page_header("Status").action(action_button).build();
 
     let status_bar = toolbar()
         .push(status_badge(state_text, state_tone))
@@ -167,10 +165,12 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
                 ))
                 .warning()
                 .build(),
-            crate::capture::ObsConnectionStatus::Failed { reason } => banner("Cannot reconnect to OBS")
-                .description(format!("{reason}. Retrying..."))
-                .error()
-                .build(),
+            crate::capture::ObsConnectionStatus::Failed { reason } => {
+                banner("Cannot reconnect to OBS")
+                    .description(format!("{reason}. Retrying..."))
+                    .error()
+                    .build()
+            }
         });
     }
 
@@ -190,9 +190,7 @@ pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
         _ => {
             let detail = match &app.runtime.lifecycle {
                 AppState::WaitingForGame => "Waiting for PlanetSide 2...",
-                AppState::WaitingForLogin => {
-                    "PS2 detected \u{2014} waiting for login..."
-                }
+                AppState::WaitingForLogin => "PS2 detected \u{2014} waiting for login...",
                 _ => "",
             };
             if !detail.is_empty() {

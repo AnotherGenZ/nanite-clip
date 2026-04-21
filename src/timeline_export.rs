@@ -222,12 +222,18 @@ mod tests {
                 honu_session_id: None,
                 path: Some("/tmp/example.mkv".into()),
                 file_size_bytes: None,
+                favorited: false,
                 overlap_count: 0,
                 alert_count: 0,
+                collection_count: 0,
+                collection_sequence_index: None,
                 post_process_status: crate::db::PostProcessStatus::Legacy,
                 post_process_error: None,
+                tags: Vec::new(),
                 events: Vec::new(),
             },
+            tags: Vec::new(),
+            collections: Vec::new(),
             audio_tracks: Vec::new(),
             raw_events: vec![
                 ClipRawEventRecord {

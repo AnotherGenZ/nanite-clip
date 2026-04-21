@@ -184,6 +184,27 @@ pub mod clip_overlaps {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
+pub mod clip_tags {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "clip_tags")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        #[sea_orm(indexed)]
+        pub clip_id: i64,
+        #[sea_orm(indexed)]
+        pub tag_name: String,
+        pub created_ts: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
 pub mod alert_instances {
     use super::*;
 
@@ -224,6 +245,47 @@ pub mod clip_alert_links {
         #[sea_orm(primary_key, auto_increment = false)]
         #[sea_orm(indexed)]
         pub alert_key: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod collections {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "collections")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        #[sea_orm(indexed)]
+        pub name: String,
+        pub description: Option<String>,
+        pub created_ts: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod collection_clips {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "collection_clips")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub collection_id: i64,
+        #[sea_orm(primary_key, auto_increment = false)]
+        #[sea_orm(indexed)]
+        pub clip_id: i64,
+        pub added_ts: i64,
+        pub sequence_index: i64,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -335,6 +397,8 @@ pub mod clips {
         pub path: Option<String>,
         pub score: i64,
         pub honu_session_id: Option<i64>,
+        #[sea_orm(indexed)]
+        pub favorited: bool,
         pub post_process_status: PostProcessStatus,
         pub post_process_error: Option<String>,
     }

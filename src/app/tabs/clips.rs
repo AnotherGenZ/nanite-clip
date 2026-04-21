@@ -9,13 +9,13 @@ use iced::{Alignment, Background, Color, Element, Length, Padding, Task};
 
 use crate::census;
 use crate::db::{
-    ClipDetailRecord, ClipFilterOptions, ClipRecord, ClipUploadState, OverlapFilterState,
-    UploadProvider,
+    ClipCollectionRecord, ClipDetailRecord, ClipFilterOptions, ClipRecord, ClipUploadState,
+    OverlapFilterState, UploadProvider,
 };
 use crate::storage_tiering::{self, StorageTier};
 use crate::ui::app::{
     Column, ContainerStyle, TextStyle, center, checkbox, column, container, mouse_area, pick_list,
-    row, scrollable, text, text_input,
+    row, scrollable, text, text_input, text_non_selectable,
 };
 use crate::ui::data::pagination::pagination;
 use crate::ui::layout::card::card;
@@ -27,6 +27,7 @@ use crate::ui::layout::toolbar::toolbar;
 use crate::ui::overlay::modal::modal;
 use crate::ui::pickers::date::date_picker;
 use crate::ui::primitives::badge::{Tone as BadgeTone, badge};
+use crate::ui::primitives::tag::tag;
 use crate::ui::theme;
 use library::*;
 
@@ -50,6 +51,8 @@ pub const ALL_BASES_LABEL: &str = "All bases";
 pub const ALL_TARGETS_LABEL: &str = "All targets";
 pub const ALL_WEAPONS_LABEL: &str = "All weapons";
 pub const ALL_ALERTS_LABEL: &str = "All alerts";
+pub const ALL_TAGS_LABEL: &str = "All tags";
+pub const ALL_COLLECTIONS_LABEL: &str = "All collections";
 
 pub const DEFAULT_PAGE_SIZE: usize = 50;
 pub const PAGE_SIZE_OPTIONS: [usize; 4] = [25, 50, 100, 200];
@@ -89,6 +92,8 @@ pub enum Message {
     TargetFilterChanged(String),
     WeaponFilterChanged(String),
     AlertFilterChanged(String),
+    TagFilterChanged(String),
+    FavoritesFilterToggled(bool),
     OverlapFilterChanged(OverlapFilterChoice),
     ProfileFilterChanged(String),
     RuleFilterChanged(String),
@@ -118,6 +123,7 @@ pub enum Message {
     // Selection and row actions
     RowSelected(i64),
     OpenRequested(i64),
+    ToggleFavorite(i64),
     ExportChaptersRequested(i64),
     ExportSubtitlesRequested(i64),
     SetStorageTier(i64, StorageTier),
@@ -145,7 +151,27 @@ pub enum Message {
 
     // Detail workspace
     RawEventFilterChanged(String),
+    TagInputChanged(String),
+    AddTagRequested(i64),
+    RemoveTagRequested { clip_id: i64, tag_name: String },
+    TagOptionSelected(String),
+    CollectionAddSelectionChanged(CollectionSelectOption),
+    DetailCollectionNameChanged(String),
+    CollectionOptionSelected(CollectionSelectOption),
+    AddClipToCollectionRequested(i64),
+    RemoveClipFromCollectionRequested { clip_id: i64, collection_id: i64 },
+    NewCollectionNameChanged(String),
+    CreateCollectionRequested,
+    SubmitCollectionMembershipRequested(i64),
+    CollectionSelected(Option<i64>),
+    FavoriteSelectedRequested,
+    UnfavoriteSelectedRequested,
+    AddSelectedToCurrentCollectionRequested,
     ToggleDetailSection(DetailSection),
+
+    // Async results
+    OrganizationSaved(Result<(), String>),
+    CollectionCreated(Result<ClipCollectionRecord, String>),
 
     // Keyboard navigation
     KeyNav(KeyNav),
@@ -236,6 +262,7 @@ pub enum ClipSortColumn {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailSection {
+    Organization,
     AudioTracks,
     Uploads,
     Alerts,
@@ -254,7 +281,38 @@ pub enum KeyNav {
     OpenSelected,
     DeleteSelected,
     ToggleMontageSelected,
+    SubmitActiveOrganizationInput,
     Escape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrganizationEditor {
+    Tag,
+    Collection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionSelectOption {
+    pub id: i64,
+    pub label: String,
+}
+
+impl std::fmt::Display for CollectionSelectOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionFilterOption {
+    pub id: Option<i64>,
+    pub label: String,
+}
+
+impl std::fmt::Display for CollectionFilterOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +407,14 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             app.clips.filters.alert = filter_value_from_selection(value, ALL_ALERTS_LABEL);
             refresh_history(app)
         }
+        Message::TagFilterChanged(value) => {
+            app.clips.filters.tag = filter_value_from_selection(value, ALL_TAGS_LABEL);
+            refresh_history(app)
+        }
+        Message::FavoritesFilterToggled(value) => {
+            app.clips.filters.favorites_only = value;
+            refresh_history(app)
+        }
         Message::OverlapFilterChanged(value) => {
             app.clips.filters.overlap_state = value.into_state();
             refresh_history(app)
@@ -383,6 +449,13 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             app.clips.filters.base = filter_value_from_selection(value, ALL_BASES_LABEL);
             rebuild_history(app);
             Task::none()
+        }
+        Message::CollectionSelected(collection_id) => {
+            app.clips.filters.collection_id = collection_id;
+            if let Some(collection_id) = collection_id {
+                app.clips.selected_collection_add_id = Some(collection_id);
+            }
+            refresh_history(app)
         }
 
         Message::ClearFilters => {
@@ -472,13 +545,34 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 return Task::none();
             };
             let Some(path) = record.path.clone() else {
-                app.set_clip_error(
-                    "File not saved yet.",
-                );
+                app.set_clip_error("File not saved yet.");
                 return Task::none();
             };
             app.clear_clip_error();
             Task::done(AppMessage::OpenClipRequested(PathBuf::from(path)))
+        }
+        Message::ToggleFavorite(clip_id) => {
+            let Some(record) = app
+                .clips
+                .history_source
+                .iter()
+                .find(|record| record.id == clip_id)
+            else {
+                app.set_clip_error(format!("Clip #{clip_id} is no longer available."));
+                return Task::none();
+            };
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            let favorited = !record.favorited;
+            Task::perform(
+                async move { store.set_clip_favorited(clip_id, favorited).await },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
         }
         Message::ExportChaptersRequested(clip_id) => app.export_selected_clip_timeline_artifact(
             clip_id,
@@ -513,9 +607,7 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 return Task::none();
             };
             let Some(path) = record.path.clone() else {
-                app.set_clip_error(format!(
-                    "No file to reprocess."
-                ));
+                app.set_clip_error("No file to reprocess.");
                 return Task::none();
             };
             app.queue_post_process_retry_for_clip(clip_id, PathBuf::from(path))
@@ -666,6 +758,294 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             app.clips.raw_event_filter = value;
             Task::none()
         }
+        Message::TagInputChanged(value) => {
+            app.clips.active_organization_editor = Some(OrganizationEditor::Tag);
+            app.clips.tag_input = value;
+            Task::none()
+        }
+        Message::TagOptionSelected(tag_name) => {
+            app.clips.active_organization_editor = Some(OrganizationEditor::Tag);
+            app.clips.tag_input = tag_name;
+            let Some(clip_id) = app.clips.selected_id else {
+                return Task::none();
+            };
+            update(app, Message::AddTagRequested(clip_id))
+        }
+        Message::AddTagRequested(clip_id) => {
+            let tag_name = app.clips.tag_input.trim().to_string();
+            if tag_name.is_empty() {
+                app.set_clip_error("Enter a tag name first.");
+                return Task::none();
+            }
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            app.clips.pending_organization_input_clear = Some(OrganizationEditor::Tag);
+            Task::perform(
+                async move { store.add_tag(clip_id, &tag_name).await },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::RemoveTagRequested { clip_id, tag_name } => {
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            Task::perform(
+                async move { store.remove_tag(clip_id, &tag_name).await },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::CollectionAddSelectionChanged(option) => {
+            app.clips.selected_collection_add_id = Some(option.id);
+            app.clips.new_collection_name = option.label;
+            app.clips.active_organization_editor = None;
+            Task::none()
+        }
+        Message::DetailCollectionNameChanged(value) => {
+            app.clips.active_organization_editor = Some(OrganizationEditor::Collection);
+            app.clips.new_collection_name = value;
+            let trimmed = app.clips.new_collection_name.trim();
+            if let Some(collection) = app
+                .clips
+                .filter_options
+                .collections
+                .iter()
+                .find(|collection| collection.name.eq_ignore_ascii_case(trimmed))
+            {
+                app.clips.selected_collection_add_id = Some(collection.id);
+            } else if !trimmed.is_empty() {
+                app.clips.selected_collection_add_id = None;
+            }
+            Task::none()
+        }
+        Message::CollectionOptionSelected(option) => {
+            app.clips.active_organization_editor = Some(OrganizationEditor::Collection);
+            app.clips.selected_collection_add_id = Some(option.id);
+            app.clips.new_collection_name = option.label;
+            let Some(clip_id) = app.clips.selected_id else {
+                return Task::none();
+            };
+            update(app, Message::AddClipToCollectionRequested(clip_id))
+        }
+        Message::AddClipToCollectionRequested(clip_id) => {
+            let Some(collection_id) = app.clips.selected_collection_add_id else {
+                app.set_clip_error("Choose a collection first.");
+                return Task::none();
+            };
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            if app.clips.active_organization_editor == Some(OrganizationEditor::Collection) {
+                app.clips.pending_organization_input_clear = Some(OrganizationEditor::Collection);
+            }
+            Task::perform(
+                async move { store.add_clip_to_collection(collection_id, clip_id).await },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::SubmitCollectionMembershipRequested(clip_id) => {
+            let name = app.clips.new_collection_name.trim().to_string();
+            if name.is_empty() {
+                app.set_clip_error("Enter a collection name first.");
+                return Task::none();
+            }
+
+            if let Some((collection_id, collection_name)) = find_collection_by_name(app, &name)
+                .map(|collection| (collection.id, collection.name.clone()))
+            {
+                app.clips.selected_collection_add_id = Some(collection_id);
+                app.clips.new_collection_name = collection_name;
+                return update(app, Message::AddClipToCollectionRequested(clip_id));
+            }
+
+            app.clips.pending_collection_membership_clip_id = Some(clip_id);
+            update(app, Message::CreateCollectionRequested)
+        }
+        Message::RemoveClipFromCollectionRequested {
+            clip_id,
+            collection_id,
+        } => {
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            Task::perform(
+                async move {
+                    store
+                        .remove_clip_from_collection(collection_id, clip_id)
+                        .await
+                },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::NewCollectionNameChanged(value) => {
+            app.clips.active_organization_editor = None;
+            app.clips.new_collection_name = value;
+            let trimmed = app.clips.new_collection_name.trim();
+            if let Some(collection) = app
+                .clips
+                .filter_options
+                .collections
+                .iter()
+                .find(|collection| collection.name.eq_ignore_ascii_case(trimmed))
+            {
+                app.clips.selected_collection_add_id = Some(collection.id);
+            } else if !trimmed.is_empty() {
+                app.clips.selected_collection_add_id = None;
+            }
+            Task::none()
+        }
+        Message::CreateCollectionRequested => {
+            let name = app.clips.new_collection_name.trim().to_string();
+            if name.is_empty() {
+                app.set_clip_error("Enter a collection name first.");
+                return Task::none();
+            }
+            if let Some(collection) = app
+                .clips
+                .filter_options
+                .collections
+                .iter()
+                .find(|collection| collection.name.eq_ignore_ascii_case(&name))
+            {
+                app.clips.selected_collection_add_id = Some(collection.id);
+                app.clips.new_collection_name = collection.name.clone();
+                app.clear_clip_error();
+                return Task::none();
+            }
+            let description = app.clips.new_collection_description.trim().to_string();
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            Task::perform(
+                async move {
+                    store
+                        .create_collection(
+                            &name,
+                            if description.is_empty() {
+                                None
+                            } else {
+                                Some(description.as_str())
+                            },
+                        )
+                        .await
+                },
+                |result| {
+                    AppMessage::Clips(Message::CollectionCreated(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::FavoriteSelectedRequested => {
+            let clip_ids = app.clips.montage_selection.clone();
+            if clip_ids.is_empty() {
+                app.set_clip_error("Select one or more clips first.");
+                return Task::none();
+            }
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            Task::perform(
+                async move { store.set_clips_favorited(&clip_ids, true).await },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::UnfavoriteSelectedRequested => {
+            let clip_ids = app.clips.montage_selection.clone();
+            if clip_ids.is_empty() {
+                app.set_clip_error("Select one or more clips first.");
+                return Task::none();
+            }
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            Task::perform(
+                async move { store.set_clips_favorited(&clip_ids, false).await },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::AddSelectedToCurrentCollectionRequested => {
+            let Some(collection_id) = app.clips.selected_collection_add_id else {
+                app.set_clip_error("Select a collection first.");
+                return Task::none();
+            };
+            let clip_ids = app.clips.montage_selection.clone();
+            if clip_ids.is_empty() {
+                app.set_clip_error("Select one or more clips first.");
+                return Task::none();
+            }
+            let Some(store) = app.clip_store.clone() else {
+                return Task::none();
+            };
+            Task::perform(
+                async move {
+                    store
+                        .add_clips_to_collection(collection_id, &clip_ids)
+                        .await
+                },
+                |result| {
+                    AppMessage::Clips(Message::OrganizationSaved(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                },
+            )
+        }
+        Message::OrganizationSaved(result) => match result {
+            Ok(()) => {
+                match app.clips.pending_organization_input_clear.take() {
+                    Some(OrganizationEditor::Tag) => app.clips.tag_input.clear(),
+                    Some(OrganizationEditor::Collection) => app.clips.new_collection_name.clear(),
+                    None => {}
+                }
+                refresh_clip_organization(app)
+            }
+            Err(error) => {
+                app.clips.pending_organization_input_clear = None;
+                app.set_clip_error(error);
+                Task::none()
+            }
+        },
+        Message::CollectionCreated(result) => match result {
+            Ok(collection) => {
+                app.clips.new_collection_name.clear();
+                app.clips.new_collection_description.clear();
+                app.clips.selected_collection_add_id = Some(collection.id);
+                if let Some(clip_id) = app.clips.pending_collection_membership_clip_id.take() {
+                    update(app, Message::AddClipToCollectionRequested(clip_id))
+                } else {
+                    refresh_clip_organization(app)
+                }
+            }
+            Err(error) => {
+                app.clips.pending_collection_membership_clip_id = None;
+                app.set_clip_error(error);
+                Task::none()
+            }
+        },
         Message::ToggleDetailSection(section) => {
             if app.clips.collapsed_detail_sections.contains(&section) {
                 app.clips
@@ -732,6 +1112,18 @@ fn handle_key_nav(app: &mut App, action: KeyNav) -> Task<AppMessage> {
                 return Task::none();
             };
             update(app, Message::ToggleMontageSelection(clip_id))
+        }
+        KeyNav::SubmitActiveOrganizationInput => {
+            let Some(clip_id) = app.clips.selected_id else {
+                return Task::none();
+            };
+            match app.clips.active_organization_editor {
+                Some(OrganizationEditor::Tag) => update(app, Message::AddTagRequested(clip_id)),
+                Some(OrganizationEditor::Collection) => {
+                    update(app, Message::SubmitCollectionMembershipRequested(clip_id))
+                }
+                None => Task::none(),
+            }
         }
     }
 }
@@ -989,19 +1381,7 @@ fn calendar_input(app: &App, field: CalendarField) -> &str {
 // ---------------------------------------------------------------------------
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
-    let header = {
-        let mut builder =
-            page_header("Clips");
-        if active_filter_count(app) > 0 {
-            builder = builder.action(with_tooltip(
-                styled_button("Clear filters", ButtonTone::Secondary)
-                    .on_press(Message::ClearFilters)
-                    .into(),
-                "Clear all filters.",
-            ));
-        }
-        builder.build()
-    };
+    let header = page_header("Clips").build();
 
     let body = column![header, filters_panel(app), clip_workspace(app),]
         .spacing(12)
@@ -1053,17 +1433,18 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
     let rule_options = filter_pick_list_options(ALL_RULES_LABEL, &filter_options.rules);
     let character_options =
         filter_pick_list_options(ALL_CHARACTERS_LABEL, &filter_options.characters);
+    let tag_options = filter_pick_list_options(ALL_TAGS_LABEL, &filter_options.tags);
+    let collection_options = collection_filter_options(&filter_options.collections);
+    let selected_collection =
+        selected_collection_filter_option(&collection_options, app.clips.filters.collection_id);
 
     let active = active_filter_count(app);
 
     // Basic row: search + date preset + profile + rule + character
     let basic_row = row![
-        text_input(
-            "Search...",
-            &app.clips.filters.search,
-        )
-        .on_input(Message::SearchChanged)
-        .width(Length::FillPortion(3)),
+        text_input("Search...", &app.clips.filters.search,)
+            .on_input(Message::SearchChanged)
+            .width(Length::FillPortion(3)),
         pick_list(
             &DateRangePreset::ALL[..],
             Some(app.clips.date_range_preset),
@@ -1100,6 +1481,13 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
         )
         .width(Length::FillPortion(1))
         .placeholder(ALL_CHARACTERS_LABEL),
+        row![
+            checkbox(app.clips.filters.favorites_only).on_toggle(Message::FavoritesFilterToggled),
+            text("Favorites").size(12),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Shrink),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1118,13 +1506,13 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
 
     let reset_button: Element<'static, Message> = if active > 0 {
         with_tooltip(
-            styled_button("Reset", ButtonTone::Secondary)
+            styled_button("Clear filters", ButtonTone::Secondary)
                 .on_press(Message::ClearFilters)
                 .into(),
-            "Reset filters.",
+            "Clear all filters.",
         )
     } else {
-        styled_button("Reset", ButtonTone::Secondary).into()
+        styled_button("Clear filters", ButtonTone::Secondary).into()
     };
 
     let mut content = column![
@@ -1149,7 +1537,13 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
     .spacing(8);
 
     if app.clips.advanced_filters_open {
-        content = content.push(advanced_filters_row(app, &filter_options));
+        content = content.push(advanced_filters_row(
+            app,
+            &filter_options,
+            tag_options,
+            collection_options,
+            selected_collection,
+        ));
     }
 
     if app.clips.date_range_preset == DateRangePreset::Custom {
@@ -1183,6 +1577,9 @@ fn filters_panel(app: &App) -> Element<'static, Message> {
 fn advanced_filters_row(
     app: &App,
     filter_options: &ClipFilterOptions,
+    tag_options: Vec<String>,
+    collection_options: Vec<CollectionFilterOption>,
+    selected_collection: Option<CollectionFilterOption>,
 ) -> Element<'static, Message> {
     let target_options = filter_pick_list_options(ALL_TARGETS_LABEL, &filter_options.targets);
     let weapon_options = filter_pick_list_options(ALL_WEAPONS_LABEL, &filter_options.weapons);
@@ -1225,6 +1622,16 @@ fn advanced_filters_row(
             .width(Length::FillPortion(1))
             .placeholder(ALL_ALERTS_LABEL),
             pick_list(
+                tag_options,
+                Some(selected_filter_option(
+                    &app.clips.filters.tag,
+                    ALL_TAGS_LABEL,
+                )),
+                Message::TagFilterChanged,
+            )
+            .width(Length::FillPortion(1))
+            .placeholder(ALL_TAGS_LABEL),
+            pick_list(
                 &OverlapFilterChoice::ALL[..],
                 Some(OverlapFilterChoice::from_state(
                     app.clips.filters.overlap_state
@@ -1266,7 +1673,11 @@ fn advanced_filters_row(
             )
             .width(Length::FillPortion(1))
             .placeholder(ALL_BASES_LABEL),
-            Space::new().width(Length::FillPortion(1)),
+            pick_list(collection_options, selected_collection, |option| {
+                Message::CollectionSelected(option.id)
+            })
+            .width(Length::FillPortion(1))
+            .placeholder(ALL_COLLECTIONS_LABEL),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -1306,7 +1717,7 @@ fn custom_range_row(app: &App) -> Element<'static, Message> {
 // Workspace + history
 // ---------------------------------------------------------------------------
 
-fn clip_workspace(app: &App) -> Element<'static, Message> {
+fn clip_workspace(app: &App) -> Element<'_, Message> {
     row![
         container(clip_history_panel(app))
             .width(Length::FillPortion(5))
@@ -1329,6 +1740,11 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
 
     let status_row = {
         let montage_count = app.clips.montage_selection.len();
+        let collection_options = collection_select_options(&app.clips.filter_options.collections);
+        let selected_collection = collection_options
+            .iter()
+            .find(|option| Some(option.id) == app.clips.selected_collection_add_id)
+            .cloned();
         let detail_label: &'static str = if app.clips.detail_loading {
             "Detail loading"
         } else if app.clips.selected_id.is_some() {
@@ -1344,7 +1760,7 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
             BadgeTone::Neutral
         };
 
-        let mut bar = toolbar()
+        let bar = toolbar()
             .push(clips_badge(
                 format!(
                     "{visible} matching clip{}",
@@ -1359,31 +1775,104 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
             .push(clips_badge(format!("{total} loaded"), BadgeTone::Outline))
             .push(clips_badge(detail_label, detail_tone));
 
-        if montage_count > 0 {
-            bar = bar.push(clips_badge(
+        let build_montage_button = || -> Element<'static, Message> {
+            if montage_count >= 2 {
+                styled_button(
+                    format!("Create montage ({montage_count})"),
+                    ButtonTone::Primary,
+                )
+                .on_press(Message::CreateMontage)
+                .into()
+            } else {
+                with_tooltip(
+                    styled_button("Create montage", ButtonTone::Primary).into(),
+                    "Select 2+ clips.",
+                )
+            }
+        };
+
+        let summary_bar = if montage_count == 0 {
+            bar.trailing(build_montage_button()).build()
+        } else {
+            bar.push(clips_badge(
                 format!("{montage_count} in montage queue"),
                 BadgeTone::Success,
-            ));
-            bar = bar.trailing(
-                styled_button("Clear selection", ButtonTone::Secondary)
-                    .on_press(Message::ClearMontageSelection),
-            );
-        }
-
-        let montage_button: Element<'static, Message> = if montage_count >= 2 {
-            styled_button(
-                format!("Create montage ({montage_count})"),
-                ButtonTone::Primary,
-            )
-            .on_press(Message::CreateMontage)
-            .into()
-        } else {
-            with_tooltip(
-                styled_button("Create montage", ButtonTone::Primary).into(),
-                "Select 2+ clips.",
-            )
+            ))
+            .build()
         };
-        bar.trailing(montage_button).build()
+
+        if montage_count == 0 {
+            summary_bar
+        } else {
+            let collection_picker: Element<'static, Message> = if collection_options.is_empty() {
+                styled_button("No collections yet", ButtonTone::Secondary).into()
+            } else {
+                pick_list(
+                    collection_options,
+                    selected_collection,
+                    Message::CollectionAddSelectionChanged,
+                )
+                .width(Length::Fixed(220.0))
+                .placeholder("Choose collection")
+                .into()
+            };
+
+            let add_to_collection: Element<'static, Message> =
+                if app.clips.selected_collection_add_id.is_some() {
+                    styled_button("Add to collection", ButtonTone::Secondary)
+                        .on_press(Message::AddSelectedToCurrentCollectionRequested)
+                        .into()
+                } else {
+                    with_tooltip(
+                        styled_button("Add to collection", ButtonTone::Secondary).into(),
+                        "Choose a collection in the picker first.",
+                    )
+                };
+
+            column![
+                summary_bar,
+                row![
+                    clips_badge(format!("{montage_count} selected"), BadgeTone::Success),
+                    if app.clips.filter_options.collections.is_empty() {
+                        text("Type a collection name below and press Enter to create it.")
+                            .size(12)
+                            .into()
+                    } else {
+                        collection_picker
+                    },
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                row![
+                    text_input(
+                        "Choose existing or type new collection",
+                        &app.clips.new_collection_name
+                    )
+                    .on_input(Message::NewCollectionNameChanged)
+                    .on_submit(Message::CreateCollectionRequested)
+                    .width(Length::FillPortion(3)),
+                    styled_button("Create/select", ButtonTone::Secondary)
+                        .on_press(Message::CreateCollectionRequested),
+                    add_to_collection,
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                row![
+                    styled_button("Favorite selected", ButtonTone::Secondary)
+                        .on_press(Message::FavoriteSelectedRequested),
+                    styled_button("Unfavorite selected", ButtonTone::Secondary)
+                        .on_press(Message::UnfavoriteSelectedRequested),
+                    styled_button("Clear selection", ButtonTone::Secondary)
+                        .on_press(Message::ClearMontageSelection),
+                    Space::new().width(Length::Fill),
+                    build_montage_button()
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(8)
+            .into()
+        }
     };
 
     let header_row = history_header_row(app);
@@ -1411,6 +1900,7 @@ fn history_header_row(app: &App) -> Element<'static, Message> {
     container(
         row![
             header_static_cell(" ", Length::Fixed(42.0)),
+            header_static_cell("Fav", Length::Fixed(54.0)),
             header_sort_cell(
                 "When",
                 Length::Fixed(150.0),
@@ -1447,7 +1937,7 @@ fn history_header_row(app: &App) -> Element<'static, Message> {
                 current,
                 desc,
             ),
-            header_static_cell("Flags", Length::Fixed(120.0)),
+            header_static_cell("Flags", Length::Fixed(200.0)),
         ]
         .spacing(0),
     )
@@ -1465,9 +1955,13 @@ fn history_header_row(app: &App) -> Element<'static, Message> {
 }
 
 fn header_static_cell(label: &'static str, width: Length) -> Element<'static, Message> {
-    container(text(label).size(11).style(|theme: &iced::Theme| TextStyle {
-        color: Some(theme::tokens_for(theme).color.muted_foreground),
-    }))
+    container(
+        text_non_selectable(label)
+            .size(11)
+            .style(|theme: &iced::Theme| TextStyle {
+                color: Some(theme::tokens_for(theme).color.muted_foreground),
+            }),
+    )
     .padding([8, 10])
     .width(width)
     .into()
@@ -1486,18 +1980,20 @@ fn header_sort_cell(
         ""
     };
     let is_active = column == current;
-    let content = container(text(format!("{label}{arrow}")).size(11).style(
-        move |theme: &iced::Theme| {
-            let c = &theme::tokens_for(theme).color;
-            TextStyle {
-                color: Some(if is_active {
-                    c.foreground
-                } else {
-                    c.muted_foreground
-                }),
-            }
-        },
-    ))
+    let content = container(
+        text_non_selectable(format!("{label}{arrow}"))
+            .size(11)
+            .style(move |theme: &iced::Theme| {
+                let c = &theme::tokens_for(theme).color;
+                TextStyle {
+                    color: Some(if is_active {
+                        c.foreground
+                    } else {
+                        c.muted_foreground
+                    }),
+                }
+            }),
+    )
     .padding([8, 10])
     .width(Length::Fill);
 
@@ -1605,9 +2101,13 @@ fn dense_history_row(app: &App, record: &ClipRecord, selected: bool) -> Element<
     .padding([6, 10])
     .width(Length::Fixed(42.0))
     .align_y(Alignment::Center);
+    let favorite_button = favorite_icon_button(record.favorited, Message::ToggleFavorite(clip_id));
+    let favorite_cell = container(favorite_button)
+        .padding([6, 10])
+        .width(Length::Fixed(54.0))
+        .align_y(Alignment::Center);
 
     let content = row![
-        checkbox_cell,
         dense_text_cell(
             format_smart_timestamp(record.trigger_event_at),
             Length::Fixed(150.0)
@@ -1619,27 +2119,37 @@ fn dense_history_row(app: &App, record: &ClipRecord, selected: bool) -> Element<
         dense_text_cell(short_duration_label(record), Length::Fixed(64.0)),
         container(flag_badges(record))
             .padding([6, 10])
-            .width(Length::Fixed(120.0))
+            .width(Length::Fixed(200.0))
             .align_y(Alignment::Center),
     ]
     .spacing(0)
     .align_y(Alignment::Center)
     .width(Length::Fill);
 
-    let row_container = container(content)
-        .width(Length::Fill)
-        .style(move |theme: &iced::Theme| clip_list_row_style(theme, selected));
-
-    button(row_container)
-        .padding(0)
-        .style(move |theme, status| clip_list_button_style(theme, status, selected))
+    let row_content = row![
+        checkbox_cell,
+        favorite_cell,
+        mouse_area(
+            container(content)
+                .width(Length::Fill)
+                .style(move |theme: &iced::Theme| clip_list_row_style(theme, selected))
+        )
         .on_press(Message::RowSelected(clip_id))
+        .interaction(iced::mouse::Interaction::Pointer),
+    ]
+    .spacing(0)
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
+
+    container(row_content)
+        .width(Length::Fill)
+        .style(move |theme: &iced::Theme| clip_list_row_style(theme, selected))
         .into()
 }
 
 fn dense_text_cell(value: impl Into<String>, width: Length) -> Element<'static, Message> {
     container(
-        text(value.into())
+        text_non_selectable(value.into())
             .size(12)
             .style(|theme: &iced::Theme| TextStyle {
                 color: Some(theme::tokens_for(theme).color.foreground),
@@ -1672,42 +2182,6 @@ fn clip_list_row_style(theme: &iced::Theme, selected: bool) -> ContainerStyle {
     }
 }
 
-fn clip_list_button_style(
-    theme: &iced::Theme,
-    status: iced::widget::button::Status,
-    selected: bool,
-) -> iced::widget::button::Style {
-    let c = &theme::tokens_for(theme).color;
-    let (bg, fg) = if selected {
-        (Some(Background::Color(c.primary)), c.primary_foreground)
-    } else {
-        match status {
-            iced::widget::button::Status::Hovered => {
-                (Some(Background::Color(c.accent)), c.foreground)
-            }
-            iced::widget::button::Status::Pressed => {
-                (Some(Background::Color(c.muted)), c.foreground)
-            }
-            _ => (None, c.foreground),
-        }
-    };
-    iced::widget::button::Style {
-        background: bg,
-        text_color: fg,
-        border: theme::border(
-            if selected {
-                c.primary
-            } else {
-                Color::TRANSPARENT
-            },
-            1.0,
-            theme::RADIUS.md,
-        ),
-        shadow: Default::default(),
-        snap: false,
-    }
-}
-
 fn montage_selection_checkbox(
     clip_id: i64,
     selected: bool,
@@ -1720,14 +2194,41 @@ fn montage_selection_checkbox(
     } else {
         center(checkbox(selected)).width(Length::Fixed(32.0)).into()
     };
-    with_tooltip(
-        checkbox,
-        block_reason.unwrap_or("Add to montage."),
-    )
+    with_tooltip(checkbox, block_reason.unwrap_or("Add to montage."))
+}
+
+fn favorite_icon_button(message_active: bool, message: Message) -> Element<'static, Message> {
+    let label = if message_active {
+        "\u{2605}"
+    } else {
+        "\u{2606}"
+    };
+    let tone = if message_active {
+        ButtonTone::Warning
+    } else {
+        ButtonTone::Secondary
+    };
+    styled_button(label, tone).on_press(message).into()
 }
 
 fn flag_badges(record: &ClipRecord) -> Element<'static, Message> {
     let mut items: Vec<Element<'static, Message>> = Vec::new();
+    for tag_name in record.tags.iter().take(2) {
+        items.push(
+            tag(tag_name.clone())
+                .tone(BadgeTone::Outline)
+                .build()
+                .into(),
+        );
+    }
+    if record.tags.len() > 2 {
+        items.push(
+            badge(format!("+{}", record.tags.len() - 2))
+                .tone(BadgeTone::Outline)
+                .build()
+                .into(),
+        );
+    }
     if record.overlap_count > 0 {
         items.push(with_tooltip(
             badge(format!("O{}", record.overlap_count))
@@ -1751,6 +2252,23 @@ fn flag_badges(record: &ClipRecord) -> Element<'static, Message> {
                 "Linked to {} alert{}.",
                 record.alert_count,
                 if record.alert_count == 1 { "" } else { "s" }
+            ),
+        ));
+    }
+    if record.collection_count > 0 {
+        items.push(with_tooltip(
+            badge(format!("C{}", record.collection_count))
+                .tone(BadgeTone::Neutral)
+                .build()
+                .into(),
+            format!(
+                "Member of {} collection{}.",
+                record.collection_count,
+                if record.collection_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             ),
         ));
     }
@@ -1788,24 +2306,19 @@ fn flag_badges(record: &ClipRecord) -> Element<'static, Message> {
 // Detail workspace
 // ---------------------------------------------------------------------------
 
-fn clip_detail_workspace(app: &App) -> Element<'static, Message> {
+fn clip_detail_workspace(app: &App) -> Element<'_, Message> {
     if let Some(detail) = app.clips.selected_detail.as_ref() {
         clip_detail_panel(app, detail)
     } else if app.clips.detail_loading {
         panel("Clip detail")
-            .push(
-                empty_state("Loading...")
-                    .build(),
-            )
+            .push(empty_state("Loading...").build())
             .build()
             .into()
     } else {
         panel("Clip detail")
             .push(
                 empty_state("No clip selected")
-                    .description(
-                        "Arrow keys, Enter, Space, Delete",
-                    )
+                    .description("Arrow keys, Enter, Space, Delete")
                     .build(),
             )
             .build()
@@ -1813,13 +2326,13 @@ fn clip_detail_workspace(app: &App) -> Element<'static, Message> {
     }
 }
 
-fn clip_detail_panel(app: &App, detail: &ClipDetailRecord) -> Element<'static, Message> {
+fn clip_detail_panel<'a>(app: &'a App, detail: &'a ClipDetailRecord) -> Element<'a, Message> {
     let record = &detail.clip;
     let storage_tier = storage_tiering::clip_storage_tier(record, &app.config.storage_tiering);
     let post_process_block = super::super::clip_post_process_block_reason(record);
     let can_export_timeline = record.path.is_some() && !detail.raw_events.is_empty();
 
-    let mut content: Column<'static, Message> = column![].spacing(12);
+    let mut content: Column<'_, Message> = column![].spacing(12);
     content = content.push(detail_summary_card(app, record, storage_tier));
 
     content = content.push(detail_actions_section(
@@ -1852,6 +2365,7 @@ fn clip_detail_panel(app: &App, detail: &ClipDetailRecord) -> Element<'static, M
         );
     }
 
+    content = content.push(organization_section(app, detail));
     content = content.push(audio_tracks_section(app, detail));
     content = content.push(uploads_section(app, detail));
     content = content.push(alerts_section(app, detail));
@@ -1874,6 +2388,18 @@ fn detail_summary_card(
         clips_badge(storage_tier.label(), BadgeTone::Outline),
         clips_badge(format!("Score {}", record.score), BadgeTone::Info),
         clips_badge(duration_label(record), BadgeTone::Info),
+        clips_badge(
+            if record.favorited {
+                "Favorited"
+            } else {
+                "Not favorited"
+            },
+            if record.favorited {
+                BadgeTone::Warning
+            } else {
+                BadgeTone::Neutral
+            },
+        ),
         clips_badge(post_process_status_label(record), BadgeTone::Neutral),
     ]
     .spacing(6)
@@ -1961,6 +2487,21 @@ fn detail_actions_section(
     if let Some(honu) = honu_button {
         primary_row = primary_row.push(honu);
     }
+    primary_row = primary_row.push(
+        styled_button(
+            if record.favorited {
+                "\u{2605} Favorited"
+            } else {
+                "\u{2606} Favorite"
+            },
+            if record.favorited {
+                ButtonTone::Warning
+            } else {
+                ButtonTone::Secondary
+            },
+        )
+        .on_press(Message::ToggleFavorite(clip_id)),
+    );
 
     // Export group
     let chapter_button = with_tooltip(
@@ -2184,6 +2725,138 @@ fn upload_action_state(
 // Detail sections (optional)
 // ---------------------------------------------------------------------------
 
+fn organization_section<'a>(app: &'a App, detail: &'a ClipDetailRecord) -> Element<'a, Message> {
+    let clip_id = detail.clip.id;
+    let count = detail.tags.len() + detail.collections.len();
+    let collapsed = section_is_collapsed(app, DetailSection::Organization);
+    let collection_options = collection_select_options(&app.clips.filter_options.collections);
+
+    let tag_tokens: Element<'static, Message> = if detail.tags.is_empty() {
+        text("No tags yet.")
+            .size(12)
+            .style(|theme: &iced::Theme| TextStyle {
+                color: Some(theme::tokens_for(theme).color.muted_foreground),
+            })
+            .into()
+    } else {
+        let mut items = row![].spacing(6).align_y(Alignment::Center);
+        for tag_name in &detail.tags {
+            items = items.push(removable_token(
+                tag_name.clone(),
+                Message::RemoveTagRequested {
+                    clip_id,
+                    tag_name: tag_name.clone(),
+                },
+            ));
+        }
+        scrollable(items).width(Length::Fill).into()
+    };
+
+    let collection_tokens: Element<'static, Message> = if detail.collections.is_empty() {
+        text("No collection memberships.")
+            .size(12)
+            .style(|theme: &iced::Theme| TextStyle {
+                color: Some(theme::tokens_for(theme).color.muted_foreground),
+            })
+            .into()
+    } else {
+        let mut items = row![].spacing(6).align_y(Alignment::Center);
+        for membership in &detail.collections {
+            items = items.push(removable_token(
+                membership.name.clone(),
+                Message::RemoveClipFromCollectionRequested {
+                    clip_id,
+                    collection_id: membership.collection_id,
+                },
+            ));
+        }
+        scrollable(items).width(Length::Fill).into()
+    };
+
+    let collection_combo_selection = collection_options
+        .iter()
+        .find(|option| Some(option.id) == app.clips.selected_collection_add_id);
+    let tag_combo_selection = if app.clips.tag_input.trim().is_empty() {
+        None
+    } else {
+        app.clips
+            .filter_options
+            .tags
+            .iter()
+            .find(|tag_name| tag_name.eq_ignore_ascii_case(app.clips.tag_input.trim()))
+    };
+
+    let tag_editor = iced::widget::combo_box(
+        &app.clips.tag_editor_options,
+        "Search or type a tag",
+        tag_combo_selection,
+        Message::TagOptionSelected,
+    )
+    .on_input(Message::TagInputChanged)
+    .width(Length::Fill);
+
+    let collection_editor = iced::widget::combo_box(
+        &app.clips.collection_editor_options,
+        "Search or type a collection",
+        collection_combo_selection,
+        Message::CollectionOptionSelected,
+    )
+    .on_input(Message::DetailCollectionNameChanged)
+    .width(Length::Fill);
+
+    let header = collapsible_header(
+        "Organization",
+        Some("Favorite, tag, and place this clip into curated collections."),
+        count,
+        DetailSection::Organization,
+        collapsed,
+    );
+
+    let mut wrapper: Column<'a, Message> = column![header].spacing(6);
+    if !collapsed {
+        wrapper = wrapper
+            .push(
+                column![
+                    text_non_selectable("Tags")
+                        .size(16)
+                        .style(|theme: &iced::Theme| TextStyle {
+                            color: Some(theme::tokens_for(theme).color.foreground),
+                        }),
+                    text_non_selectable(
+                        "Select from the dropdown to add immediately, or type a new tag and press Enter.",
+                    )
+                    .size(12)
+                    .style(|theme: &iced::Theme| TextStyle {
+                        color: Some(theme::tokens_for(theme).color.muted_foreground),
+                    }),
+                    tag_tokens,
+                    tag_editor,
+                ]
+                .spacing(8),
+            )
+            .push(
+                column![
+                    text_non_selectable("Collections")
+                        .size(16)
+                        .style(|theme: &iced::Theme| TextStyle {
+                            color: Some(theme::tokens_for(theme).color.foreground),
+                        }),
+                    text_non_selectable(
+                        "Select from the dropdown to add immediately, or type a new collection and press Enter.",
+                    )
+                    .size(12)
+                    .style(|theme: &iced::Theme| TextStyle {
+                        color: Some(theme::tokens_for(theme).color.muted_foreground),
+                    }),
+                    collection_tokens,
+                    collection_editor,
+                ]
+                .spacing(8),
+            );
+    }
+    wrapper.into()
+}
+
 fn section_is_collapsed(app: &App, section: DetailSection) -> bool {
     app.clips.collapsed_detail_sections.contains(&section)
 }
@@ -2214,19 +2887,21 @@ fn collapsible_header(
 
     let title_column: Element<'static, Message> = if let Some(desc) = description {
         column![
-            text(title_text)
+            text_non_selectable(title_text)
                 .size(14)
                 .style(|theme: &iced::Theme| TextStyle {
                     color: Some(theme::tokens_for(theme).color.foreground),
                 }),
-            text(desc).size(11).style(|theme: &iced::Theme| TextStyle {
-                color: Some(theme::tokens_for(theme).color.muted_foreground),
-            }),
+            text_non_selectable(desc)
+                .size(11)
+                .style(|theme: &iced::Theme| TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                }),
         ]
         .spacing(2)
         .into()
     } else {
-        text(title_text)
+        text_non_selectable(title_text)
             .size(14)
             .style(|theme: &iced::Theme| TextStyle {
                 color: Some(theme::tokens_for(theme).color.foreground),
@@ -2276,13 +2951,11 @@ fn audio_tracks_section(app: &App, detail: &ClipDetailRecord) -> Element<'static
     let mut wrapper: Column<'static, Message> = column![header].spacing(6);
     if !collapsed {
         if count == 0 {
-            wrapper = wrapper.push(
-                text("No audio metadata.")
-                    .size(12)
-                    .style(|theme: &iced::Theme| TextStyle {
-                        color: Some(theme::tokens_for(theme).color.muted_foreground),
-                    }),
-            );
+            wrapper = wrapper.push(text("No audio metadata.").size(12).style(
+                |theme: &iced::Theme| TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                },
+            ));
         } else {
             let mut body: Column<'static, Message> = column![].spacing(6);
             for track in &detail.audio_tracks {
@@ -2329,13 +3002,11 @@ fn uploads_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Mes
     let mut wrapper: Column<'static, Message> = column![header].spacing(6);
     if !collapsed {
         if count == 0 {
-            wrapper = wrapper.push(
-                text("No uploads yet.")
-                    .size(12)
-                    .style(|theme: &iced::Theme| TextStyle {
-                        color: Some(theme::tokens_for(theme).color.muted_foreground),
-                    }),
-            );
+            wrapper = wrapper.push(text("No uploads yet.").size(12).style(
+                |theme: &iced::Theme| TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                },
+            ));
         } else {
             let mut body: Column<'static, Message> = column![].spacing(6);
             for upload in &detail.uploads {
@@ -2399,13 +3070,11 @@ fn alerts_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Mess
     let mut wrapper: Column<'static, Message> = column![header].spacing(6);
     if !collapsed {
         if count == 0 {
-            wrapper = wrapper.push(
-                text("No alert context.")
-                    .size(12)
-                    .style(|theme: &iced::Theme| TextStyle {
-                        color: Some(theme::tokens_for(theme).color.muted_foreground),
-                    }),
-            );
+            wrapper = wrapper.push(text("No alert context.").size(12).style(
+                |theme: &iced::Theme| TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                },
+            ));
         } else {
             let mut body: Column<'static, Message> = column![].spacing(6);
             for alert in &detail.alerts {
@@ -2458,13 +3127,11 @@ fn overlaps_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Me
     let mut wrapper: Column<'static, Message> = column![header].spacing(6);
     if !collapsed {
         if count == 0 {
-            wrapper = wrapper.push(
-                text("No overlaps.")
-                    .size(12)
-                    .style(|theme: &iced::Theme| TextStyle {
-                        color: Some(theme::tokens_for(theme).color.muted_foreground),
-                    }),
-            );
+            wrapper = wrapper.push(text("No overlaps.").size(12).style(|theme: &iced::Theme| {
+                TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                }
+            }));
         } else {
             let mut body: Column<'static, Message> = column![].spacing(6);
             for overlap in &detail.overlaps {
@@ -2537,13 +3204,11 @@ fn raw_events_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, 
     let mut wrapper: Column<'static, Message> = column![header].spacing(6);
     if !collapsed {
         if total_count == 0 {
-            wrapper = wrapper.push(
-                text("No events captured.")
-                    .size(12)
-                    .style(|theme: &iced::Theme| TextStyle {
-                        color: Some(theme::tokens_for(theme).color.muted_foreground),
-                    }),
-            );
+            wrapper = wrapper.push(text("No events captured.").size(12).style(
+                |theme: &iced::Theme| TextStyle {
+                    color: Some(theme::tokens_for(theme).color.muted_foreground),
+                },
+            ));
         } else {
             wrapper = wrapper.push(
                 row![
@@ -2835,3 +3500,106 @@ fn delete_dialog(pending: &crate::app::PendingClipDelete) -> Element<'static, Me
 // ---------------------------------------------------------------------------
 // Helpers: badges, filter options, sorting, labels
 // ---------------------------------------------------------------------------
+
+fn collection_select_options(collections: &[ClipCollectionRecord]) -> Vec<CollectionSelectOption> {
+    collections
+        .iter()
+        .map(|collection| CollectionSelectOption {
+            id: collection.id,
+            label: collection.name.clone(),
+        })
+        .collect()
+}
+
+fn collection_filter_options(collections: &[ClipCollectionRecord]) -> Vec<CollectionFilterOption> {
+    let mut options = Vec::with_capacity(collections.len() + 1);
+    options.push(CollectionFilterOption {
+        id: None,
+        label: ALL_COLLECTIONS_LABEL.into(),
+    });
+    options.extend(collections.iter().map(|collection| CollectionFilterOption {
+        id: Some(collection.id),
+        label: collection.name.clone(),
+    }));
+    options
+}
+
+pub(in crate::app) fn sync_editor_options(app: &mut App) {
+    app.clips.tag_editor_options =
+        iced::widget::combo_box::State::new(app.clips.filter_options.tags.clone());
+    app.clips.collection_editor_options = iced::widget::combo_box::State::new(
+        collection_select_options(&app.clips.filter_options.collections),
+    );
+}
+
+fn find_collection_by_name<'a>(app: &'a App, name: &str) -> Option<&'a ClipCollectionRecord> {
+    app.clips
+        .filter_options
+        .collections
+        .iter()
+        .find(|collection| collection.name.eq_ignore_ascii_case(name.trim()))
+}
+
+fn selected_collection_filter_option(
+    options: &[CollectionFilterOption],
+    selected_id: Option<i64>,
+) -> Option<CollectionFilterOption> {
+    options
+        .iter()
+        .find(|option| option.id == selected_id)
+        .cloned()
+}
+
+fn removable_token(label: impl Into<String>, message: Message) -> Element<'static, Message> {
+    let label = label.into();
+    button(
+        container(
+            row![text(label).size(12), text("\u{00D7}").size(10),]
+                .spacing(6)
+                .align_y(Alignment::Center),
+        )
+        .padding(Padding {
+            top: 4.0,
+            right: 9.0,
+            bottom: 4.0,
+            left: 10.0,
+        })
+        .style(|theme: &iced::Theme| {
+            let c = &theme::tokens_for(theme).color;
+            ContainerStyle {
+                text_color: Some(c.foreground),
+                background: Some(Background::Color(c.muted)),
+                border: theme::border(c.border_strong, 1.0, theme::RADIUS.md),
+                ..Default::default()
+            }
+        }),
+    )
+    .padding(0)
+    .style(
+        |theme: &iced::Theme, status: iced::widget::button::Status| {
+            let c = &theme::tokens_for(theme).color;
+            iced::widget::button::Style {
+                background: match status {
+                    iced::widget::button::Status::Hovered => Some(Background::Color(c.accent)),
+                    iced::widget::button::Status::Pressed => Some(Background::Color(c.muted)),
+                    _ => None,
+                },
+                text_color: c.foreground,
+                border: iced::Border::default(),
+                shadow: Default::default(),
+                snap: false,
+            }
+        },
+    )
+    .on_press(message)
+    .into()
+}
+
+fn refresh_clip_organization(app: &mut App) -> Task<AppMessage> {
+    app.clear_clip_error();
+    Task::batch([
+        reload_views(app),
+        app.load_clip_filter_options(),
+        app.load_clip_detail(app.clips.selected_id),
+    ])
+}

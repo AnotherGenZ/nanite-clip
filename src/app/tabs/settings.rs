@@ -987,8 +987,7 @@ pub(in crate::app) fn refresh_audio_sources(app: &mut App) -> iced::Task<AppMess
 }
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
-    let header = page_header("Settings")
-        .build();
+    let header = page_header("Settings").build();
 
     let status_bar = toolbar()
         .push(settings_status_badge(
@@ -1107,12 +1106,7 @@ fn settings_sidebar(app: &App) -> Element<'_, Message> {
 
     sidebar(active, Message::SetSubView)
         .width(240.0)
-        .header(
-            column![
-                text("Settings Areas").size(13),
-            ]
-            .spacing(4),
-        )
+        .header(column![text("Settings Areas").size(13),].spacing(4))
         .push(SidebarItem::new(SettingsSubView::General, "General").badge("Runtime"))
         .push(
             SidebarItem::new(SettingsSubView::CaptureAudio, "Capture & Audio").badge(capture_badge),
@@ -1172,9 +1166,7 @@ fn settings_draft_bar(_app: &App) -> Element<'_, Message> {
         row![
             column![
                 text("Unsaved changes").size(14),
-                text("You have unsaved changes.")
-                .size(12)
-                .width(360),
+                text("You have unsaved changes.").size(12).width(360),
             ]
             .spacing(4)
             .width(Length::Shrink),
@@ -1501,11 +1493,7 @@ fn capture_panel(app: &App) -> Element<'_, Message> {
     let backend_controls: Vec<Element<'_, Message>> = if app.recorder.has_active_session() {
         vec![
             row![
-                field_label(
-                    "Recorder Backend",
-                    "Stop monitoring first.",
-                    200.0,
-                ),
+                field_label("Recorder Backend", "Stop monitoring first.", 200.0,),
                 text(selected_capture_backend(app).to_string()).size(14),
             ]
             .spacing(8)
@@ -1522,11 +1510,7 @@ fn capture_panel(app: &App) -> Element<'_, Message> {
         )]
     };
 
-    let backend_panel = settings_section_block(
-        "Backend",
-        "",
-        backend_controls,
-    );
+    let backend_panel = settings_section_block("Backend", "", backend_controls);
 
     let recorder_panel = if selected_capture_backend(app) == CaptureBackendPreset::Obs {
         obs_capture_section(app)
@@ -1552,9 +1536,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
             )),
             Message::CaptureSourcePresetSelected,
         ),
-        text("X11: window bind. Wayland: portal.")
-            .size(12)
-            .into(),
+        text("X11: window bind. Wayland: portal.").size(12).into(),
         settings_text_field_with_button(
             "Save Directory",
             "",
@@ -1640,11 +1622,7 @@ fn gsr_capture_section(app: &App) -> Element<'_, Message> {
         ));
     }
 
-    settings_section_block(
-        "gpu-screen-recorder",
-        "",
-        video_rows,
-    )
+    settings_section_block("gpu-screen-recorder", "", video_rows)
 }
 
 fn obs_capture_section(app: &App) -> Element<'_, Message> {
@@ -1738,7 +1716,9 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
                     "Container Format",
                     "",
                     &ObsContainerPreset::ALL[..],
-                    Some(ObsContainerPreset::from_value(app.settings.container.as_str())),
+                    Some(ObsContainerPreset::from_value(
+                        app.settings.container.as_str(),
+                    )),
                     |preset| Message::ContainerChanged(preset.config_value().to_string()),
                 ),
                 settings_stepper_field(
@@ -1766,11 +1746,7 @@ fn obs_capture_section(app: &App) -> Element<'_, Message> {
         }
     }
 
-    settings_section_block(
-        "OBS Studio",
-        "",
-        rows,
-    )
+    settings_section_block("OBS Studio", "", rows)
 }
 
 fn audio_panel(app: &App) -> Element<'_, Message> {
@@ -1811,16 +1787,10 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     };
 
     let device_discovery_row: Element<'_, Message> = row![
-        field_label(
-            "Detected Devices",
-            "",
-            200.0,
-        ),
-        pick_list(
-            available_device_sources,
-            selected_device_source,
-            |option| Message::SelectAvailableAudioSource(DiscoveredAudioKind::Device, option),
-        )
+        field_label("Detected Devices", "", 200.0,),
+        pick_list(available_device_sources, selected_device_source, |option| {
+            Message::SelectAvailableAudioSource(DiscoveredAudioKind::Device, option)
+        },)
         .placeholder(device_source_placeholder)
         .width(420),
         with_tooltip(
@@ -1841,11 +1811,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
     .align_y(iced::Alignment::Center)
     .into();
     let application_discovery_row: Element<'_, Message> = row![
-        field_label(
-            "Detected Apps",
-            "",
-            200.0,
-        ),
+        field_label("Detected Apps", "", 200.0,),
         pick_list(
             available_application_sources,
             selected_application_source,
@@ -1899,10 +1865,7 @@ fn audio_panel(app: &App) -> Element<'_, Message> {
 
     panel("Audio")
         .push(discovery_section)
-        .push(
-            section("Configured Tracks")
-                .push(configured_tracks),
-        )
+        .push(section("Configured Tracks").push(configured_tracks))
         .build()
         .into()
 }
@@ -1953,13 +1916,12 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
 }
 
 fn delivery_panel(app: &App) -> Element<'_, Message> {
-    let mut youtube_section = section("YouTube")
-        .push(settings_toggle_row(
-            "Enable YouTube Uploads",
-            "",
-            app.settings.youtube_enabled,
-            Message::YouTubeEnabledToggled,
-        ));
+    let mut youtube_section = section("YouTube").push(settings_toggle_row(
+        "Enable YouTube Uploads",
+        "",
+        app.settings.youtube_enabled,
+        Message::YouTubeEnabledToggled,
+    ));
 
     if app.settings.youtube_enabled {
         youtube_section = youtube_section
@@ -2039,68 +2001,59 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 .align_y(iced::Alignment::Center),
             );
     } else {
-        youtube_section = youtube_section
-            .push(text("Enable to configure.").size(12));
+        youtube_section = youtube_section.push(text("Enable to configure.").size(12));
     }
 
     panel("Delivery & Storage")
-        .push(settings_section_block(
-            "Storage Tiering",
-            "",
-            {
-                let mut rows = vec![settings_toggle_row(
-                    "Enable Storage Tiering",
-                    "",
-                    app.settings.storage_tiering_enabled,
-                    Message::StorageTieringEnabledToggled,
-                )];
+        .push(settings_section_block("Storage Tiering", "", {
+            let mut rows = vec![settings_toggle_row(
+                "Enable Storage Tiering",
+                "",
+                app.settings.storage_tiering_enabled,
+                Message::StorageTieringEnabledToggled,
+            )];
 
-                if app.settings.storage_tiering_enabled {
-                    rows.extend([
-                        settings_text_field_with_button(
-                            "Archive Directory",
-                            "",
-                            &app.settings.storage_tier_directory,
-                            Message::StorageTierDirectoryChanged,
-                            with_tooltip(
-                                styled_button("Browse", ButtonTone::Secondary)
-                                    .on_press(Message::PickStorageTierDirectory)
-                                    .into(),
-                                "Pick archive folder.",
-                            ),
-                        ),
-                        settings_stepper_field(
-                            "Archive After",
-                            "",
-                            current_storage_min_age_days(app),
-                            "days",
-                            Message::StorageMinAgeDaysStepped,
-                        ),
-                        settings_stepper_field(
-                            "Archive Score Ceiling",
-                            "",
-                            current_storage_max_score(app),
-                            "pts",
-                            Message::StorageMaxScoreStepped,
-                        ),
+            if app.settings.storage_tiering_enabled {
+                rows.extend([
+                    settings_text_field_with_button(
+                        "Archive Directory",
+                        "",
+                        &app.settings.storage_tier_directory,
+                        Message::StorageTierDirectoryChanged,
                         with_tooltip(
-                            styled_button("Run Tiering Sweep", ButtonTone::Secondary)
-                                .on_press(Message::RunStorageTieringSweep)
+                            styled_button("Browse", ButtonTone::Secondary)
+                                .on_press(Message::PickStorageTierDirectory)
                                 .into(),
-                            "Archive eligible clips now.",
+                            "Pick archive folder.",
                         ),
-                    ]);
-                } else {
-                    rows.push(
-                        text("Enable to configure.")
-                        .size(12)
-                        .into(),
-                    );
-                }
+                    ),
+                    settings_stepper_field(
+                        "Archive After",
+                        "",
+                        current_storage_min_age_days(app),
+                        "days",
+                        Message::StorageMinAgeDaysStepped,
+                    ),
+                    settings_stepper_field(
+                        "Archive Score Ceiling",
+                        "",
+                        current_storage_max_score(app),
+                        "pts",
+                        Message::StorageMaxScoreStepped,
+                    ),
+                    with_tooltip(
+                        styled_button("Run Tiering Sweep", ButtonTone::Secondary)
+                            .on_press(Message::RunStorageTieringSweep)
+                            .into(),
+                        "Archive eligible clips now.",
+                    ),
+                ]);
+            } else {
+                rows.push(text("Enable to configure.").size(12).into());
+            }
 
-                rows
-            },
-        ))
+            rows
+        }))
         .push(settings_section_block(
             "Copyparty",
             "Credentials stored securely.",
@@ -2167,88 +2120,76 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                         .into(),
                     ]);
                 } else {
-                    rows.push(
-                        text("Enable to configure.")
-                            .size(12)
-                            .into(),
-                    );
+                    rows.push(text("Enable to configure.").size(12).into());
                 }
 
                 rows
             },
         ))
         .push(youtube_section)
-        .push(settings_section_block(
-            "Discord Webhook",
-            "",
-            {
-                let mut rows = vec![settings_toggle_row(
-                    "Enable Discord Webhook",
-                    "",
-                    app.settings.discord_enabled,
-                    Message::DiscordWebhookEnabledToggled,
-                )];
+        .push(settings_section_block("Discord Webhook", "", {
+            let mut rows = vec![settings_toggle_row(
+                "Enable Discord Webhook",
+                "",
+                app.settings.discord_enabled,
+                Message::DiscordWebhookEnabledToggled,
+            )];
 
-                if app.settings.discord_enabled {
-                    rows.extend([
-                        settings_stepper_field(
-                            "Minimum Score",
-                            "",
-                            current_discord_min_score(app),
-                            "pts",
-                            Message::DiscordMinScoreStepped,
-                        ),
-                        settings_toggle_row(
-                            "Attach Thumbnail",
-                            "",
-                            app.settings.discord_include_thumbnail,
-                            Message::DiscordIncludeThumbnailToggled,
-                        ),
-                        settings_text_field(
+            if app.settings.discord_enabled {
+                rows.extend([
+                    settings_stepper_field(
+                        "Minimum Score",
+                        "",
+                        current_discord_min_score(app),
+                        "pts",
+                        Message::DiscordMinScoreStepped,
+                    ),
+                    settings_toggle_row(
+                        "Attach Thumbnail",
+                        "",
+                        app.settings.discord_include_thumbnail,
+                        Message::DiscordIncludeThumbnailToggled,
+                    ),
+                    settings_text_field(
+                        if app.settings.discord_webhook_present {
+                            "Discord Webhook URL (stored)"
+                        } else {
+                            "Discord Webhook URL"
+                        },
+                        "Paste to replace.",
+                        &app.settings.discord_webhook_input,
+                        Message::DiscordWebhookUrlChanged,
+                    ),
+                    row![
+                        settings_status_badge(
                             if app.settings.discord_webhook_present {
-                                "Discord Webhook URL (stored)"
+                                "Webhook stored"
                             } else {
-                                "Discord Webhook URL"
+                                "No webhook stored"
                             },
-                            "Paste to replace.",
-                            &app.settings.discord_webhook_input,
-                            Message::DiscordWebhookUrlChanged,
+                            if app.settings.discord_webhook_present {
+                                BadgeTone::Success
+                            } else {
+                                BadgeTone::Neutral
+                            },
                         ),
-                        row![
-                            settings_status_badge(
-                                if app.settings.discord_webhook_present {
-                                    "Webhook stored"
-                                } else {
-                                    "No webhook stored"
-                                },
-                                if app.settings.discord_webhook_present {
-                                    BadgeTone::Success
-                                } else {
-                                    BadgeTone::Neutral
-                                },
-                            ),
-                            with_tooltip(
-                                styled_button("Clear Discord Webhook", ButtonTone::Danger)
-                                    .on_press(Message::ClearDiscordWebhook)
-                                    .into(),
-                                "Clear stored URL.",
-                            ),
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Alignment::Center)
-                        .into(),
-                    ]);
-                } else {
-                    rows.push(
-                        text("Enable to configure.")
-                            .size(12)
-                            .into(),
-                    );
-                }
+                        with_tooltip(
+                            styled_button("Clear Discord Webhook", ButtonTone::Danger)
+                                .on_press(Message::ClearDiscordWebhook)
+                                .into(),
+                            "Clear stored URL.",
+                        ),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center)
+                    .into(),
+                ]);
+            } else {
+                rows.push(text("Enable to configure.").size(12).into());
+            }
 
-                rows
-            },
-        ))
+            rows
+        }))
         .build()
         .into()
 }
@@ -2618,10 +2559,7 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                     ),
                     with_tooltip(
                         {
-                            let button = styled_button(
-                                "Rollback to Previous",
-                                ButtonTone::Warning,
-                            );
+                            let button = styled_button("Rollback to Previous", ButtonTone::Warning);
                             if app.updates.state.previous_installed_version.is_some() {
                                 button
                                     .on_press(Message::RollbackToPreviousInstalledVersion)
@@ -2634,10 +2572,8 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                     ),
                     with_tooltip(
                         {
-                            let button = styled_button(
-                                "Download Selected Version",
-                                ButtonTone::Warning,
-                            );
+                            let button =
+                                styled_button("Download Selected Version", ButtonTone::Warning);
                             if app.settings.selected_rollback_release.is_some()
                                 && !matches!(
                                     app.updates.state.phase,
@@ -2646,7 +2582,9 @@ fn update_panel(app: &App) -> Element<'_, Message> {
                                         | UpdatePhase::Applying
                                 )
                             {
-                                button.on_press(Message::DownloadSelectedRollbackVersion).into()
+                                button
+                                    .on_press(Message::DownloadSelectedRollbackVersion)
+                                    .into()
                             } else {
                                 button.into()
                             }
@@ -2721,9 +2659,7 @@ fn settings_toggle_row<'a>(
     value: bool,
     on_toggle: impl Fn(bool) -> Message + 'a,
 ) -> Element<'a, Message> {
-    let mut label_col = column![text(title).size(14)]
-        .spacing(4)
-        .width(Length::Fill);
+    let mut label_col = column![text(title).size(14)].spacing(4).width(Length::Fill);
     if !description.is_empty() {
         label_col = label_col.push(text(description).size(12).width(Length::Fill));
     }
@@ -2836,11 +2772,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
         .body(
             column![
                 row![
-                    field_label(
-                        "Track Label",
-                        "",
-                        200.0,
-                    ),
+                    field_label("Track Label", "", 200.0,),
                     text_input("Game / Mic / Discord", &audio_source.label)
                         .on_input(move |value| Message::AudioSourceLabelChanged(index, value))
                         .width(260),
@@ -2848,11 +2780,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
                 row![
-                    field_label(
-                        "Source",
-                        "",
-                        200.0,
-                    ),
+                    field_label("Source", "", 200.0,),
                     text_input("default_output", &audio_source.source)
                         .on_input(move |value| Message::AudioSourceValueChanged(index, value))
                         .width(420),
@@ -2860,11 +2788,7 @@ fn audio_source_row(index: usize, audio_source: &AudioSourceDraft) -> Element<'s
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
                 row![
-                    field_label(
-                        "Premix Gain",
-                        "",
-                        200.0,
-                    ),
+                    field_label("Premix Gain", "", 200.0,),
                     styled_button("-", ButtonTone::Secondary)
                         .on_press(Message::AudioSourceGainStepped(index, -1)),
                     text(format!("{:+.1} dB", audio_source.gain_db)).width(100),

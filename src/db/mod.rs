@@ -23,7 +23,7 @@ use crate::background_jobs::{
     BackgroundJobState,
 };
 
-const CLIP_STORE_SCHEMA_VERSION: i64 = 13;
+const CLIP_STORE_SCHEMA_VERSION: i64 = 16;
 const CHARACTER_OUTFIT_CACHE_TTL_MS: i64 = 2 * 60 * 60 * 1000;
 const INTERRUPTED_BACKGROUND_JOB_DETAIL: &str =
     "Interrupted because nanite-clip closed before the background job finished.";
@@ -468,6 +468,9 @@ pub struct ClipFilters {
     pub target: String,
     pub weapon: String,
     pub alert: String,
+    pub tag: String,
+    pub favorites_only: bool,
+    pub collection_id: Option<i64>,
     pub overlap_state: OverlapFilterState,
     pub profile: String,
     pub rule: String,
@@ -488,6 +491,8 @@ pub struct ClipFilterOptions {
     pub targets: Vec<String>,
     pub weapons: Vec<String>,
     pub alerts: Vec<String>,
+    pub tags: Vec<String>,
+    pub collections: Vec<ClipCollectionRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -585,11 +590,33 @@ pub struct ClipRecord {
     pub honu_session_id: Option<i64>,
     pub path: Option<String>,
     pub file_size_bytes: Option<u64>,
+    pub favorited: bool,
     pub overlap_count: u32,
     pub alert_count: u32,
+    pub collection_count: u32,
+    pub collection_sequence_index: Option<u32>,
     pub post_process_status: PostProcessStatus,
     pub post_process_error: Option<String>,
+    pub tags: Vec<String>,
     pub events: Vec<ClipEventContribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipCollectionRecord {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub clip_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipCollectionMembershipRecord {
+    pub collection_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub added_at: DateTime<Utc>,
+    pub sequence_index: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -638,6 +665,8 @@ pub struct ClipRawEventRecord {
 #[derive(Debug, Clone)]
 pub struct ClipDetailRecord {
     pub clip: ClipRecord,
+    pub tags: Vec<String>,
+    pub collections: Vec<ClipCollectionMembershipRecord>,
     pub audio_tracks: Vec<ClipAudioTrackRecord>,
     pub raw_events: Vec<ClipRawEventRecord>,
     pub alerts: Vec<ClipAlertRecord>,
@@ -949,6 +978,7 @@ impl ClipStore {
             path: Set(clip.path),
             score: Set(i64::from(clip.score)),
             honu_session_id: Set(clip.honu_session_id),
+            favorited: Set(false),
             post_process_status: Set(entities::PostProcessStatus::NotRequired),
             post_process_error: Set(None),
         }
@@ -1092,6 +1122,8 @@ impl ClipStore {
         let weapon_like_lower = weapon_like.to_lowercase();
         let alert_filter = filters.alert.trim().to_string();
         let alert_like_lower = format!("%{alert_filter}%").to_lowercase();
+        let tag_filter = filters.tag.trim().to_string();
+        let tag_like_lower = format!("%{tag_filter}%").to_lowercase();
 
         let mut query = entities::clips::Entity::find();
 
@@ -1100,6 +1132,9 @@ impl ClipStore {
         }
         if let Some(before_ts) = filters.event_before_ts {
             query = query.filter(entities::clips::Column::TriggerEventTs.lte(before_ts));
+        }
+        if filters.favorites_only {
+            query = query.filter(entities::clips::Column::Favorited.eq(true));
         }
 
         if !target_filter.is_empty() {
@@ -1233,6 +1268,47 @@ impl ClipStore {
             query = query.filter(Expr::exists(exists));
         }
 
+        if !tag_filter.is_empty() {
+            let mut exists = Query::select();
+            exists
+                .expr(Expr::val(1))
+                .from(entities::clip_tags::Entity)
+                .cond_where(
+                    Expr::col((
+                        entities::clip_tags::Entity,
+                        entities::clip_tags::Column::ClipId,
+                    ))
+                    .equals((entities::clips::Entity, entities::clips::Column::Id)),
+                )
+                .cond_where(Expr::cust_with_values(
+                    "LOWER(\"clip_tags\".\"tag_name\") LIKE ?",
+                    [tag_like_lower],
+                ));
+            query = query.filter(Expr::exists(exists));
+        }
+
+        if let Some(collection_id) = filters.collection_id {
+            let mut exists = Query::select();
+            exists
+                .expr(Expr::val(1))
+                .from(entities::collection_clips::Entity)
+                .cond_where(
+                    Expr::col((
+                        entities::collection_clips::Entity,
+                        entities::collection_clips::Column::ClipId,
+                    ))
+                    .equals((entities::clips::Entity, entities::clips::Column::Id)),
+                )
+                .cond_where(
+                    Expr::col((
+                        entities::collection_clips::Entity,
+                        entities::collection_clips::Column::CollectionId,
+                    ))
+                    .eq(collection_id),
+                );
+            query = query.filter(Expr::exists(exists));
+        }
+
         match filters.overlap_state {
             OverlapFilterState::All => {}
             OverlapFilterState::Overlapping => {
@@ -1292,7 +1368,33 @@ impl ClipStore {
             .all(&self.pool)
             .await?;
 
-        self.hydrate_clip_records(clips).await
+        let mut records = self.hydrate_clip_records(clips).await?;
+
+        if let Some(collection_id) = filters.collection_id {
+            let membership_rows = entities::collection_clips::Entity::find()
+                .filter(entities::collection_clips::Column::CollectionId.eq(collection_id))
+                .filter(
+                    entities::collection_clips::Column::ClipId
+                        .is_in(records.iter().map(|record| record.id).collect::<Vec<_>>()),
+                )
+                .all(&self.pool)
+                .await?;
+            let sequence_by_clip = membership_rows
+                .into_iter()
+                .map(|membership| (membership.clip_id, membership.sequence_index as u32))
+                .collect::<HashMap<_, _>>();
+            for record in &mut records {
+                record.collection_sequence_index = sequence_by_clip.get(&record.id).copied();
+            }
+            records.sort_by(|left, right| {
+                left.collection_sequence_index
+                    .cmp(&right.collection_sequence_index)
+                    .then(left.trigger_event_at.cmp(&right.trigger_event_at))
+                    .then(left.id.cmp(&right.id))
+            });
+        }
+
+        Ok(records)
     }
 
     pub async fn raw_event_filter_options(&self) -> Result<ClipFilterOptions, ClipStoreError> {
@@ -1397,10 +1499,15 @@ impl ClipStore {
             );
         let alert_rows = primitives::fetch_all_stmt(&alert_query, &self.pool).await?;
 
+        let tags = self.list_tags().await?;
+        let collections = self.list_collections().await?;
+
         Ok(ClipFilterOptions {
             targets: read_string_option_rows(target_rows)?,
             weapons: read_string_option_rows(weapon_rows)?,
             alerts: read_string_option_rows(alert_rows)?,
+            tags,
+            collections,
             ..ClipFilterOptions::default()
         })
     }
@@ -1421,6 +1528,47 @@ impl ClipStore {
             .into_iter()
             .next()
             .expect("clip detail hydration should return the requested clip");
+        let tags = clip.tags.clone();
+
+        let collection_memberships = entities::collection_clips::Entity::find()
+            .filter(entities::collection_clips::Column::ClipId.eq(clip_id))
+            .order_by_asc(entities::collection_clips::Column::SequenceIndex)
+            .all(&self.pool)
+            .await?;
+        let collection_models = if collection_memberships.is_empty() {
+            HashMap::new()
+        } else {
+            entities::collections::Entity::find()
+                .filter(
+                    entities::collections::Column::Id.is_in(
+                        collection_memberships
+                            .iter()
+                            .map(|membership| membership.collection_id)
+                            .collect::<Vec<_>>(),
+                    ),
+                )
+                .all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|collection| (collection.id, collection))
+                .collect::<HashMap<_, _>>()
+        };
+        let collections = collection_memberships
+            .into_iter()
+            .filter_map(|membership| {
+                collection_models
+                    .get(&membership.collection_id)
+                    .map(|collection| {
+                        Ok::<_, ClipStoreError>(ClipCollectionMembershipRecord {
+                            collection_id: collection.id,
+                            name: collection.name.clone(),
+                            description: collection.description.clone(),
+                            added_at: timestamp_millis_to_utc(membership.added_ts)?,
+                            sequence_index: membership.sequence_index as u32,
+                        })
+                    })
+            })
+            .collect::<Result<Vec<_>, ClipStoreError>>()?;
 
         let raw_models = entities::clip_raw_events::Entity::find()
             .filter(entities::clip_raw_events::Column::ClipId.eq(clip_id))
@@ -1662,6 +1810,8 @@ impl ClipStore {
 
         Ok(Some(ClipDetailRecord {
             clip,
+            tags,
+            collections,
             audio_tracks,
             raw_events,
             alerts: {
@@ -2247,6 +2397,80 @@ impl ClipStore {
         clips_repo::clips_pending_post_process(self).await
     }
 
+    pub async fn set_clip_favorited(
+        &self,
+        clip_id: i64,
+        favorited: bool,
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::set_clip_favorited(self, clip_id, favorited).await
+    }
+
+    pub async fn set_clips_favorited(
+        &self,
+        clip_ids: &[i64],
+        favorited: bool,
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::set_clips_favorited(self, clip_ids, favorited).await
+    }
+
+    pub async fn add_tag(&self, clip_id: i64, tag_name: &str) -> Result<(), ClipStoreError> {
+        clips_repo::add_tag(self, clip_id, tag_name).await
+    }
+
+    pub async fn remove_tag(&self, clip_id: i64, tag_name: &str) -> Result<(), ClipStoreError> {
+        clips_repo::remove_tag(self, clip_id, tag_name).await
+    }
+
+    pub async fn list_tags(&self) -> Result<Vec<String>, ClipStoreError> {
+        clips_repo::list_tags(self).await
+    }
+
+    pub async fn create_collection(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<ClipCollectionRecord, ClipStoreError> {
+        clips_repo::create_collection(self, name, description).await
+    }
+
+    pub async fn list_collections(&self) -> Result<Vec<ClipCollectionRecord>, ClipStoreError> {
+        clips_repo::list_collections(self).await
+    }
+
+    pub async fn add_clip_to_collection(
+        &self,
+        collection_id: i64,
+        clip_id: i64,
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::add_clip_to_collection(self, collection_id, clip_id).await
+    }
+
+    pub async fn add_clips_to_collection(
+        &self,
+        collection_id: i64,
+        clip_ids: &[i64],
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::add_clips_to_collection(self, collection_id, clip_ids).await
+    }
+
+    pub async fn remove_clip_from_collection(
+        &self,
+        collection_id: i64,
+        clip_id: i64,
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::remove_clip_from_collection(self, collection_id, clip_id).await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn move_clip_within_collection(
+        &self,
+        collection_id: i64,
+        clip_id: i64,
+        direction: i32,
+    ) -> Result<(), ClipStoreError> {
+        clips_repo::move_clip_within_collection(self, collection_id, clip_id, direction).await
+    }
+
     pub async fn all_clips(&self) -> Result<Vec<ClipRecord>, ClipStoreError> {
         clips_repo::all_clips(self).await
     }
@@ -2347,12 +2571,35 @@ impl ClipStore {
         }
 
         let clip_alert_links = entities::clip_alert_links::Entity::find()
-            .filter(entities::clip_alert_links::Column::ClipId.is_in(clip_ids))
+            .filter(entities::clip_alert_links::Column::ClipId.is_in(clip_ids.clone()))
             .all(&self.pool)
             .await?;
         let mut alert_counts = HashMap::<i64, u32>::new();
         for alert_link in clip_alert_links {
             *alert_counts.entry(alert_link.clip_id).or_default() += 1;
+        }
+
+        let clip_tags = entities::clip_tags::Entity::find()
+            .filter(entities::clip_tags::Column::ClipId.is_in(clip_ids.clone()))
+            .order_by_asc(entities::clip_tags::Column::TagName)
+            .order_by_asc(entities::clip_tags::Column::Id)
+            .all(&self.pool)
+            .await?;
+        let mut tags_by_clip =
+            clip_tags
+                .into_iter()
+                .fold(HashMap::<i64, Vec<String>>::new(), |mut acc, tag| {
+                    acc.entry(tag.clip_id).or_default().push(tag.tag_name);
+                    acc
+                });
+
+        let collection_memberships = entities::collection_clips::Entity::find()
+            .filter(entities::collection_clips::Column::ClipId.is_in(clip_ids.clone()))
+            .all(&self.pool)
+            .await?;
+        let mut collection_counts = HashMap::<i64, u32>::new();
+        for membership in collection_memberships {
+            *collection_counts.entry(membership.clip_id).or_default() += 1;
         }
 
         let zone_ids = clip_models
@@ -2395,10 +2642,14 @@ impl ClipStore {
                     honu_session_id: clip.honu_session_id,
                     path,
                     file_size_bytes: file_size_bytes_for_path(clip.path.as_deref()),
+                    favorited: clip.favorited,
                     overlap_count: overlap_counts.remove(&clip.id).unwrap_or_default(),
                     alert_count: alert_counts.remove(&clip.id).unwrap_or_default(),
+                    collection_count: collection_counts.remove(&clip.id).unwrap_or_default(),
+                    collection_sequence_index: None,
                     post_process_status: PostProcessStatus::from_entity(clip.post_process_status),
                     post_process_error: clip.post_process_error,
+                    tags: tags_by_clip.remove(&clip.id).unwrap_or_default(),
                     events: events_by_clip.remove(&clip.id).unwrap_or_default(),
                 })
             })
@@ -2464,5 +2715,7 @@ struct ClipExportRecord {
     honu_session_id: Option<i64>,
     path: Option<String>,
     file_size_bytes: Option<u64>,
+    favorited: bool,
+    tags: Vec<String>,
     events: Vec<ClipEventContribution>,
 }

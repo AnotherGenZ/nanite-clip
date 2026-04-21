@@ -185,25 +185,24 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
 // ---------------------------------------------------------------------------
 
 pub(in crate::app) fn view(app: &App) -> Element<'_, Message> {
-    let header = page_header("Stats")
-        .action(
-            row![
-                with_tooltip(
-                    styled_button("Export", ButtonTone::Secondary)
-                        .on_press(Message::ExportStats)
-                        .into(),
-                    "Copy a markdown summary to the clipboard.",
-                ),
-                with_tooltip(
-                    styled_button("Refresh", ButtonTone::Secondary)
-                        .on_press(Message::Refresh)
-                        .into(),
-                    "Reload from the database.",
-                ),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        );
+    let header = page_header("Stats").action(
+        row![
+            with_tooltip(
+                styled_button("Export", ButtonTone::Secondary)
+                    .on_press(Message::ExportStats)
+                    .into(),
+                "Copy a markdown summary to the clipboard.",
+            ),
+            with_tooltip(
+                styled_button("Refresh", ButtonTone::Secondary)
+                    .on_press(Message::Refresh)
+                    .into(),
+                "Reload from the database.",
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+    );
 
     // Time-range toolbar
     let mut time_bar = toolbar();
