@@ -317,6 +317,12 @@ pub enum OrganizationEditor {
     Collection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingCollectionMembership {
+    Clip(i64),
+    SelectedClips,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectionSelectOption {
     pub id: i64,
@@ -1035,7 +1041,8 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 return update(app, Message::AddClipToCollectionRequested(clip_id));
             }
 
-            app.clips.pending_collection_membership_clip_id = Some(clip_id);
+            app.clips.pending_collection_membership =
+                Some(PendingCollectionMembership::Clip(clip_id));
             update(app, Message::CreateCollectionRequested)
         }
         Message::RemoveClipFromCollectionRequested {
@@ -1154,15 +1161,31 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
             )
         }
         Message::AddSelectedToCurrentCollectionRequested => {
-            let Some(collection_id) = app.clips.selected_collection_add_id else {
-                app.set_clip_error("Select a collection first.");
-                return Task::none();
-            };
             let clip_ids = app.clips.montage_selection.clone();
             if clip_ids.is_empty() {
                 app.set_clip_error("Select one or more clips first.");
                 return Task::none();
             }
+            let collection_id = if let Some(collection_id) = app.clips.selected_collection_add_id {
+                collection_id
+            } else {
+                let name = app.clips.new_collection_name.trim().to_string();
+                if name.is_empty() {
+                    app.set_clip_error("Choose or type a collection first.");
+                    return Task::none();
+                }
+                if let Some((collection_id, collection_name)) = find_collection_by_name(app, &name)
+                    .map(|collection| (collection.id, collection.name.clone()))
+                {
+                    app.clips.selected_collection_add_id = Some(collection_id);
+                    app.clips.new_collection_name = collection_name;
+                    collection_id
+                } else {
+                    app.clips.pending_collection_membership =
+                        Some(PendingCollectionMembership::SelectedClips);
+                    return update(app, Message::CreateCollectionRequested);
+                }
+            };
             let Some(store) = app.clip_store.clone() else {
                 return Task::none();
             };
@@ -1199,14 +1222,18 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 app.clips.new_collection_name.clear();
                 app.clips.new_collection_description.clear();
                 app.clips.selected_collection_add_id = Some(collection.id);
-                if let Some(clip_id) = app.clips.pending_collection_membership_clip_id.take() {
-                    update(app, Message::AddClipToCollectionRequested(clip_id))
-                } else {
-                    refresh_clip_organization(app)
+                match app.clips.pending_collection_membership.take() {
+                    Some(PendingCollectionMembership::Clip(clip_id)) => {
+                        update(app, Message::AddClipToCollectionRequested(clip_id))
+                    }
+                    Some(PendingCollectionMembership::SelectedClips) => {
+                        update(app, Message::AddSelectedToCurrentCollectionRequested)
+                    }
+                    None => refresh_clip_organization(app),
                 }
             }
             Err(error) => {
-                app.clips.pending_collection_membership_clip_id = None;
+                app.clips.pending_collection_membership = None;
                 app.set_clip_error(error);
                 Task::none()
             }
@@ -1957,7 +1984,7 @@ fn clip_workspace(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn clip_history_panel(app: &App) -> Element<'static, Message> {
+fn clip_history_panel(app: &App) -> Element<'_, Message> {
     let visible = app.clips.history.len();
     let total = app.clips.history_source.len();
     let page = app.clips.history_page;
@@ -1969,8 +1996,7 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
         let collection_options = collection_select_options(&app.clips.filter_options.collections);
         let selected_collection = collection_options
             .iter()
-            .find(|option| Some(option.id) == app.clips.selected_collection_add_id)
-            .cloned();
+            .find(|option| Some(option.id) == app.clips.selected_collection_add_id);
         let gallery_enabled = app.clips.browser_mode == ClipBrowserMode::Gallery;
         let detail_label: &'static str = if app.clips.detail_loading {
             "Detail loading"
@@ -2042,28 +2068,26 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
         if montage_count == 0 {
             summary_bar
         } else {
-            let collection_picker: Element<'static, Message> = if collection_options.is_empty() {
-                styled_button("No collections yet", ButtonTone::Secondary).into()
-            } else {
-                pick_list(
-                    collection_options,
-                    selected_collection,
-                    Message::CollectionAddSelectionChanged,
-                )
-                .width(Length::Fixed(220.0))
-                .placeholder("Choose collection")
-                .into()
-            };
+            let collection_editor = iced::widget::combo_box(
+                &app.clips.bulk_collection_editor_options,
+                "Search or type a collection",
+                selected_collection,
+                Message::CollectionAddSelectionChanged,
+            )
+            .on_input(Message::NewCollectionNameChanged)
+            .width(Length::FillPortion(3));
 
             let add_to_collection: Element<'static, Message> =
-                if app.clips.selected_collection_add_id.is_some() {
+                if app.clips.selected_collection_add_id.is_some()
+                    || !app.clips.new_collection_name.trim().is_empty()
+                {
                     styled_button("Add to collection", ButtonTone::Secondary)
                         .on_press(Message::AddSelectedToCurrentCollectionRequested)
                         .into()
                 } else {
                     with_tooltip(
                         styled_button("Add to collection", ButtonTone::Secondary).into(),
-                        "Choose a collection in the picker first.",
+                        "Choose an existing collection or type a new one first.",
                     )
                 };
 
@@ -2071,30 +2095,14 @@ fn clip_history_panel(app: &App) -> Element<'static, Message> {
                 summary_bar,
                 row![
                     clips_badge(format!("{montage_count} selected"), BadgeTone::Success),
-                    if app.clips.filter_options.collections.is_empty() {
-                        text("Type a collection name below and press Enter to create it.")
-                            .size(12)
-                            .into()
-                    } else {
-                        collection_picker
-                    },
+                    text("Search existing collections or type a new name.").size(12),
+                    Space::new().width(Length::Fill),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
-                row![
-                    text_input(
-                        "Choose existing or type new collection",
-                        &app.clips.new_collection_name
-                    )
-                    .on_input(Message::NewCollectionNameChanged)
-                    .on_submit(Message::CreateCollectionRequested)
-                    .width(Length::FillPortion(3)),
-                    styled_button("Create/select", ButtonTone::Secondary)
-                        .on_press(Message::CreateCollectionRequested),
-                    add_to_collection,
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
+                row![collection_editor, add_to_collection,]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 row![
                     styled_button("Favorite selected", ButtonTone::Secondary)
                         .on_press(Message::FavoriteSelectedRequested),
@@ -3995,9 +4003,11 @@ fn collection_filter_options(collections: &[ClipCollectionRecord]) -> Vec<Collec
 pub(in crate::app) fn sync_editor_options(app: &mut App) {
     app.clips.tag_editor_options =
         iced::widget::combo_box::State::new(app.clips.filter_options.tags.clone());
-    app.clips.collection_editor_options = iced::widget::combo_box::State::new(
-        collection_select_options(&app.clips.filter_options.collections),
-    );
+    let collection_options = collection_select_options(&app.clips.filter_options.collections);
+    app.clips.collection_editor_options =
+        iced::widget::combo_box::State::new(collection_options.clone());
+    app.clips.bulk_collection_editor_options =
+        iced::widget::combo_box::State::new(collection_options);
 }
 
 fn find_collection_by_name<'a>(app: &'a App, name: &str) -> Option<&'a ClipCollectionRecord> {
