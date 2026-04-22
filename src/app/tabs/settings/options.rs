@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(not(target_os = "windows"))]
 pub(super) fn pick_directory_impl(current_dir: String) -> Result<Option<String>, String> {
     let dialog_attempts = [
         ("zenity", build_zenity_args(current_dir.as_str())),

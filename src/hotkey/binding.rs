@@ -562,7 +562,9 @@ pub(crate) fn parse_hotkey(binding: &str) -> Result<HotKey, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_hotkey_registration(hotkey: HotKey) -> Result<WindowsHotkeyRegistration, String> {
+pub(super) fn windows_hotkey_registration(
+    hotkey: HotKey,
+) -> Result<WindowsHotkeyRegistration, String> {
     if let Some(virtual_key) = windows_virtual_key(hotkey.key) {
         return Ok(WindowsHotkeyRegistration::RegisterHotKey { virtual_key });
     }
@@ -578,7 +580,10 @@ fn windows_hotkey_registration(hotkey: HotKey) -> Result<WindowsHotkeyRegistrati
 }
 
 #[cfg(target_os = "windows")]
-fn register_windows_hotkey(hotkey: HotKey, virtual_key: VIRTUAL_KEY) -> Result<(), String> {
+pub(super) fn register_windows_hotkey(
+    hotkey: HotKey,
+    virtual_key: VIRTUAL_KEY,
+) -> Result<(), String> {
     let modifiers = windows_hotkey_modifiers(hotkey);
 
     // SAFETY: This is called on the dedicated hotkey worker thread after its message queue
@@ -628,7 +633,7 @@ fn unregister_windows_hotkey(hotkey: HotKey) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn register_windows_low_level_keyboard_hook(
+pub(super) fn register_windows_low_level_keyboard_hook(
     hotkey: HotKey,
     spec: WindowsHookSpec,
     sender: mpsc::Sender<HotkeyEvent>,
@@ -684,7 +689,7 @@ fn unregister_windows_low_level_keyboard_hook(hotkey: HotKey, hook: HHOOK) -> Re
 }
 
 #[cfg(target_os = "windows")]
-fn unregister_windows_registration(
+pub(super) fn unregister_windows_registration(
     hotkey: HotKey,
     registration: WindowsWorkerRegistration,
 ) -> Result<(), String> {
