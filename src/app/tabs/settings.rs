@@ -26,6 +26,7 @@ use crate::ui::app::{
     text_input,
 };
 use crate::ui::layout::card::card;
+use crate::ui::layout::collapsible_header::collapsible_header;
 use crate::ui::layout::empty_state::empty_state;
 use crate::ui::layout::page_header::page_header;
 use crate::ui::layout::panel::panel;
@@ -58,6 +59,15 @@ pub enum SettingsSubView {
     Clips,
     Delivery,
     System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliverySection {
+    StorageTiering,
+    Copyparty,
+    S3,
+    YouTube,
+    DiscordWebhook,
 }
 
 #[derive(Debug, Clone)]
@@ -107,12 +117,26 @@ pub enum Message {
     StorageMaxScoreStepped(i32),
     RunStorageTieringSweep,
     BackfillThumbnails,
+    ToggleDeliverySection(DeliverySection),
     CopypartyEnabledToggled(bool),
     CopypartyUploadUrlChanged(String),
     CopypartyPublicBaseUrlChanged(String),
     CopypartyUsernameChanged(String),
     CopypartyPasswordChanged(String),
     ClearCopypartyPassword,
+    S3EnabledToggled(bool),
+    S3BucketChanged(String),
+    S3RegionChanged(String),
+    S3EndpointUrlChanged(String),
+    S3PublicBaseUrlChanged(String),
+    S3KeyPrefixChanged(String),
+    S3AccessKeyIdChanged(String),
+    S3CannedAclChanged(String),
+    S3PathStyleToggled(bool),
+    S3SecretAccessKeyChanged(String),
+    ClearS3SecretAccessKey,
+    S3SessionTokenChanged(String),
+    ClearS3SessionToken,
     YouTubeEnabledToggled(bool),
     YouTubeClientIdChanged(String),
     YouTubeClientSecretChanged(String),
@@ -453,6 +477,16 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
         }
         Message::RunStorageTieringSweep => iced::Task::done(AppMessage::RunStorageTieringSweep),
         Message::BackfillThumbnails => iced::Task::done(AppMessage::RunThumbnailBackfill),
+        Message::ToggleDeliverySection(section) => {
+            if app.settings.collapsed_delivery_sections.contains(&section) {
+                app.settings
+                    .collapsed_delivery_sections
+                    .retain(|value| *value != section);
+            } else {
+                app.settings.collapsed_delivery_sections.push(section);
+            }
+            iced::Task::none()
+        }
         Message::CopypartyEnabledToggled(value) => {
             app.settings.copyparty_enabled = value;
             iced::Task::none()
@@ -483,6 +517,80 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                     app.settings.copyparty_password_present = false;
                     app.settings.copyparty_password_input.clear();
                     app.set_settings_feedback("Cleared the stored Copyparty password.", false);
+                }
+                Err(error) => app.set_settings_feedback(error, false),
+            }
+            iced::Task::none()
+        }
+        Message::S3EnabledToggled(value) => {
+            app.settings.s3_enabled = value;
+            iced::Task::none()
+        }
+        Message::S3BucketChanged(value) => {
+            app.settings.s3_bucket = value;
+            iced::Task::none()
+        }
+        Message::S3RegionChanged(value) => {
+            app.settings.s3_region = value;
+            iced::Task::none()
+        }
+        Message::S3EndpointUrlChanged(value) => {
+            app.settings.s3_endpoint_url = value;
+            iced::Task::none()
+        }
+        Message::S3PublicBaseUrlChanged(value) => {
+            app.settings.s3_public_base_url = value;
+            iced::Task::none()
+        }
+        Message::S3KeyPrefixChanged(value) => {
+            app.settings.s3_key_prefix = value;
+            iced::Task::none()
+        }
+        Message::S3AccessKeyIdChanged(value) => {
+            app.settings.s3_access_key_id = value;
+            iced::Task::none()
+        }
+        Message::S3CannedAclChanged(value) => {
+            app.settings.s3_canned_acl = value;
+            iced::Task::none()
+        }
+        Message::S3PathStyleToggled(value) => {
+            app.settings.s3_path_style = value;
+            iced::Task::none()
+        }
+        Message::S3SecretAccessKeyChanged(value) => {
+            app.settings.s3_secret_access_key_input = value;
+            iced::Task::none()
+        }
+        Message::ClearS3SecretAccessKey => {
+            match app
+                .platform
+                .secure_store()
+                .delete(SecretKey::S3SecretAccessKey)
+            {
+                Ok(()) => {
+                    app.settings.s3_secret_access_key_present = false;
+                    app.settings.s3_secret_access_key_input.clear();
+                    app.set_settings_feedback("Cleared the stored S3 secret access key.", false);
+                }
+                Err(error) => app.set_settings_feedback(error, false),
+            }
+            iced::Task::none()
+        }
+        Message::S3SessionTokenChanged(value) => {
+            app.settings.s3_session_token_input = value;
+            iced::Task::none()
+        }
+        Message::ClearS3SessionToken => {
+            match app
+                .platform
+                .secure_store()
+                .delete(SecretKey::S3SessionToken)
+            {
+                Ok(()) => {
+                    app.settings.s3_session_token_present = false;
+                    app.settings.s3_session_token_input.clear();
+                    app.set_settings_feedback("Cleared the stored S3 session token.", false);
                 }
                 Err(error) => app.set_settings_feedback(error, false),
             }
@@ -822,6 +930,15 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
             app.config.uploads.copyparty.public_base_url =
                 app.settings.copyparty_public_base_url.clone();
             app.config.uploads.copyparty.username = app.settings.copyparty_username.clone();
+            app.config.uploads.s3.enabled = app.settings.s3_enabled;
+            app.config.uploads.s3.bucket = app.settings.s3_bucket.clone();
+            app.config.uploads.s3.region = app.settings.s3_region.clone();
+            app.config.uploads.s3.endpoint_url = app.settings.s3_endpoint_url.clone();
+            app.config.uploads.s3.public_base_url = app.settings.s3_public_base_url.clone();
+            app.config.uploads.s3.key_prefix = app.settings.s3_key_prefix.clone();
+            app.config.uploads.s3.access_key_id = app.settings.s3_access_key_id.clone();
+            app.config.uploads.s3.canned_acl = app.settings.s3_canned_acl.clone();
+            app.config.uploads.s3.path_style = app.settings.s3_path_style;
             app.config.uploads.youtube.enabled = app.settings.youtube_enabled;
             app.config.uploads.youtube.client_id = app.settings.youtube_client_id.clone();
             app.config.uploads.youtube.privacy_status = app.settings.youtube_privacy_status;
@@ -914,6 +1031,30 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> iced::Task<AppM
                 }
                 app.settings.copyparty_password_present = true;
                 app.settings.copyparty_password_input.clear();
+            }
+
+            if !app.settings.s3_secret_access_key_input.trim().is_empty() {
+                if let Err(error) = app.platform.secure_store().set(
+                    SecretKey::S3SecretAccessKey,
+                    app.settings.s3_secret_access_key_input.trim(),
+                ) {
+                    app.set_settings_feedback(error, false);
+                    return iced::Task::none();
+                }
+                app.settings.s3_secret_access_key_present = true;
+                app.settings.s3_secret_access_key_input.clear();
+            }
+
+            if !app.settings.s3_session_token_input.trim().is_empty() {
+                if let Err(error) = app.platform.secure_store().set(
+                    SecretKey::S3SessionToken,
+                    app.settings.s3_session_token_input.trim(),
+                ) {
+                    app.set_settings_feedback(error, false);
+                    return iced::Task::none();
+                }
+                app.settings.s3_session_token_present = true;
+                app.settings.s3_session_token_input.clear();
             }
 
             if !app.settings.youtube_client_secret_input.trim().is_empty() {
@@ -1237,6 +1378,17 @@ fn settings_dirty(app: &App) -> bool {
         || app.settings.copyparty_public_base_url != app.config.uploads.copyparty.public_base_url
         || app.settings.copyparty_username != app.config.uploads.copyparty.username
         || !app.settings.copyparty_password_input.trim().is_empty()
+        || app.settings.s3_enabled != app.config.uploads.s3.enabled
+        || app.settings.s3_bucket != app.config.uploads.s3.bucket
+        || app.settings.s3_region != app.config.uploads.s3.region
+        || app.settings.s3_endpoint_url != app.config.uploads.s3.endpoint_url
+        || app.settings.s3_public_base_url != app.config.uploads.s3.public_base_url
+        || app.settings.s3_key_prefix != app.config.uploads.s3.key_prefix
+        || app.settings.s3_access_key_id != app.config.uploads.s3.access_key_id
+        || app.settings.s3_canned_acl != app.config.uploads.s3.canned_acl
+        || app.settings.s3_path_style != app.config.uploads.s3.path_style
+        || !app.settings.s3_secret_access_key_input.trim().is_empty()
+        || !app.settings.s3_session_token_input.trim().is_empty()
         || app.settings.youtube_enabled != app.config.uploads.youtube.enabled
         || app.settings.youtube_client_id != app.config.uploads.youtube.client_id
         || !app.settings.youtube_client_secret_input.trim().is_empty()
@@ -1316,6 +1468,17 @@ fn apply_settings_draft_from_config(app: &mut App) {
     app.settings.copyparty_public_base_url = app.config.uploads.copyparty.public_base_url.clone();
     app.settings.copyparty_username = app.config.uploads.copyparty.username.clone();
     app.settings.copyparty_password_input.clear();
+    app.settings.s3_enabled = app.config.uploads.s3.enabled;
+    app.settings.s3_bucket = app.config.uploads.s3.bucket.clone();
+    app.settings.s3_region = app.config.uploads.s3.region.clone();
+    app.settings.s3_endpoint_url = app.config.uploads.s3.endpoint_url.clone();
+    app.settings.s3_public_base_url = app.config.uploads.s3.public_base_url.clone();
+    app.settings.s3_key_prefix = app.config.uploads.s3.key_prefix.clone();
+    app.settings.s3_access_key_id = app.config.uploads.s3.access_key_id.clone();
+    app.settings.s3_canned_acl = app.config.uploads.s3.canned_acl.clone();
+    app.settings.s3_path_style = app.config.uploads.s3.path_style;
+    app.settings.s3_secret_access_key_input.clear();
+    app.settings.s3_session_token_input.clear();
     app.settings.youtube_enabled = app.config.uploads.youtube.enabled;
     app.settings.youtube_client_id = app.config.uploads.youtube.client_id.clone();
     app.settings.youtube_client_secret_input.clear();
@@ -1932,147 +2095,155 @@ fn clip_output_panel(app: &App) -> Element<'_, Message> {
 }
 
 fn delivery_panel(app: &App) -> Element<'_, Message> {
-    let mut youtube_section = section("YouTube").push(settings_toggle_row(
+    let mut youtube_rows: Vec<Element<'_, Message>> = vec![settings_toggle_row(
         "Enable YouTube Uploads",
         "",
         app.settings.youtube_enabled,
         Message::YouTubeEnabledToggled,
-    ));
+    )];
 
     if app.settings.youtube_enabled {
-        youtube_section = youtube_section
-            .push(settings_text_field(
-                "YouTube OAuth Client ID",
-                "Desktop App client recommended.",
-                &app.settings.youtube_client_id,
-                Message::YouTubeClientIdChanged,
-            ))
-            .push(settings_text_field(
-                if app.settings.youtube_client_secret_present {
-                    "YouTube OAuth Client Secret (stored)"
-                } else {
-                    "YouTube OAuth Client Secret"
-                },
-                "Paste to replace.",
-                &app.settings.youtube_client_secret_input,
-                Message::YouTubeClientSecretChanged,
-            ));
+        youtube_rows.push(settings_text_field(
+            "YouTube OAuth Client ID",
+            "Desktop App client recommended.",
+            &app.settings.youtube_client_id,
+            Message::YouTubeClientIdChanged,
+        ));
+        youtube_rows.push(settings_text_field(
+            if app.settings.youtube_client_secret_present {
+                "YouTube OAuth Client Secret (stored)"
+            } else {
+                "YouTube OAuth Client Secret"
+            },
+            "Paste to replace.",
+            &app.settings.youtube_client_secret_input,
+            Message::YouTubeClientSecretChanged,
+        ));
 
         if !app.settings.youtube_client_secret_present
             && app.settings.youtube_client_secret_input.trim().is_empty()
         {
-            youtube_section = youtube_section.push(
+            youtube_rows.push(
                 banner("Client secret required for some OAuth clients")
                     .warning()
                     .description("Required for web OAuth clients.")
-                    .build(),
+                    .build()
+                    .into(),
             );
         }
 
-        youtube_section = youtube_section
-            .push(settings_pick_list_field(
-                "YouTube Privacy",
-                "",
-                &[
-                    YouTubePrivacyStatus::Public,
-                    YouTubePrivacyStatus::Unlisted,
-                    YouTubePrivacyStatus::Private,
-                ][..],
-                Some(app.settings.youtube_privacy_status),
-                Message::YouTubePrivacyStatusSelected,
-            ))
-            .push(
-                row![
-                    settings_status_badge(
-                        if app.settings.youtube_refresh_token_present {
-                            "Account connected"
+        youtube_rows.push(settings_pick_list_field(
+            "YouTube Privacy",
+            "",
+            &[
+                YouTubePrivacyStatus::Public,
+                YouTubePrivacyStatus::Unlisted,
+                YouTubePrivacyStatus::Private,
+            ][..],
+            Some(app.settings.youtube_privacy_status),
+            Message::YouTubePrivacyStatusSelected,
+        ));
+        youtube_rows.push(
+            row![
+                settings_status_badge(
+                    if app.settings.youtube_refresh_token_present {
+                        "Account connected"
+                    } else {
+                        "No account connected"
+                    },
+                    if app.settings.youtube_refresh_token_present {
+                        BadgeTone::Success
+                    } else {
+                        BadgeTone::Neutral
+                    },
+                ),
+                with_tooltip(
+                    {
+                        let button = styled_button("Connect YouTube", ButtonTone::Secondary);
+                        if app.settings.youtube_oauth_in_flight {
+                            button.into()
                         } else {
-                            "No account connected"
-                        },
-                        if app.settings.youtube_refresh_token_present {
-                            BadgeTone::Success
-                        } else {
-                            BadgeTone::Neutral
-                        },
-                    ),
-                    with_tooltip(
-                        {
-                            let button = styled_button("Connect YouTube", ButtonTone::Secondary);
-                            if app.settings.youtube_oauth_in_flight {
-                                button.into()
-                            } else {
-                                button.on_press(Message::ConnectYouTube).into()
-                            }
-                        },
-                        "Authorize.",
-                    ),
-                    with_tooltip(
-                        styled_button("Disconnect YouTube", ButtonTone::Danger)
-                            .on_press(Message::DisconnectYouTube)
-                            .into(),
-                        "Remove credentials.",
-                    ),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            );
+                            button.on_press(Message::ConnectYouTube).into()
+                        }
+                    },
+                    "Authorize.",
+                ),
+                with_tooltip(
+                    styled_button("Disconnect YouTube", ButtonTone::Danger)
+                        .on_press(Message::DisconnectYouTube)
+                        .into(),
+                    "Remove credentials.",
+                ),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
+        );
     } else {
-        youtube_section = youtube_section.push(text("Enable to configure.").size(12));
+        youtube_rows.push(text("Enable to configure.").size(12).into());
     }
 
     panel("Delivery & Storage")
-        .push(settings_section_block("Storage Tiering", "", {
-            let mut rows = vec![settings_toggle_row(
-                "Enable Storage Tiering",
-                "",
-                app.settings.storage_tiering_enabled,
-                Message::StorageTieringEnabledToggled,
-            )];
+        .push(settings_collapsible_section_block(
+            "Storage Tiering",
+            "",
+            DeliverySection::StorageTiering,
+            app,
+            {
+                let mut rows = vec![settings_toggle_row(
+                    "Enable Storage Tiering",
+                    "",
+                    app.settings.storage_tiering_enabled,
+                    Message::StorageTieringEnabledToggled,
+                )];
 
-            if app.settings.storage_tiering_enabled {
-                rows.extend([
-                    settings_text_field_with_button(
-                        "Archive Directory",
-                        "",
-                        &app.settings.storage_tier_directory,
-                        Message::StorageTierDirectoryChanged,
-                        with_tooltip(
-                            styled_button("Browse", ButtonTone::Secondary)
-                                .on_press(Message::PickStorageTierDirectory)
-                                .into(),
-                            "Pick archive folder.",
+                if app.settings.storage_tiering_enabled {
+                    rows.extend([
+                        settings_text_field_with_button(
+                            "Archive Directory",
+                            "",
+                            &app.settings.storage_tier_directory,
+                            Message::StorageTierDirectoryChanged,
+                            with_tooltip(
+                                styled_button("Browse", ButtonTone::Secondary)
+                                    .on_press(Message::PickStorageTierDirectory)
+                                    .into(),
+                                "Pick archive folder.",
+                            ),
                         ),
-                    ),
-                    settings_stepper_field(
-                        "Archive After",
-                        "",
-                        current_storage_min_age_days(app),
-                        "days",
-                        Message::StorageMinAgeDaysStepped,
-                    ),
-                    settings_stepper_field(
-                        "Archive Score Ceiling",
-                        "",
-                        current_storage_max_score(app),
-                        "pts",
-                        Message::StorageMaxScoreStepped,
-                    ),
-                    with_tooltip(
-                        styled_button("Run Tiering Sweep", ButtonTone::Secondary)
-                            .on_press(Message::RunStorageTieringSweep)
-                            .into(),
-                        "Archive eligible clips now.",
-                    ),
-                ]);
-            } else {
-                rows.push(text("Enable to configure.").size(12).into());
-            }
+                        settings_stepper_field(
+                            "Archive After",
+                            "",
+                            current_storage_min_age_days(app),
+                            "days",
+                            Message::StorageMinAgeDaysStepped,
+                        ),
+                        settings_stepper_field(
+                            "Archive Score Ceiling",
+                            "",
+                            current_storage_max_score(app),
+                            "pts",
+                            Message::StorageMaxScoreStepped,
+                        ),
+                        with_tooltip(
+                            styled_button("Run Tiering Sweep", ButtonTone::Secondary)
+                                .on_press(Message::RunStorageTieringSweep)
+                                .into(),
+                            "Archive eligible clips now.",
+                        ),
+                    ]);
+                } else {
+                    rows.push(text("Enable to configure.").size(12).into());
+                }
 
-            rows
-        }))
-        .push(settings_section_block(
+                rows
+            },
+        ))
+        .push(settings_collapsible_section_block(
             "Copyparty",
-            "Credentials stored securely.",
+            "",
+            DeliverySection::Copyparty,
+            app,
             {
                 let mut rows = vec![settings_toggle_row(
                     "Enable Copyparty Uploads",
@@ -2142,70 +2313,219 @@ fn delivery_panel(app: &App) -> Element<'_, Message> {
                 rows
             },
         ))
-        .push(youtube_section)
-        .push(settings_section_block("Discord Webhook", "", {
-            let mut rows = vec![settings_toggle_row(
-                "Enable Discord Webhook",
-                "",
-                app.settings.discord_enabled,
-                Message::DiscordWebhookEnabledToggled,
-            )];
+        .push(settings_collapsible_section_block(
+            "S3",
+            "AWS S3 or compatible object storage",
+            DeliverySection::S3,
+            app,
+            {
+                let mut rows = vec![settings_toggle_row(
+                    "Enable S3 Uploads",
+                    "",
+                    app.settings.s3_enabled,
+                    Message::S3EnabledToggled,
+                )];
 
-            if app.settings.discord_enabled {
-                rows.extend([
-                    settings_stepper_field(
-                        "Minimum Score",
-                        "",
-                        current_discord_min_score(app),
-                        "pts",
-                        Message::DiscordMinScoreStepped,
-                    ),
-                    settings_toggle_row(
-                        "Attach Thumbnail",
-                        "",
-                        app.settings.discord_include_thumbnail,
-                        Message::DiscordIncludeThumbnailToggled,
-                    ),
-                    settings_text_field(
-                        if app.settings.discord_webhook_present {
-                            "Discord Webhook URL (stored)"
-                        } else {
-                            "Discord Webhook URL"
-                        },
-                        "Paste to replace.",
-                        &app.settings.discord_webhook_input,
-                        Message::DiscordWebhookUrlChanged,
-                    ),
-                    row![
-                        settings_status_badge(
-                            if app.settings.discord_webhook_present {
-                                "Webhook stored"
-                            } else {
-                                "No webhook stored"
-                            },
-                            if app.settings.discord_webhook_present {
-                                BadgeTone::Success
-                            } else {
-                                BadgeTone::Neutral
-                            },
+                if app.settings.s3_enabled {
+                    rows.extend([
+                        settings_text_field(
+                            "Bucket",
+                            "Required.",
+                            &app.settings.s3_bucket,
+                            Message::S3BucketChanged,
                         ),
-                        with_tooltip(
-                            styled_button("Clear Discord Webhook", ButtonTone::Danger)
-                                .on_press(Message::ClearDiscordWebhook)
-                                .into(),
-                            "Clear stored URL.",
+                        settings_text_field(
+                            "Region",
+                            "Default: us-east-1.",
+                            &app.settings.s3_region,
+                            Message::S3RegionChanged,
                         ),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center)
-                    .into(),
-                ]);
-            } else {
-                rows.push(text("Enable to configure.").size(12).into());
-            }
+                        settings_text_field(
+                            "Endpoint URL",
+                            "Optional for S3-compatible providers.",
+                            &app.settings.s3_endpoint_url,
+                            Message::S3EndpointUrlChanged,
+                        ),
+                        settings_text_field(
+                            "Public Base URL",
+                            "Optional override for shareable links.",
+                            &app.settings.s3_public_base_url,
+                            Message::S3PublicBaseUrlChanged,
+                        ),
+                        settings_text_field(
+                            "Key Prefix",
+                            "Optional folder/prefix inside the bucket.",
+                            &app.settings.s3_key_prefix,
+                            Message::S3KeyPrefixChanged,
+                        ),
+                        settings_text_field(
+                            "Access Key ID",
+                            "Required.",
+                            &app.settings.s3_access_key_id,
+                            Message::S3AccessKeyIdChanged,
+                        ),
+                        settings_text_field(
+                            "Canned ACL",
+                            "Optional, e.g. public-read.",
+                            &app.settings.s3_canned_acl,
+                            Message::S3CannedAclChanged,
+                        ),
+                        settings_toggle_row(
+                            "Use Path-Style Requests",
+                            "Needed by some S3-compatible endpoints.",
+                            app.settings.s3_path_style,
+                            Message::S3PathStyleToggled,
+                        ),
+                        settings_text_field(
+                            if app.settings.s3_secret_access_key_present {
+                                "S3 Secret Access Key (stored)"
+                            } else {
+                                "S3 Secret Access Key"
+                            },
+                            "Paste to replace.",
+                            &app.settings.s3_secret_access_key_input,
+                            Message::S3SecretAccessKeyChanged,
+                        ),
+                        row![
+                            settings_status_badge(
+                                if app.settings.s3_secret_access_key_present {
+                                    "Secret key stored"
+                                } else {
+                                    "No secret key stored"
+                                },
+                                if app.settings.s3_secret_access_key_present {
+                                    BadgeTone::Success
+                                } else {
+                                    BadgeTone::Neutral
+                                },
+                            ),
+                            with_tooltip(
+                                styled_button("Clear S3 Secret", ButtonTone::Danger)
+                                    .on_press(Message::ClearS3SecretAccessKey)
+                                    .into(),
+                                "Clear the stored S3 secret access key.",
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                        settings_text_field(
+                            if app.settings.s3_session_token_present {
+                                "S3 Session Token (stored)"
+                            } else {
+                                "S3 Session Token"
+                            },
+                            "Optional. Paste to replace.",
+                            &app.settings.s3_session_token_input,
+                            Message::S3SessionTokenChanged,
+                        ),
+                        row![
+                            settings_status_badge(
+                                if app.settings.s3_session_token_present {
+                                    "Session token stored"
+                                } else {
+                                    "No session token stored"
+                                },
+                                if app.settings.s3_session_token_present {
+                                    BadgeTone::Success
+                                } else {
+                                    BadgeTone::Neutral
+                                },
+                            ),
+                            with_tooltip(
+                                styled_button("Clear S3 Session Token", ButtonTone::Danger)
+                                    .on_press(Message::ClearS3SessionToken)
+                                    .into(),
+                                "Clear the stored S3 session token.",
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ]);
+                } else {
+                    rows.push(text("Enable to configure.").size(12).into());
+                }
 
-            rows
-        }))
+                rows
+            },
+        ))
+        .push(settings_collapsible_section_block(
+            "YouTube",
+            "",
+            DeliverySection::YouTube,
+            app,
+            youtube_rows,
+        ))
+        .push(settings_collapsible_section_block(
+            "Discord Webhook",
+            "",
+            DeliverySection::DiscordWebhook,
+            app,
+            {
+                let mut rows = vec![settings_toggle_row(
+                    "Enable Discord Webhook",
+                    "",
+                    app.settings.discord_enabled,
+                    Message::DiscordWebhookEnabledToggled,
+                )];
+
+                if app.settings.discord_enabled {
+                    rows.extend([
+                        settings_stepper_field(
+                            "Minimum Score",
+                            "",
+                            current_discord_min_score(app),
+                            "pts",
+                            Message::DiscordMinScoreStepped,
+                        ),
+                        settings_toggle_row(
+                            "Attach Thumbnail",
+                            "",
+                            app.settings.discord_include_thumbnail,
+                            Message::DiscordIncludeThumbnailToggled,
+                        ),
+                        settings_text_field(
+                            if app.settings.discord_webhook_present {
+                                "Discord Webhook URL (stored)"
+                            } else {
+                                "Discord Webhook URL"
+                            },
+                            "Paste to replace.",
+                            &app.settings.discord_webhook_input,
+                            Message::DiscordWebhookUrlChanged,
+                        ),
+                        row![
+                            settings_status_badge(
+                                if app.settings.discord_webhook_present {
+                                    "Webhook stored"
+                                } else {
+                                    "No webhook stored"
+                                },
+                                if app.settings.discord_webhook_present {
+                                    BadgeTone::Success
+                                } else {
+                                    BadgeTone::Neutral
+                                },
+                            ),
+                            with_tooltip(
+                                styled_button("Clear Discord Webhook", ButtonTone::Danger)
+                                    .on_press(Message::ClearDiscordWebhook)
+                                    .into(),
+                                "Clear stored URL.",
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ]);
+                } else {
+                    rows.push(text("Enable to configure.").size(12).into());
+                }
+
+                rows
+            },
+        ))
         .build()
         .into()
 }
@@ -2657,6 +2977,36 @@ fn maintenance_panel(app: &App) -> Element<'_, Message> {
         ))
         .build()
         .into()
+}
+
+fn delivery_section_is_collapsed(app: &App, section: DeliverySection) -> bool {
+    app.settings.collapsed_delivery_sections.contains(&section)
+}
+
+fn settings_collapsible_section_block<'a>(
+    title: &'a str,
+    description: &'a str,
+    section: DeliverySection,
+    app: &App,
+    rows: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let collapsed = delivery_section_is_collapsed(app, section);
+    let mut block = column![collapsible_header(
+        title,
+        (!description.is_empty()).then(|| description.to_string()),
+        collapsed,
+        None,
+        Message::ToggleDeliverySection(section),
+    )]
+    .spacing(8)
+    .width(Length::Fill);
+    if !collapsed {
+        for row in rows {
+            block = block.push(row);
+        }
+    }
+
+    container(block).width(Length::Fill).into()
 }
 
 fn settings_section_block<'a>(

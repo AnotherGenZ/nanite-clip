@@ -22,6 +22,7 @@ use crate::ui::app::{
 };
 use crate::ui::data::pagination::pagination;
 use crate::ui::layout::card::card;
+use crate::ui::layout::collapsible_header::collapsible_header;
 use crate::ui::layout::empty_state::empty_state;
 use crate::ui::layout::page_header::page_header;
 use crate::ui::layout::panel::panel;
@@ -141,6 +142,7 @@ pub enum Message {
     ExportSubtitlesRequested(i64),
     SetStorageTier(i64, StorageTier),
     UploadToCopypartyRequested(i64),
+    UploadToS3Requested(i64),
     UploadToYouTubeRequested(i64),
     RetryPostProcessRequested(i64),
     UseOriginalAudioRequested(i64),
@@ -763,6 +765,10 @@ pub(in crate::app) fn update(app: &mut App, message: Message) -> Task<AppMessage
                 provider: UploadProvider::Copyparty,
             })
         }
+        Message::UploadToS3Requested(clip_id) => Task::done(AppMessage::UploadClipRequested {
+            clip_id,
+            provider: UploadProvider::S3,
+        }),
         Message::UploadToYouTubeRequested(clip_id) => Task::done(AppMessage::UploadClipRequested {
             clip_id,
             provider: UploadProvider::YouTube,
@@ -3006,12 +3012,20 @@ fn detail_actions_section(
 
     // Upload group
     let copyparty_state = upload_action_state(detail, UploadProvider::Copyparty);
+    let s3_state = upload_action_state(detail, UploadProvider::S3);
     let youtube_state = upload_action_state(detail, UploadProvider::YouTube);
     let copyparty_button = upload_button(
         clip_id,
         "Copyparty",
         UploadProvider::Copyparty,
         copyparty_state,
+        post_process_block,
+    );
+    let s3_button = upload_button(
+        clip_id,
+        "S3",
+        UploadProvider::S3,
+        s3_state,
         post_process_block,
     );
     let youtube_button = upload_button(
@@ -3035,9 +3049,14 @@ fn detail_actions_section(
                 .align_y(Alignment::Center),
         )
         .push(
-            row![label_chip("Upload"), copyparty_button, youtube_button]
-                .spacing(8)
-                .align_y(Alignment::Center),
+            row![
+                label_chip("Upload"),
+                copyparty_button,
+                s3_button,
+                youtube_button
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
         )
         .build()
         .into()
@@ -3172,6 +3191,7 @@ fn upload_button(
 
     let message = match provider {
         UploadProvider::Copyparty => Message::UploadToCopypartyRequested(clip_id),
+        UploadProvider::S3 => Message::UploadToS3Requested(clip_id),
         UploadProvider::YouTube => Message::UploadToYouTubeRequested(clip_id),
     };
 
@@ -3280,7 +3300,7 @@ fn organization_section<'a>(app: &'a App, detail: &'a ClipDetailRecord) -> Eleme
     .on_input(Message::DetailCollectionNameChanged)
     .width(Length::Fill);
 
-    let header = collapsible_header(
+    let header = detail_section_header(
         "Organization",
         Some("Favorite, tag, and place this clip into curated collections."),
         count,
@@ -3337,15 +3357,13 @@ fn section_is_collapsed(app: &App, section: DetailSection) -> bool {
     app.clips.collapsed_detail_sections.contains(&section)
 }
 
-fn collapsible_header(
+fn detail_section_header(
     title: impl Into<String>,
     description: Option<&'static str>,
     count: usize,
     section: DetailSection,
     collapsed: bool,
 ) -> Element<'static, Message> {
-    let arrow = if collapsed { "\u{25B8}" } else { "\u{25BE}" };
-    let title_text = format!("{arrow}  {}", title.into());
     let count_badge_tone = if count > 0 {
         BadgeTone::Outline
     } else {
@@ -3360,63 +3378,20 @@ fn collapsible_header(
         .tone(count_badge_tone)
         .build()
         .into();
-
-    let title_column: Element<'static, Message> = if let Some(desc) = description {
-        column![
-            text_non_selectable(title_text)
-                .size(14)
-                .style(|theme: &iced::Theme| TextStyle {
-                    color: Some(theme::tokens_for(theme).color.foreground),
-                }),
-            text_non_selectable(desc)
-                .size(11)
-                .style(|theme: &iced::Theme| TextStyle {
-                    color: Some(theme::tokens_for(theme).color.muted_foreground),
-                }),
-        ]
-        .spacing(2)
-        .into()
-    } else {
-        text_non_selectable(title_text)
-            .size(14)
-            .style(|theme: &iced::Theme| TextStyle {
-                color: Some(theme::tokens_for(theme).color.foreground),
-            })
-            .into()
-    };
-
-    let head = row![title_column, Space::new().width(Length::Fill), count_badge,]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-    let btn = button(container(head).padding([6, 8]))
-        .padding(0)
-        .style(
-            |theme: &iced::Theme, status: iced::widget::button::Status| {
-                let c = &theme::tokens_for(theme).color;
-                let bg = match status {
-                    iced::widget::button::Status::Hovered => Some(Background::Color(c.accent)),
-                    iced::widget::button::Status::Pressed => Some(Background::Color(c.muted)),
-                    _ => None,
-                };
-                iced::widget::button::Style {
-                    background: bg,
-                    text_color: c.foreground,
-                    border: theme::border(c.border, 1.0, theme::RADIUS.md),
-                    shadow: Default::default(),
-                    snap: false,
-                }
-            },
-        )
-        .on_press(Message::ToggleDetailSection(section));
-    btn.into()
+    collapsible_header(
+        title,
+        description.map(str::to_string),
+        collapsed,
+        Some(count_badge),
+        Message::ToggleDetailSection(section),
+    )
 }
 
 fn audio_tracks_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Message> {
     let count = detail.audio_tracks.len();
     let collapsed = section_is_collapsed(app, DetailSection::AudioTracks);
 
-    let header = collapsible_header(
+    let header = detail_section_header(
         "Audio tracks",
         Some("Per-stream gain, mute, and source info recorded during save."),
         count,
@@ -3467,7 +3442,7 @@ fn uploads_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Mes
     let count = detail.uploads.len();
     let collapsed = section_is_collapsed(app, DetailSection::Uploads);
 
-    let header = collapsible_header(
+    let header = detail_section_header(
         "Upload history",
         Some("Every attempted or completed upload across providers."),
         count,
@@ -3535,7 +3510,7 @@ fn alerts_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Mess
     let count = detail.alerts.len();
     let collapsed = section_is_collapsed(app, DetailSection::Alerts);
 
-    let header = collapsible_header(
+    let header = detail_section_header(
         "Alert context",
         Some("Alerts the clip was captured during."),
         count,
@@ -3592,7 +3567,7 @@ fn overlaps_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, Me
     let count = detail.overlaps.len();
     let collapsed = section_is_collapsed(app, DetailSection::Overlaps);
 
-    let header = collapsible_header(
+    let header = detail_section_header(
         "Overlap review",
         Some("Other saved clips whose timelines intersect this one."),
         count,
@@ -3669,7 +3644,7 @@ fn raw_events_section(app: &App, detail: &ClipDetailRecord) -> Element<'static, 
     let visible_count = filtered.len();
     let collapsed = section_is_collapsed(app, DetailSection::RawEvents);
 
-    let header = collapsible_header(
+    let header = detail_section_header(
         "Captured raw events",
         Some("Timeline offsets relative to the clip start."),
         total_count,

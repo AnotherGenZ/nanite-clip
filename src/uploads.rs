@@ -8,7 +8,7 @@ use std::time::Duration;
 
 pub(crate) use providers::*;
 use reqwest::Url;
-use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
+use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST, LOCATION};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -52,6 +52,20 @@ pub struct YouTubeUploadCredentials {
     pub client_secret: Option<String>,
     pub refresh_token: String,
     pub privacy_status: YouTubePrivacyStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct S3UploadCredentials {
+    pub bucket: String,
+    pub region: String,
+    pub endpoint_url: String,
+    pub public_base_url: String,
+    pub key_prefix: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+    pub canned_acl: String,
+    pub path_style: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +250,113 @@ pub async fn upload_to_youtube(
         external_id: Some(video_id),
         clip_url,
         note,
+    })
+}
+
+pub async fn upload_to_s3(
+    ctx: BackgroundJobContext,
+    request: UploadRequest,
+    credentials: S3UploadCredentials,
+) -> Result<UploadCompletion, String> {
+    info!(
+        clip_id = request.clip_id,
+        provider = %UploadProvider::S3.label(),
+        path = %request.clip_path.display(),
+        bucket = %credentials.bucket,
+        region = %credentials.region,
+        "Starting S3 upload"
+    );
+    ctx.progress(1, 3, "Preparing S3 upload.")?;
+
+    if credentials.bucket.trim().is_empty() {
+        return Err("Configure an S3 bucket in Settings before uploading.".into());
+    }
+    if credentials.access_key_id.trim().is_empty() {
+        return Err("Configure an S3 access key ID in Settings before uploading.".into());
+    }
+    if credentials.secret_access_key.trim().is_empty() {
+        return Err("Store an S3 secret access key in Settings before uploading.".into());
+    }
+
+    let bytes = tokio::fs::read(&request.clip_path)
+        .await
+        .map_err(|error| format!("failed to read {}: {error}", request.clip_path.display()))?;
+    let file_name = request
+        .clip_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("clip.mp4");
+    let object_key = build_s3_object_key(&credentials.key_prefix, file_name);
+    let object_url = build_s3_object_url(&credentials, &object_key)?;
+    let public_url = resolve_s3_clip_url(&credentials, &object_key, &object_url)?;
+    let content_type = upload_content_type(&request.clip_path);
+    let payload_sha256 = sha256_hex(&bytes);
+    let now = chrono::Utc::now();
+    let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let short_date = now.format("%Y%m%d").to_string();
+    let signed_request = sign_s3_put_request(S3SigningParams {
+        url: &object_url,
+        region: &credentials.region,
+        access_key_id: &credentials.access_key_id,
+        secret_access_key: &credentials.secret_access_key,
+        session_token: credentials.session_token.as_deref(),
+        canned_acl: if credentials.canned_acl.trim().is_empty() {
+            None
+        } else {
+            Some(credentials.canned_acl.as_str())
+        },
+        content_type,
+        payload_sha256: &payload_sha256,
+        amz_date: &amz_date,
+        short_date: &short_date,
+    })?;
+
+    ctx.progress(2, 3, "Uploading clip to S3.")?;
+
+    let mut request_builder = reqwest::Client::new()
+        .put(object_url.clone())
+        .header(HOST, signed_request.host)
+        .header(AUTHORIZATION, signed_request.authorization)
+        .header(CONTENT_TYPE, content_type)
+        .header("x-amz-content-sha256", payload_sha256)
+        .header("x-amz-date", amz_date)
+        .body(bytes);
+
+    if let Some(session_token) = signed_request.session_token {
+        request_builder = request_builder.header("x-amz-security-token", session_token);
+    }
+    if let Some(canned_acl) = signed_request.canned_acl {
+        request_builder = request_builder.header("x-amz-acl", canned_acl);
+    }
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(|error| format!("S3 upload request failed: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unable to read body".into());
+        return Err(format!("S3 upload failed with {status}: {body}"));
+    }
+
+    ctx.progress(3, 3, "S3 upload completed.")?;
+    info!(
+        clip_id = request.clip_id,
+        provider = %UploadProvider::S3.label(),
+        bucket = %credentials.bucket,
+        key = %object_key,
+        clip_url = ?public_url,
+        "S3 upload completed"
+    );
+    Ok(UploadCompletion {
+        provider: UploadProvider::S3,
+        provider_label: UploadProvider::S3.label().into(),
+        external_id: Some(format!("s3://{}/{}", credentials.bucket, object_key)),
+        clip_url: public_url,
+        note: None,
     })
 }
 

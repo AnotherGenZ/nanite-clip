@@ -84,6 +84,10 @@ pub(crate) fn default_copyparty_public_base_url() -> String {
     String::new()
 }
 
+pub(crate) fn default_s3_region() -> String {
+    "us-east-1".into()
+}
+
 pub(crate) fn default_discord_min_score() -> u32 {
     100
 }

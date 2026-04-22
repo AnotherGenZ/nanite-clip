@@ -14,6 +14,7 @@
 //! * [`stat`] — KPI card (label + value + optional delta)
 
 pub mod card;
+pub mod collapsible_header;
 pub mod empty_state;
 pub mod page_header;
 pub mod panel;

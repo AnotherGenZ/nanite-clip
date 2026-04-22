@@ -22,6 +22,8 @@ const WINDOWS_DPAPI_PREFIX: &str = "dpapi:";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecretKey {
     CopypartyPassword,
+    S3SecretAccessKey,
+    S3SessionToken,
     YoutubeClientSecret,
     YoutubeRefreshToken,
     DiscordWebhookUrl,
@@ -32,6 +34,8 @@ impl SecretKey {
     fn label(self) -> &'static str {
         match self {
             Self::CopypartyPassword => "Copyparty password",
+            Self::S3SecretAccessKey => "S3 secret access key",
+            Self::S3SessionToken => "S3 session token",
             Self::YoutubeClientSecret => "YouTube client secret",
             Self::YoutubeRefreshToken => "YouTube refresh token",
             Self::DiscordWebhookUrl => "Discord webhook URL",
@@ -42,6 +46,8 @@ impl SecretKey {
     fn entry_name(self) -> &'static str {
         match self {
             Self::CopypartyPassword => "copyparty_password",
+            Self::S3SecretAccessKey => "s3_secret_access_key",
+            Self::S3SessionToken => "s3_session_token",
             Self::YoutubeClientSecret => "youtube_client_secret",
             Self::YoutubeRefreshToken => "youtube_refresh_token",
             Self::DiscordWebhookUrl => "discord_webhook_url",
@@ -52,7 +58,9 @@ impl SecretKey {
     fn legacy_entry_names(self) -> &'static [&'static str] {
         match self {
             Self::CopypartyPassword => &["streamable_secret"],
-            Self::YoutubeClientSecret
+            Self::S3SecretAccessKey
+            | Self::S3SessionToken
+            | Self::YoutubeClientSecret
             | Self::YoutubeRefreshToken
             | Self::DiscordWebhookUrl
             | Self::ObsWebsocketPassword => &[],

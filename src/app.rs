@@ -60,7 +60,8 @@ use crate::update::{
     UpdateInstallBehavior, UpdatePhase, UpdatePrimaryAction, UpdateProgressState, UpdateState,
 };
 use crate::uploads::{
-    self, CopypartyUploadCredentials, YouTubeOAuthClient, YouTubeUploadCredentials,
+    self, CopypartyUploadCredentials, S3UploadCredentials, YouTubeOAuthClient,
+    YouTubeUploadCredentials,
 };
 use helpers::*;
 use state::{
@@ -481,6 +482,12 @@ impl App {
         let copyparty_password_present = secure_store
             .contains(SecretKey::CopypartyPassword)
             .unwrap_or(false);
+        let s3_secret_access_key_present = secure_store
+            .contains(SecretKey::S3SecretAccessKey)
+            .unwrap_or(false);
+        let s3_session_token_present = secure_store
+            .contains(SecretKey::S3SessionToken)
+            .unwrap_or(false);
         let youtube_client_secret_present = secure_store
             .contains(SecretKey::YoutubeClientSecret)
             .unwrap_or(false);
@@ -696,6 +703,19 @@ impl App {
                 copyparty_username: config.uploads.copyparty.username.clone(),
                 copyparty_password_input: String::new(),
                 copyparty_password_present,
+                s3_enabled: config.uploads.s3.enabled,
+                s3_bucket: config.uploads.s3.bucket.clone(),
+                s3_region: config.uploads.s3.region.clone(),
+                s3_endpoint_url: config.uploads.s3.endpoint_url.clone(),
+                s3_public_base_url: config.uploads.s3.public_base_url.clone(),
+                s3_key_prefix: config.uploads.s3.key_prefix.clone(),
+                s3_access_key_id: config.uploads.s3.access_key_id.clone(),
+                s3_canned_acl: config.uploads.s3.canned_acl.clone(),
+                s3_path_style: config.uploads.s3.path_style,
+                s3_secret_access_key_input: String::new(),
+                s3_secret_access_key_present,
+                s3_session_token_input: String::new(),
+                s3_session_token_present,
                 youtube_enabled: config.uploads.youtube.enabled,
                 youtube_client_id: config.uploads.youtube.client_id.clone(),
                 youtube_client_secret_input: String::new(),
@@ -708,6 +728,7 @@ impl App {
                 discord_include_thumbnail: config.discord_webhook.include_thumbnail,
                 discord_webhook_input: String::new(),
                 discord_webhook_present,
+                collapsed_delivery_sections: Vec::new(),
                 secure_store_backend_label: secure_store.backend().label().into(),
             },
             updates: UpdateUiState {
@@ -4604,6 +4625,7 @@ impl App {
         };
         let secure_store = self.platform.secure_store().clone();
         let copyparty = self.config.uploads.copyparty.clone();
+        let s3 = self.config.uploads.s3.clone();
         let youtube = self.config.uploads.youtube.clone();
 
         let job_id = self.background_jobs.start(
@@ -4661,6 +4683,32 @@ impl App {
                                 public_base_url: copyparty.public_base_url,
                                 username: copyparty.username,
                                 password,
+                            },
+                        )
+                        .await
+                    }
+                    UploadProvider::S3 => {
+                        let secret_access_key = secure_store
+                            .get(SecretKey::S3SecretAccessKey)?
+                            .ok_or_else(|| {
+                                "Store an S3 secret access key in Settings before uploading."
+                                    .to_string()
+                            })?;
+                        let session_token = secure_store.get(SecretKey::S3SessionToken)?;
+                        uploads::upload_to_s3(
+                            ctx,
+                            request,
+                            S3UploadCredentials {
+                                bucket: s3.bucket,
+                                region: s3.region,
+                                endpoint_url: s3.endpoint_url,
+                                public_base_url: s3.public_base_url,
+                                key_prefix: s3.key_prefix,
+                                access_key_id: s3.access_key_id,
+                                secret_access_key,
+                                session_token,
+                                canned_acl: s3.canned_acl,
+                                path_style: s3.path_style,
                             },
                         )
                         .await

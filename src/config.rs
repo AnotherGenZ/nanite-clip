@@ -266,6 +266,8 @@ pub struct UploadsConfig {
     #[serde(default, alias = "streamable")]
     pub copyparty: CopypartyUploadConfig,
     #[serde(default)]
+    pub s3: S3UploadConfig,
+    #[serde(default)]
     pub youtube: YouTubeUploadConfig,
 }
 
@@ -292,6 +294,28 @@ pub struct YouTubeUploadConfig {
     pub client_id: String,
     #[serde(default)]
     pub privacy_status: YouTubePrivacyStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct S3UploadConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub bucket: String,
+    #[serde(default = "default_s3_region")]
+    pub region: String,
+    #[serde(default)]
+    pub endpoint_url: String,
+    #[serde(default)]
+    pub public_base_url: String,
+    #[serde(default, alias = "prefix")]
+    pub key_prefix: String,
+    #[serde(default)]
+    pub access_key_id: String,
+    #[serde(default)]
+    pub canned_acl: String,
+    #[serde(default)]
+    pub path_style: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -540,6 +564,22 @@ impl Default for YouTubeUploadConfig {
             enabled: false,
             client_id: String::new(),
             privacy_status: YouTubePrivacyStatus::Unlisted,
+        }
+    }
+}
+
+impl Default for S3UploadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bucket: String::new(),
+            region: default_s3_region(),
+            endpoint_url: String::new(),
+            public_base_url: String::new(),
+            key_prefix: String::new(),
+            access_key_id: String::new(),
+            canned_acl: String::new(),
+            path_style: false,
         }
     }
 }
@@ -997,6 +1037,7 @@ impl StorageTieringConfig {
 impl UploadsConfig {
     pub fn normalize(&mut self) {
         self.copyparty.normalize();
+        self.s3.normalize();
         self.youtube.normalize();
     }
 }
@@ -1018,6 +1059,26 @@ impl CopypartyUploadConfig {
 impl YouTubeUploadConfig {
     pub fn normalize(&mut self) {
         self.client_id = self.client_id.trim().to_string();
+    }
+}
+
+impl S3UploadConfig {
+    pub fn normalize(&mut self) {
+        self.bucket = self.bucket.trim().to_string();
+        self.region = normalize_string_setting(self.region.as_str(), default_s3_region().as_str());
+        self.endpoint_url = normalize_urlish(self.endpoint_url.as_str(), "");
+        self.public_base_url = normalize_urlish(self.public_base_url.as_str(), "");
+        self.key_prefix = self
+            .key_prefix
+            .trim()
+            .trim_matches('/')
+            .split('/')
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        self.access_key_id = self.access_key_id.trim().to_string();
+        self.canned_acl = self.canned_acl.trim().to_string();
     }
 }
 

@@ -769,6 +769,7 @@ pub struct ClipOverlapRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum UploadProvider {
     Copyparty,
+    S3,
     YouTube,
 }
 
@@ -776,12 +777,14 @@ impl UploadProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Copyparty => "copyparty",
+            Self::S3 => "s3",
             Self::YouTube => "youtube",
         }
     }
 
     fn from_db(value: &str) -> Self {
         match value {
+            "s3" => Self::S3,
             "youtube" => Self::YouTube,
             "streamable" | "copyparty" => Self::Copyparty,
             _ => Self::Copyparty,
@@ -791,6 +794,7 @@ impl UploadProvider {
     pub fn label(self) -> &'static str {
         match self {
             Self::Copyparty => "Copyparty",
+            Self::S3 => "S3",
             Self::YouTube => "YouTube",
         }
     }

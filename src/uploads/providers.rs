@@ -1,4 +1,7 @@
 use super::*;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 pub(crate) fn prepare_youtube_upload_input(
     request: &UploadRequest,
@@ -73,6 +76,328 @@ pub(crate) fn remux_youtube_compatible_input(
     }
 
     Ok(())
+}
+
+pub(crate) fn upload_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp4") => "video/mp4",
+        Some("mkv") => "video/x-matroska",
+        Some("mov") => "video/quicktime",
+        Some("webm") => "video/webm",
+        _ => "application/octet-stream",
+    }
+}
+
+pub(crate) fn build_s3_object_key(prefix: &str, file_name: &str) -> String {
+    let clean_file_name = file_name.trim().trim_matches('/');
+    let clean_prefix = prefix.trim().trim_matches('/');
+    if clean_prefix.is_empty() {
+        clean_file_name.to_string()
+    } else if clean_file_name.is_empty() {
+        clean_prefix.to_string()
+    } else {
+        format!("{clean_prefix}/{clean_file_name}")
+    }
+}
+
+pub(crate) fn build_s3_object_url(
+    credentials: &S3UploadCredentials,
+    object_key: &str,
+) -> Result<Url, String> {
+    let bucket = credentials.bucket.trim();
+    if bucket.is_empty() {
+        return Err("S3 bucket cannot be empty.".into());
+    }
+
+    let base_url = if credentials.endpoint_url.trim().is_empty() {
+        if credentials.path_style {
+            format!("https://s3.{}.amazonaws.com", credentials.region.trim())
+        } else {
+            format!(
+                "https://{}.s3.{}.amazonaws.com",
+                bucket,
+                credentials.region.trim()
+            )
+        }
+    } else {
+        credentials.endpoint_url.trim().to_string()
+    };
+
+    let mut url = Url::parse(&base_url)
+        .map_err(|error| format!("invalid S3 endpoint URL `{base_url}`: {error}"))?;
+    url.set_query(None);
+    url.set_fragment(None);
+
+    if !credentials.endpoint_url.trim().is_empty() && !credentials.path_style {
+        let host = url
+            .host_str()
+            .ok_or_else(|| "S3 endpoint URL must include a host.".to_string())?;
+        let bucket_host = format!("{bucket}.{host}");
+        url.set_host(Some(&bucket_host)).map_err(|_| {
+            format!(
+                "failed to derive virtual-hosted S3 endpoint from `{}` and bucket `{bucket}`; enable path-style requests instead",
+                credentials.endpoint_url
+            )
+        })?;
+    }
+
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| format!("S3 endpoint URL `{base_url}` cannot be a base URL"))?;
+        segments.pop_if_empty();
+        if credentials.path_style {
+            segments.push(bucket);
+        }
+        for segment in object_key.split('/').filter(|segment| !segment.is_empty()) {
+            segments.push(segment);
+        }
+    }
+
+    Ok(url)
+}
+
+pub(crate) fn resolve_s3_clip_url(
+    credentials: &S3UploadCredentials,
+    object_key: &str,
+    object_url: &Url,
+) -> Result<Option<String>, String> {
+    if object_key.trim().is_empty() {
+        return Ok(None);
+    }
+
+    if credentials.public_base_url.trim().is_empty() {
+        return Ok(Some(object_url.to_string()));
+    }
+
+    let mut url = Url::parse(credentials.public_base_url.trim()).map_err(|error| {
+        format!(
+            "invalid S3 public base URL `{}`: {error}",
+            credentials.public_base_url
+        )
+    })?;
+    url.set_query(None);
+    url.set_fragment(None);
+    {
+        let mut segments = url.path_segments_mut().map_err(|_| {
+            format!(
+                "S3 public base URL `{}` cannot be a base URL",
+                credentials.public_base_url
+            )
+        })?;
+        segments.pop_if_empty();
+        for segment in object_key.split('/').filter(|segment| !segment.is_empty()) {
+            segments.push(segment);
+        }
+    }
+    Ok(Some(url.to_string()))
+}
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    hex_encode(&digest.finalize())
+}
+
+pub(crate) fn sign_s3_put_request(params: S3SigningParams<'_>) -> Result<SignedS3Request, String> {
+    let host = s3_host_header_value(params.url)?;
+    let canonical_uri = canonical_s3_uri(params.url);
+    let canonical_query_string = canonical_s3_query_string(params.url);
+    let session_token = params
+        .session_token
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let canned_acl = params
+        .canned_acl
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut canonical_headers = BTreeMap::new();
+    canonical_headers.insert("content-type".to_string(), params.content_type.to_string());
+    canonical_headers.insert("host".to_string(), host.clone());
+    canonical_headers.insert(
+        "x-amz-content-sha256".to_string(),
+        params.payload_sha256.to_string(),
+    );
+    canonical_headers.insert("x-amz-date".to_string(), params.amz_date.to_string());
+    if let Some(token) = &session_token {
+        canonical_headers.insert("x-amz-security-token".to_string(), token.clone());
+    }
+    if let Some(acl) = &canned_acl {
+        canonical_headers.insert("x-amz-acl".to_string(), acl.clone());
+    }
+
+    let signed_headers = canonical_headers
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(";");
+    let canonical_headers_string = canonical_headers
+        .iter()
+        .map(|(name, value)| format!("{name}:{value}\n"))
+        .collect::<String>();
+    let canonical_request = format!(
+        "PUT\n{canonical_uri}\n{canonical_query_string}\n{canonical_headers_string}\n{signed_headers}\n{}",
+        params.payload_sha256
+    );
+    let credential_scope = format!("{}/{}/s3/aws4_request", params.short_date, params.region);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{credential_scope}\n{}",
+        params.amz_date,
+        sha256_hex(canonical_request.as_bytes())
+    );
+    let signing_key = derive_aws_v4_signing_key(
+        params.secret_access_key,
+        params.short_date,
+        params.region,
+        "s3",
+    );
+    let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
+        params.access_key_id
+    );
+
+    Ok(SignedS3Request {
+        authorization,
+        host,
+        session_token,
+        canned_acl,
+    })
+}
+
+fn s3_host_header_value(url: &Url) -> Result<String, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("S3 upload URL `{url}` is missing a host"))?;
+    let value = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    };
+    Ok(value)
+}
+
+fn canonical_s3_uri(url: &Url) -> String {
+    let path = url.path();
+    if path.is_empty() {
+        "/".into()
+    } else {
+        path.to_string()
+    }
+}
+
+fn canonical_s3_query_string(url: &Url) -> String {
+    let mut pairs = url
+        .query_pairs()
+        .map(|(key, value)| {
+            (
+                aws_percent_encode(key.as_ref()),
+                aws_percent_encode(value.as_ref()),
+            )
+        })
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn aws_percent_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(byte))
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push_str(format!("{byte:02X}").as_str());
+            }
+        }
+    }
+    encoded
+}
+
+fn derive_aws_v4_signing_key(
+    secret_access_key: &str,
+    short_date: &str,
+    region: &str,
+    service: &str,
+) -> [u8; 32] {
+    let date_key = hmac_sha256(
+        format!("AWS4{secret_access_key}").as_bytes(),
+        short_date.as_bytes(),
+    );
+    let region_key = hmac_sha256(&date_key, region.as_bytes());
+    let service_key = hmac_sha256(&region_key, service.as_bytes());
+    hmac_sha256(&service_key, b"aws4_request")
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    const BLOCK_SIZE: usize = 64;
+    let mut normalized_key = [0_u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        let mut digest = Sha256::new();
+        digest.update(key);
+        normalized_key[..32].copy_from_slice(&digest.finalize());
+    } else {
+        normalized_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [0_u8; BLOCK_SIZE];
+    let mut outer_pad = [0_u8; BLOCK_SIZE];
+    for (index, byte) in normalized_key.iter().copied().enumerate() {
+        inner_pad[index] = byte ^ 0x36;
+        outer_pad[index] = byte ^ 0x5c;
+    }
+
+    let mut inner_digest = Sha256::new();
+    inner_digest.update(inner_pad);
+    inner_digest.update(data);
+    let inner_hash = inner_digest.finalize();
+
+    let mut outer_digest = Sha256::new();
+    outer_digest.update(outer_pad);
+    outer_digest.update(inner_hash);
+    let mut output = [0_u8; 32];
+    output.copy_from_slice(&outer_digest.finalize());
+    output
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+pub(crate) struct SignedS3Request {
+    pub(crate) authorization: String,
+    pub(crate) host: String,
+    pub(crate) session_token: Option<String>,
+    pub(crate) canned_acl: Option<String>,
+}
+
+pub(crate) struct S3SigningParams<'a> {
+    pub(crate) url: &'a Url,
+    pub(crate) region: &'a str,
+    pub(crate) access_key_id: &'a str,
+    pub(crate) secret_access_key: &'a str,
+    pub(crate) session_token: Option<&'a str>,
+    pub(crate) canned_acl: Option<&'a str>,
+    pub(crate) content_type: &'a str,
+    pub(crate) payload_sha256: &'a str,
+    pub(crate) amz_date: &'a str,
+    pub(crate) short_date: &'a str,
 }
 
 pub async fn begin_youtube_oauth<F>(
@@ -699,5 +1024,122 @@ mod tests {
   "error_description": "client_secret is missing."
 }"#;
         assert!(youtube_token_exchange_is_missing_client_secret(body));
+    }
+
+    #[test]
+    fn builds_s3_object_key_with_prefix() {
+        assert_eq!(
+            build_s3_object_key("/clips/highlights/", "/clip-01.mp4/"),
+            "clips/highlights/clip-01.mp4"
+        );
+        assert_eq!(build_s3_object_key("", "clip-01.mp4"), "clip-01.mp4");
+    }
+
+    #[test]
+    fn builds_virtual_hosted_s3_url_by_default() {
+        let url = build_s3_object_url(
+            &S3UploadCredentials {
+                bucket: "nanite".into(),
+                region: "us-east-1".into(),
+                endpoint_url: String::new(),
+                public_base_url: String::new(),
+                key_prefix: "clips".into(),
+                access_key_id: "key".into(),
+                secret_access_key: "secret".into(),
+                session_token: None,
+                canned_acl: String::new(),
+                path_style: false,
+            },
+            "clips/clip 01.mp4",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://nanite.s3.us-east-1.amazonaws.com/clips/clip%2001.mp4"
+        );
+    }
+
+    #[test]
+    fn builds_path_style_s3_url_for_custom_endpoint() {
+        let url = build_s3_object_url(
+            &S3UploadCredentials {
+                bucket: "nanite".into(),
+                region: "auto".into(),
+                endpoint_url: "https://objects.example.com/storage".into(),
+                public_base_url: String::new(),
+                key_prefix: String::new(),
+                access_key_id: "key".into(),
+                secret_access_key: "secret".into(),
+                session_token: None,
+                canned_acl: String::new(),
+                path_style: true,
+            },
+            "clips/clip 01.mp4",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://objects.example.com/storage/nanite/clips/clip%2001.mp4"
+        );
+    }
+
+    #[test]
+    fn resolves_s3_public_url_from_override() {
+        let object_url =
+            Url::parse("https://nanite.s3.us-east-1.amazonaws.com/clips/clip-01.mp4").unwrap();
+        let public_url = resolve_s3_clip_url(
+            &S3UploadCredentials {
+                bucket: "nanite".into(),
+                region: "us-east-1".into(),
+                endpoint_url: String::new(),
+                public_base_url: "https://cdn.example.com/video".into(),
+                key_prefix: "clips".into(),
+                access_key_id: "key".into(),
+                secret_access_key: "secret".into(),
+                session_token: None,
+                canned_acl: String::new(),
+                path_style: false,
+            },
+            "clips/clip-01.mp4",
+            &object_url,
+        )
+        .unwrap();
+
+        assert_eq!(
+            public_url.as_deref(),
+            Some("https://cdn.example.com/video/clips/clip-01.mp4")
+        );
+    }
+
+    #[test]
+    fn signs_s3_put_request_with_expected_scope_and_headers() {
+        let signed = sign_s3_put_request(S3SigningParams {
+            url: &Url::parse("https://nanite.s3.us-east-1.amazonaws.com/clips/clip-01.mp4")
+                .unwrap(),
+            region: "us-east-1",
+            access_key_id: "AKIAEXAMPLE",
+            secret_access_key: "secret",
+            session_token: Some("session-token"),
+            canned_acl: Some("public-read"),
+            content_type: "video/mp4",
+            payload_sha256: "payload-sha",
+            amz_date: "20260421T010203Z",
+            short_date: "20260421",
+        })
+        .unwrap();
+
+        assert!(
+            signed
+                .authorization
+                .contains("Credential=AKIAEXAMPLE/20260421/us-east-1/s3/aws4_request")
+        );
+        assert!(signed.authorization.contains(
+            "SignedHeaders=content-type;host;x-amz-acl;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+        ));
+        assert_eq!(signed.host, "nanite.s3.us-east-1.amazonaws.com");
+        assert_eq!(signed.session_token.as_deref(), Some("session-token"));
+        assert_eq!(signed.canned_acl.as_deref(), Some("public-read"));
     }
 }
